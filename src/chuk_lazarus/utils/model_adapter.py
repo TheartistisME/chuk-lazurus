@@ -1,43 +1,44 @@
-import mlx.core as mx
-import mlx.nn as nn
+"""Cross-framework model adapter (EWS-9).
 
-# Optional torch import for cross-framework support
-try:
-    import torch
+Lazy-import-clean: torch/mlx imports are function-scope so this module can
+be imported under ``CHUK_BACKEND=torch`` without pulling in mlx.
+"""
 
-    HAS_TORCH = True
-except ImportError:
-    torch = None
-    HAS_TORCH = False
+from __future__ import annotations
+
+from typing import Any
 
 
 class ModelAdapter:
-    def __init__(self, framework="mlx", model=None):
-        if framework == "torch" and not HAS_TORCH:
-            raise ImportError(
-                "torch is required for torch framework. Install with: pip install torch"
-            )
+    def __init__(self, framework: str = "mlx", model: Any = None):
         self.framework = framework
         self.model = model
 
     def to_tensor(self, data):
         if self.framework == "torch":
+            import torch
+
             return torch.tensor(data)
-        elif self.framework == "mlx":
-            return mx.array(data)
+        import mlx.core as mx
+
+        return mx.array(data)
 
     def forward(self, input_tensor):
         if self.framework == "torch":
-            with torch.no_grad():
-                return self.model(input_tensor).numpy()
-        elif self.framework == "mlx":
-            return self.model(input_tensor)
+            import torch
 
-    def argmax(self, output, axis=-1):
+            with torch.no_grad():
+                return self.model(input_tensor).cpu().numpy()
+        return self.model(input_tensor)
+
+    def argmax(self, output, axis: int = -1):
         if self.framework == "torch":
-            return torch.argmax(torch.tensor(output), dim=axis).tolist()
-        elif self.framework == "mlx":
-            return mx.argmax(mx.array(output), axis=axis).tolist()
+            import torch
+
+            return torch.argmax(torch.as_tensor(output), dim=axis).tolist()
+        import mlx.core as mx
+
+        return mx.argmax(mx.array(output), axis=axis).tolist()
 
     def create_value_and_grad_fn(self, loss_function):
         if self.framework == "torch":
@@ -46,15 +47,19 @@ class ModelAdapter:
                 outputs = self.model(inputs)
                 loss = loss_function(outputs, targets)
                 loss.backward()
-                return loss.item(), [param.grad for param in self.model.parameters()]
+                return loss.item(), [p.grad for p in self.model.parameters()]
 
             return value_and_grad
-        elif self.framework == "mlx":
-            return nn.value_and_grad(self.model, loss_function)
+
+        import mlx.nn as nn
+
+        return nn.value_and_grad(self.model, loss_function)
 
     def load_tensor_from_file(self, batch_path):
-        """Load batch data based on the framework"""
         if self.framework == "torch":
+            import torch
+
             return torch.load(batch_path)
-        elif self.framework == "mlx":
-            return mx.load(batch_path)
+        import mlx.core as mx
+
+        return mx.load(batch_path)

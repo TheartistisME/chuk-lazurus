@@ -19,8 +19,16 @@ Key benefits:
 - Works well with sparse rewards
 """
 
-import mlx.core as mx
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from chuk_lazarus.training._backend_math import detect_backend, xp_for
+
+if TYPE_CHECKING:
+    import mlx.core as mx  # noqa: F401
 
 
 class GRPOConfig(BaseModel):
@@ -60,47 +68,47 @@ def grpo_loss(
     if config is None:
         config = GRPOConfig()
 
+    bk = detect_backend(log_probs)
+    xp = xp_for(bk)
+
     batch_size = log_probs.shape[0]
     num_prompts = batch_size // group_size
 
-    # Reshape to (num_prompts, group_size)
     rewards_grouped = rewards.reshape(num_prompts, group_size)
-
-    # Compute group-relative advantages
-    # For each prompt, advantage = reward - mean(rewards in group)
-    group_mean = mx.mean(rewards_grouped, axis=1, keepdims=True)
+    group_mean = xp.mean(rewards_grouped, axis=1, keepdims=True)
     advantages = rewards_grouped - group_mean
 
     if config.normalize_advantages:
-        group_std = mx.sqrt(mx.var(rewards_grouped, axis=1, keepdims=True) + 1e-8)
+        group_std = xp.sqrt(xp.var(rewards_grouped, axis=1, keepdims=True) + 1e-8)
         advantages = advantages / group_std
 
-    # Flatten back
     advantages = advantages.reshape(-1)
 
-    # Policy gradient with clipping (like PPO)
-    ratio = mx.exp(log_probs - ref_log_probs)
-    clipped_ratio = mx.clip(ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon)
+    ratio = xp.exp(log_probs - ref_log_probs)
+    clipped_ratio = xp.clip(ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon)
 
     policy_loss_unclipped = -advantages * ratio
     policy_loss_clipped = -advantages * clipped_ratio
-    policy_loss = mx.mean(mx.maximum(policy_loss_unclipped, policy_loss_clipped))
+    policy_loss = xp.mean(xp.maximum(policy_loss_unclipped, policy_loss_clipped))
 
-    # KL penalty (stay close to reference)
-    kl_penalty = mx.mean(log_probs - ref_log_probs)
+    kl_penalty = xp.mean(log_probs - ref_log_probs)
 
-    # Total loss
     total_loss = policy_loss + config.kl_coef * kl_penalty
 
-    # Metrics
+    clip_mask = xp.abs(ratio - 1) > config.clip_epsilon
+    if bk == "torch":
+        clip_mask_f = clip_mask.to(dtype=xp.float32)
+    else:
+        clip_mask_f = clip_mask.astype(xp.float32)
+
     metrics = {
         "total_loss": total_loss,
         "policy_loss": policy_loss,
         "kl_penalty": kl_penalty,
-        "mean_reward": mx.mean(rewards),
-        "reward_std": mx.sqrt(mx.var(rewards)),
-        "mean_advantage": mx.mean(advantages),
-        "clip_fraction": mx.mean((mx.abs(ratio - 1) > config.clip_epsilon).astype(mx.float32)),
+        "mean_reward": xp.mean(rewards),
+        "reward_std": xp.sqrt(xp.var(rewards)),
+        "mean_advantage": xp.mean(advantages),
+        "clip_fraction": xp.mean(clip_mask_f),
     }
 
     return total_loss, metrics
@@ -118,17 +126,16 @@ def compute_grpo_advantages(rewards: mx.array, group_size: int, normalize: bool 
     Returns:
         advantages: Shape (batch,)
     """
+    bk = detect_backend(rewards)
+    xp = xp_for(bk)
     batch_size = rewards.shape[0]
     num_prompts = batch_size // group_size
-
     rewards_grouped = rewards.reshape(num_prompts, group_size)
-    group_mean = mx.mean(rewards_grouped, axis=1, keepdims=True)
+    group_mean = xp.mean(rewards_grouped, axis=1, keepdims=True)
     advantages = rewards_grouped - group_mean
-
     if normalize:
-        group_std = mx.sqrt(mx.var(rewards_grouped, axis=1, keepdims=True) + 1e-8)
+        group_std = xp.sqrt(xp.var(rewards_grouped, axis=1, keepdims=True) + 1e-8)
         advantages = advantages / group_std
-
     return advantages.reshape(-1)
 
 
@@ -154,8 +161,10 @@ class GRPOBatch:
         self.responses.append(responses)
         self.rewards.append(rewards)
 
-    def get_flat_rewards(self) -> mx.array:
-        """Get flattened rewards array."""
+    def get_flat_rewards(self) -> Any:
+        """Get flattened rewards array (MLX by default)."""
+        import mlx.core as mx
+
         flat = []
         for group in self.rewards:
             flat.extend(group)

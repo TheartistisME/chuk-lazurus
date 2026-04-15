@@ -40,17 +40,33 @@ from .losses import (
 # Learning rate schedulers
 from .schedulers import schedule_learning_rate
 
-# Trainers
-from .trainers import (
-    DPOTrainer,
-    DPOTrainerConfig,
-    GRPOTrainer,
-    GRPOTrainerConfig,
-    PPOTrainer,
-    PPOTrainerConfig,
-    SFTConfig,
-    SFTTrainer,
-)
+# Trainers (MLX-only in EWS-9 era). Skipped entirely when CHUK_BACKEND=torch
+# so training submodules remain lazy-import-clean on torch hosts.
+# EWS-10 replaces this with dual-backend dispatch.
+import os as _os
+
+if _os.environ.get("CHUK_BACKEND", "").lower() != "torch":
+    try:
+        from .trainers import (
+            DPOTrainer,
+            DPOTrainerConfig,
+            GRPOTrainer,
+            GRPOTrainerConfig,
+            PPOTrainer,
+            PPOTrainerConfig,
+            SFTConfig,
+            SFTTrainer,
+        )
+    except ImportError:
+        DPOTrainer = DPOTrainerConfig = None  # type: ignore[assignment]
+        GRPOTrainer = GRPOTrainerConfig = None  # type: ignore[assignment]
+        PPOTrainer = PPOTrainerConfig = None  # type: ignore[assignment]
+        SFTConfig = SFTTrainer = None  # type: ignore[assignment]
+else:
+    DPOTrainer = DPOTrainerConfig = None  # type: ignore[assignment]
+    GRPOTrainer = GRPOTrainerConfig = None  # type: ignore[assignment]
+    PPOTrainer = PPOTrainerConfig = None  # type: ignore[assignment]
+    SFTConfig = SFTTrainer = None  # type: ignore[assignment]
 
 # Utilities
 from .utils import (

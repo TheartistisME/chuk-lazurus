@@ -15,12 +15,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
-import mlx.core as mx
-import mlx.nn as nn
-
 from chuk_lazarus.training.base_trainer import BaseTrainer, BaseTrainerConfig
 
 if TYPE_CHECKING:
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
+
     from chuk_lazarus.data import ClassificationDataset
 
 logger = logging.getLogger(__name__)
@@ -81,17 +81,17 @@ class ClassificationTrainer(BaseTrainer):
         self.config: ClassificationTrainerConfig = config
         self.encoder = encoder
 
-    def compute_loss(self, batch: dict[str, Any]) -> tuple[mx.array, dict[str, Any]]:
-        """Compute cross-entropy loss and accuracy."""
+    def compute_loss(self, batch: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+        """Compute cross-entropy loss and accuracy (MLX path)."""
+        import mlx.core as mx
+        import mlx.nn as nn
+
         x = batch["input"]
         y = batch["label"]
-
         logits = self.model(x)
         loss = mx.mean(nn.losses.cross_entropy(logits, y))
-
         predictions = mx.argmax(logits, axis=-1)
         accuracy = mx.mean(predictions == y)
-
         return loss, {"loss": loss, "accuracy": accuracy}
 
     def _get_features(self, sample) -> list[float]:
@@ -103,19 +103,17 @@ class ClassificationTrainer(BaseTrainer):
         raise ValueError("Sample must have features or text (with encoder)")
 
     def get_train_batches(self, dataset: ClassificationDataset) -> Iterator[dict[str, Any]]:
-        """Create batches from ClassificationDataset."""
-        batch_size = self.config.batch_size
+        """Create batches from ClassificationDataset (MLX)."""
+        import mlx.core as mx
 
+        batch_size = self.config.batch_size
         indices = list(range(len(dataset)))
         random.shuffle(indices)
-
         for i in range(0, len(dataset), batch_size):
             batch_indices = indices[i : i + batch_size]
             batch_samples = [dataset[j] for j in batch_indices]
-
             inputs = mx.stack([mx.array(self._get_features(s)) for s in batch_samples])
             labels = mx.array([s.label for s in batch_samples])
-
             yield {"input": inputs, "label": labels}
 
     def _create_epoch_metrics(self) -> dict[str, list[float]]:
@@ -153,13 +151,13 @@ def evaluate(
             return encoder.encode(sample.text)
         raise ValueError("Sample must have features or text (with encoder)")
 
+    import mlx.core as mx
+
     inputs = mx.stack([mx.array(get_features(s)) for s in dataset])
     labels = mx.array([s.label for s in dataset])
-
     logits = model(inputs)
     predictions = mx.argmax(logits, axis=-1)
     accuracy = float(mx.mean(predictions == labels))
-
     return {"accuracy": accuracy}
 
 
@@ -174,6 +172,8 @@ def predict(model: nn.Module, features: list[float]) -> tuple[int, float]:
     Returns:
         Tuple of (predicted_class, confidence).
     """
+    import mlx.core as mx
+
     x = mx.array([features])
     logits = model(x)
     probs = mx.softmax(logits, axis=-1)

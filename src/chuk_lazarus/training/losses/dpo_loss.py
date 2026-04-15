@@ -11,11 +11,19 @@ classification-style loss.
 Paper: https://arxiv.org/abs/2305.18290
 """
 
-import mlx.core as mx
-import mlx.nn as nn
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
+from chuk_lazarus.training._backend_math import detect_backend, xp_for
+
 from ..utils.log_probs import compute_sequence_log_prob, extract_log_probs
+
+if TYPE_CHECKING:
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
 
 
 class DPOConfig(BaseModel):
@@ -86,10 +94,12 @@ def dpo_loss(
         policy_rejected_log_probs, rejected_mask_shifted
     )
 
+    bk = detect_backend(policy_chosen_seq)
+    xp = xp_for(bk)
     if config.reference_free:
         # Simpler version: no reference model
-        ref_chosen_seq = mx.zeros_like(policy_chosen_seq)
-        ref_rejected_seq = mx.zeros_like(policy_rejected_seq)
+        ref_chosen_seq = xp.zeros_like(policy_chosen_seq)
+        ref_rejected_seq = xp.zeros_like(policy_rejected_seq)
     else:
         # Get log probs from reference model (no gradients needed)
         ref_chosen_log_probs, _ = extract_log_probs(
@@ -109,23 +119,26 @@ def dpo_loss(
     logits = config.beta * (chosen_log_ratio - rejected_log_ratio)
 
     if config.label_smoothing > 0:
-        # Soft labels: slightly prefer chosen but not absolutely
-        loss = -config.label_smoothing * mx.log(mx.sigmoid(-logits) + 1e-10) - (
+        loss = -config.label_smoothing * xp.log(xp.sigmoid(-logits) + 1e-10) - (
             1 - config.label_smoothing
-        ) * mx.log(mx.sigmoid(logits) + 1e-10)
+        ) * xp.log(xp.sigmoid(logits) + 1e-10)
     else:
-        # Standard DPO loss
-        loss = -mx.log(mx.sigmoid(logits) + 1e-10)
+        loss = -xp.log(xp.sigmoid(logits) + 1e-10)
 
-    loss = mx.mean(loss)
+    loss = xp.mean(loss)
 
-    # Compute metrics for monitoring
+    acc_mask = chosen_log_ratio > rejected_log_ratio
+    if bk == "torch":
+        acc_mask_f = acc_mask.to(dtype=xp.float32)
+    else:
+        acc_mask_f = acc_mask.astype(xp.float32)
+
     metrics = {
         "loss": loss,
-        "chosen_reward": mx.mean(config.beta * chosen_log_ratio),
-        "rejected_reward": mx.mean(config.beta * rejected_log_ratio),
-        "reward_margin": mx.mean(config.beta * (chosen_log_ratio - rejected_log_ratio)),
-        "accuracy": mx.mean((chosen_log_ratio > rejected_log_ratio).astype(mx.float32)),
+        "chosen_reward": xp.mean(config.beta * chosen_log_ratio),
+        "rejected_reward": xp.mean(config.beta * rejected_log_ratio),
+        "reward_margin": xp.mean(config.beta * (chosen_log_ratio - rejected_log_ratio)),
+        "accuracy": xp.mean(acc_mask_f),
     }
 
     return loss, metrics

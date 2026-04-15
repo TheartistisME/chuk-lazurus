@@ -9,8 +9,16 @@ This loss function trains V/O projections to create vocabulary-mappable
 classifiers while maintaining answer quality.
 """
 
-import mlx.core as mx
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from chuk_lazarus.training._backend_math import detect_backend, xp_for
+
+if TYPE_CHECKING:
+    import mlx.core as mx  # noqa: F401
 
 
 class DualRewardLossConfig(BaseModel):
@@ -54,51 +62,52 @@ def dual_reward_loss(
         total_loss: Combined loss
         metrics: Dict with individual losses and metrics
     """
+    bk = detect_backend(final_logits)
+    xp = xp_for(bk)
     batch_size = final_logits.shape[0]
     vocab_size = final_logits.shape[-1]
 
-    # === Answer Loss (final layer) ===
-    # Standard cross-entropy on response tokens
     logits_flat = final_logits.reshape(-1, vocab_size)
     labels_flat = labels.reshape(-1)
     mask_flat = loss_mask.reshape(-1)
 
-    log_probs = mx.log(mx.softmax(logits_flat, axis=-1) + 1e-10)
-    indices = mx.arange(logits_flat.shape[0])
+    log_probs = xp.log(xp.softmax(logits_flat, axis=-1) + 1e-10)
+    indices = xp.arange(logits_flat.shape[0])
+    if bk == "torch":
+        import torch
+
+        indices = indices.to(dtype=torch.long, device=labels_flat.device)
+        labels_flat = labels_flat.to(dtype=torch.long)
     token_log_probs = log_probs[indices, labels_flat]
 
     masked_log_probs = token_log_probs * mask_flat
-    num_tokens = mx.sum(mask_flat) + 1e-10
-    answer_loss = -mx.sum(masked_log_probs) / num_tokens
+    num_tokens = xp.sum(mask_flat) + 1e-10
+    answer_loss = -xp.sum(masked_log_probs) / num_tokens
 
-    # === Classification Loss (intermediate layer) ===
-    # Cross-entropy on last token position for classification target
-    # Use last token of each sequence
-    cls_logits = classifier_logits[:, -1, :]  # (batch, vocab_size)
-
+    cls_logits = classifier_logits[:, -1, :]
     if config.use_softmax:
-        cls_probs = mx.softmax(cls_logits, axis=-1)
-        cls_log_probs = mx.log(cls_probs + 1e-10)
+        cls_probs = xp.softmax(cls_logits, axis=-1)
+        cls_log_probs = xp.log(cls_probs + 1e-10)
     else:
-        cls_log_probs = mx.log_softmax(cls_logits, axis=-1)
+        cls_log_probs = xp.log_softmax(cls_logits, axis=-1)
 
-    # Gather log probs for classifier targets
-    batch_indices = mx.arange(batch_size)
-    cls_token_log_probs = cls_log_probs[batch_indices, classifier_labels]
-    classifier_loss = -mx.mean(cls_token_log_probs)
+    batch_indices = xp.arange(batch_size)
+    cls_labels = classifier_labels
+    if bk == "torch":
+        import torch
 
-    # === Combined Loss ===
+        batch_indices = batch_indices.to(dtype=torch.long, device=cls_labels.device)
+        cls_labels = cls_labels.to(dtype=torch.long)
+    cls_token_log_probs = cls_log_probs[batch_indices, cls_labels]
+    classifier_loss = -xp.mean(cls_token_log_probs)
+
     cls_weight = config.classifier_weight
     ans_weight = 1.0 - cls_weight
-
     total_loss = cls_weight * classifier_loss + ans_weight * answer_loss
 
-    # Metrics
-    answer_perplexity = mx.exp(answer_loss)
-
-    # Classification accuracy (for logging)
-    cls_predictions = mx.argmax(cls_logits, axis=-1)
-    cls_correct = mx.sum(cls_predictions == classifier_labels)
+    answer_perplexity = xp.exp(answer_loss)
+    cls_predictions = xp.argmax(cls_logits, axis=-1)
+    cls_correct = xp.sum(cls_predictions == cls_labels)
     cls_accuracy = cls_correct / batch_size
 
     metrics = {
@@ -128,18 +137,25 @@ def classification_only_loss(
         loss: Classification loss
         metrics: Dict with accuracy, etc.
     """
+    bk = detect_backend(classifier_logits)
+    xp = xp_for(bk)
     batch_size = classifier_logits.shape[0]
 
-    cls_probs = mx.softmax(classifier_logits, axis=-1)
-    cls_log_probs = mx.log(cls_probs + 1e-10)
+    cls_probs = xp.softmax(classifier_logits, axis=-1)
+    cls_log_probs = xp.log(cls_probs + 1e-10)
 
-    batch_indices = mx.arange(batch_size)
-    cls_token_log_probs = cls_log_probs[batch_indices, classifier_labels]
-    loss = -mx.mean(cls_token_log_probs)
+    batch_indices = xp.arange(batch_size)
+    cls_labels = classifier_labels
+    if bk == "torch":
+        import torch
 
-    # Accuracy
-    predictions = mx.argmax(classifier_logits, axis=-1)
-    correct = mx.sum(predictions == classifier_labels)
+        batch_indices = batch_indices.to(dtype=torch.long, device=cls_labels.device)
+        cls_labels = cls_labels.to(dtype=torch.long)
+    cls_token_log_probs = cls_log_probs[batch_indices, cls_labels]
+    loss = -xp.mean(cls_token_log_probs)
+
+    predictions = xp.argmax(classifier_logits, axis=-1)
+    correct = xp.sum(predictions == cls_labels)
     accuracy = correct / batch_size
 
     metrics = {

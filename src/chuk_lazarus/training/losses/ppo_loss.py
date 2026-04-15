@@ -12,9 +12,17 @@ Key components:
 Paper: https://arxiv.org/abs/1707.06347
 """
 
-import mlx.core as mx
-import mlx.nn as nn
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from chuk_lazarus.training._backend_math import detect_backend, xp_for
+
+if TYPE_CHECKING:
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
 
 
 class PPOConfig(BaseModel):
@@ -57,44 +65,45 @@ def ppo_loss(
     if config is None:
         config = PPOConfig()
 
-    # Normalize advantages
+    bk = detect_backend(log_probs)
+    xp = xp_for(bk)
+
     if config.normalize_advantages:
-        adv_mean = mx.mean(advantages)
-        adv_std = mx.sqrt(mx.var(advantages) + 1e-8)
+        adv_mean = xp.mean(advantages)
+        adv_std = xp.sqrt(xp.var(advantages) + 1e-8)
         advantages = (advantages - adv_mean) / adv_std
 
-    # Policy loss (clipped surrogate objective)
-    ratio = mx.exp(log_probs - old_log_probs)
-    clipped_ratio = mx.clip(ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon)
+    ratio = xp.exp(log_probs - old_log_probs)
+    clipped_ratio = xp.clip(ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon)
 
     policy_loss_unclipped = -advantages * ratio
     policy_loss_clipped = -advantages * clipped_ratio
-    policy_loss = mx.mean(mx.maximum(policy_loss_unclipped, policy_loss_clipped))
+    policy_loss = xp.mean(xp.maximum(policy_loss_unclipped, policy_loss_clipped))
 
-    # Value loss (clipped as well for stability)
-    value_loss = mx.mean((values - returns) ** 2)
+    value_loss = xp.mean((values - returns) ** 2)
+    entropy_loss = -xp.mean(entropy)
 
-    # Entropy bonus (negative because we want to maximize entropy)
-    entropy_loss = -mx.mean(entropy)
-
-    # Combined loss
     total_loss = (
         policy_loss + config.value_loss_coef * value_loss + config.entropy_coef * entropy_loss
     )
 
-    # Compute diagnostics (no gradients needed)
-    approx_kl = mx.mean((ratio - 1) - (log_probs - old_log_probs))
-    clip_fraction = mx.mean((mx.abs(ratio - 1) > config.clip_epsilon).astype(mx.float32))
+    approx_kl = xp.mean((ratio - 1) - (log_probs - old_log_probs))
+    clip_mask = xp.abs(ratio - 1) > config.clip_epsilon
+    if bk == "torch":
+        clip_mask_f = clip_mask.to(dtype=xp.float32)
+    else:
+        clip_mask_f = clip_mask.astype(xp.float32)
+    clip_fraction = xp.mean(clip_mask_f)
 
     metrics = {
         "total_loss": total_loss,
         "policy_loss": policy_loss,
         "value_loss": value_loss,
         "entropy_loss": entropy_loss,
-        "entropy": mx.mean(entropy),
+        "entropy": xp.mean(entropy),
         "approx_kl": approx_kl,
         "clip_fraction": clip_fraction,
-        "explained_variance": 1 - mx.var(returns - values) / (mx.var(returns) + 1e-8),
+        "explained_variance": 1 - xp.var(returns - values) / (xp.var(returns) + 1e-8),
     }
 
     return total_loss, metrics

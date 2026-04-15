@@ -1,10 +1,9 @@
+from __future__ import annotations
+
 import logging
 import math
 from enum import Enum
 
-import mlx.core as mx
-
-# Setup the logger
 logger = logging.getLogger(__name__)
 
 
@@ -109,8 +108,10 @@ def schedule_learning_rate(
         )
 
     # Ensure current_lr is a float
-    if isinstance(current_lr, (mx.array, list, tuple)):
-        current_lr = float(current_lr.item())  # Convert to float if it's an array
+    if hasattr(current_lr, "item") and not isinstance(current_lr, (int, float)):
+        current_lr = float(current_lr.item())
+    elif isinstance(current_lr, (list, tuple)):
+        current_lr = float(current_lr[0])
 
     logger.debug(f"Iter: {iteration_count}, LR: {current_lr:.6f}")
 

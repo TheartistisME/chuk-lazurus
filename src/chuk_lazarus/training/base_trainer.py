@@ -5,17 +5,21 @@ This module provides a unified interface for training, reducing code duplication
 across SFT, DPO, GRPO, and PPO trainers.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as optim
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
+    import mlx.optimizers as optim  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +60,10 @@ class BaseTrainer(ABC):
 
     def __init__(
         self,
-        model: nn.Module,
+        model: Any,
         tokenizer: Any,
         config: BaseTrainerConfig,
-        optimizer: optim.Optimizer | None = None,
+        optimizer: Any = None,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -79,15 +83,18 @@ class BaseTrainer(ABC):
         # Timing
         self._start_time: float | None = None
 
-    def _create_optimizer(self) -> optim.Optimizer:
-        """Create default AdamW optimizer."""
-        return optim.AdamW(
+    def _create_optimizer(self) -> Any:
+        """Create default AdamW optimizer via backend-aware adapter."""
+        from chuk_lazarus.utils.optimizer_adapter import create_adamw
+
+        return create_adamw(
+            self.model,
             learning_rate=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
         )
 
     @abstractmethod
-    def compute_loss(self, batch: dict[str, Any]) -> tuple[mx.array, dict[str, Any]]:
+    def compute_loss(self, batch: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
         """
         Compute loss and metrics for a batch.
 
@@ -134,7 +141,10 @@ class BaseTrainer(ABC):
         # Create checkpoint directory
         Path(self.config.checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
-        # Create value_and_grad function
+        # Create value_and_grad function (MLX path)
+        import mlx.core as mx
+        import mlx.nn as nn
+
         loss_and_grad_fn = nn.value_and_grad(self.model, self.compute_loss)
 
         self._start_time = time.time()
@@ -245,7 +255,9 @@ class BaseTrainer(ABC):
             save_adapter(self.lora_layers, adapter_path, lora_config=lora_config)
             logger.info(f"Saved LoRA adapter: {adapter_path}")
         else:
-            # Save full model weights
+            # Save full model weights (MLX safetensors)
+            import mlx.core as mx
+
             weights_path = checkpoint_dir / f"{name}.safetensors"
             weights = dict(self.model.parameters())
             flat_weights = self._flatten_params(weights)
@@ -253,13 +265,17 @@ class BaseTrainer(ABC):
             logger.info(f"Saved checkpoint: {weights_path}")
 
     def load_checkpoint(self, path: str):
-        """Load model checkpoint."""
+        """Load model checkpoint (MLX)."""
+        import mlx.core as mx
+
         weights = mx.load(path)
         self.model.load_weights(list(weights.items()))
         logger.info(f"Loaded checkpoint: {path}")
 
     def clip_gradients(self, grads: Any, max_norm: float) -> Any:
-        """Clip gradients by global norm."""
+        """Clip gradients by global norm (MLX)."""
+        import mlx.core as mx
+
         flat_grads = []
 
         def collect(g):
@@ -270,7 +286,6 @@ class BaseTrainer(ABC):
                 flat_grads.append(g.reshape(-1))
 
         collect(grads)
-
         if not flat_grads:
             return grads
 
@@ -287,8 +302,10 @@ class BaseTrainer(ABC):
 
         return apply_clip(grads)
 
-    def _flatten_params(self, params: dict, prefix: str = "") -> dict[str, mx.array]:
+    def _flatten_params(self, params: dict, prefix: str = "") -> dict[str, Any]:
         """Flatten nested parameter dict for saving."""
+        import mlx.core as mx
+
         flat = {}
         for k, v in params.items():
             key = f"{prefix}.{k}" if prefix else k

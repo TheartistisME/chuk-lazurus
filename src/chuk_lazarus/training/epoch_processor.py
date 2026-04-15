@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import gc
 import logging
 import os
 import time
 
-import mlx.core as mx
 from tqdm import tqdm
 
 from chuk_lazarus.training.epoch_processor_utils import (
@@ -194,8 +195,11 @@ class EpochProcessor:
             model_state = self.model.state_dict()
             optimizer_state = self.optimizer.state_dict()
 
-            # Save the checkpoint
-            mx.save(checkpoint_path, {"model": model_state, "optimizer": optimizer_state})
+            # Save the checkpoint via backend dispatch (import lazily)
+            from chuk_lazarus.models_v2.core.backend import get_backend
+
+            backend = get_backend()
+            backend.save({"model": model_state, "optimizer": optimizer_state}, checkpoint_path)
 
             # Log it
             logger.info(f"Saved checkpoint: {checkpoint_path}")
