@@ -19,17 +19,41 @@ Example:
     >>> # Access captured states
     >>> layer_4_hidden = hooks.state.hidden_states[4]
     >>> layer_4_attn = hooks.state.attention_weights[4]
+
+Lazy-import contract:
+- Module-level import must NOT pull ``mlx`` (EWS-0.3b / BACKEND_IN_SCOPE).
+- Pydantic models (``CaptureConfig``, ``CapturedState``) and enums
+  (``LayerSelection``, ``PositionSelection``) are resolvable without mlx.
+- ``ModelHooks`` subclasses nothing and only touches ``mlx.core`` / ``mlx.nn``
+  inside method bodies. The class is built eagerly (no ``nn.Module`` base),
+  but any mlx usage is deferred until forward/layer access.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:  # pragma: no cover - type-checker only; never executed at runtime
+    import mlx.core as mx
+    import mlx.nn as nn
+
+
+def _mx():
+    """Lazy accessor for ``mlx.core``."""
+    import mlx.core as mx  # noqa: PLC0415
+
+    return mx
+
+
+def _nn():
+    """Lazy accessor for ``mlx.nn``."""
+    import mlx.nn as nn  # noqa: PLC0415
+
+    return nn
 
 
 class LayerSelection(str, Enum):
@@ -167,7 +191,7 @@ class CapturedState(BaseModel):
         """Sorted list of layer indices that were captured."""
         return sorted(self.hidden_states.keys())
 
-    def get_hidden_at_position(self, layer_idx: int, position: int = -1) -> mx.array | None:
+    def get_hidden_at_position(self, layer_idx: int, position: int = -1) -> Any | None:
         """
         Get hidden state for a specific layer and sequence position.
 
@@ -212,7 +236,7 @@ class ModelHooks:
 
     def __init__(
         self,
-        model: nn.Module,
+        model: Any,
         embedding_scale: float | None = None,
         model_config: Any | None = None,
     ):
@@ -275,7 +299,7 @@ class ModelHooks:
             return layer_idx in self.config.layers
         return False
 
-    def _maybe_slice_positions(self, tensor: mx.array) -> mx.array:
+    def _maybe_slice_positions(self, tensor: Any) -> Any:
         """Slice tensor to only keep configured positions."""
         if self.config.positions == PositionSelection.ALL:
             return tensor
@@ -298,7 +322,7 @@ class ModelHooks:
                 return tensor[:, :, positions, :]
         return tensor
 
-    def _get_layers(self) -> list[nn.Module]:
+    def _get_layers(self) -> list[Any]:
         """Get the list of transformer layers from the model."""
         # Try common attribute names
         if hasattr(self.model, "model"):
@@ -317,7 +341,7 @@ class ModelHooks:
             "model.layers, or model.transformer.h"
         )
 
-    def _get_embed_tokens(self) -> nn.Module | None:
+    def _get_embed_tokens(self) -> Any | None:
         """Get the embedding layer from the model."""
         if hasattr(self.model, "model"):
             inner = self.model.model
@@ -330,7 +354,7 @@ class ModelHooks:
                 return self.model.transformer.wte
         return None
 
-    def _get_final_norm(self) -> nn.Module | None:
+    def _get_final_norm(self) -> Any | None:
         """Get the final layer norm from the model."""
         if hasattr(self.model, "model"):
             inner = self.model.model
@@ -340,7 +364,7 @@ class ModelHooks:
             return self.model.norm
         return None
 
-    def _get_lm_head(self) -> Callable[[mx.array], mx.array] | None:
+    def _get_lm_head(self) -> Callable[[Any], Any] | None:
         """Get the LM head or tied embedding projection from the model."""
         # Check for explicit lm_head first
         if hasattr(self.model, "lm_head") and self.model.lm_head is not None:
@@ -397,10 +421,10 @@ class ModelHooks:
 
     def forward(
         self,
-        input_ids: mx.array,
+        input_ids: Any,
         cache: Any | None = None,
         return_logits: bool = True,
-    ) -> mx.array | None:
+    ) -> Any | None:
         """
         Run forward pass while capturing intermediate states.
 
@@ -414,6 +438,9 @@ class ModelHooks:
         Returns:
             Logits if return_logits=True, else None
         """
+        mx = _mx()
+        nn = _nn()
+
         self.state.clear()
 
         # Ensure batch dimension
@@ -516,9 +543,9 @@ class ModelHooks:
 
     def forward_to_layer(
         self,
-        input_ids: mx.array,
+        input_ids: Any,
         target_layer: int,
-    ) -> mx.array:
+    ) -> Any:
         """
         Run forward pass up to a specific layer and return hidden state.
 
@@ -563,7 +590,7 @@ class ModelHooks:
         self,
         layer_idx: int,
         normalize: bool = True,
-    ) -> mx.array | None:
+    ) -> Any | None:
         """
         Project hidden state from a specific layer to vocabulary logits.
 
@@ -601,7 +628,10 @@ class ModelHooks:
 
     def __repr__(self) -> str:
         """String representation."""
-        num_layers = len(self._get_layers()) if hasattr(self, "model") else "?"
+        try:
+            num_layers = len(self._get_layers()) if hasattr(self, "model") else "?"
+        except Exception:
+            num_layers = "?"
         return (
             f"ModelHooks(layers={self.config.layers}, "
             f"captured={self.state.num_layers_captured}/{num_layers})"

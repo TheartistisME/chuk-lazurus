@@ -24,6 +24,10 @@ BACKEND_IN_SCOPE: list[str] = [
     "src/chuk_lazarus/inference/__init__.py",
     "src/chuk_lazarus/inference/generator.py",
     "src/chuk_lazarus/inference/context/kv_generator.py",
+    # EWS-0.3a — inference/context/adapters lazy-mlx sweep.
+    "src/chuk_lazarus/inference/context/adapters/__init__.py",
+    "src/chuk_lazarus/inference/context/adapters/gemma_adapter.py",
+    "src/chuk_lazarus/inference/context/adapters/llama_adapter.py",
     # EWS-1 (Wave 0.5) — infer bucket extensions
     "src/chuk_lazarus/inference/chat.py",
     "src/chuk_lazarus/inference/generation.py",
@@ -143,6 +147,8 @@ BACKEND_IN_SCOPE: list[str] = [
     "src/chuk_lazarus/cli/commands/data/lengths/build.py",
     "src/chuk_lazarus/cli/commands/data/lengths/stats.py",
     # EWS-5 — introspect framework core
+    # EWS-0.3b — introspection package root lazy-init (PEP 562 __getattr__)
+    "src/chuk_lazarus/introspection/__init__.py",
     "src/chuk_lazarus/introspection/hooks.py",
     "src/chuk_lazarus/introspection/analyzer/core.py",
     "src/chuk_lazarus/introspection/logit_lens.py",
@@ -173,6 +179,19 @@ BACKEND_IN_SCOPE: list[str] = [
     "src/chuk_lazarus/utils/model_adapter.py",
     "src/chuk_lazarus/utils/optimizer_adapter.py",
     "src/chuk_lazarus/utils/optimizer_loader.py",
+    # EWS-0.3c — models_v2 leaves lazy-mlx sweep (critical path for
+    # ``chuk_lazarus.LlamaForCausalLM`` resolution under ``CHUK_BACKEND=torch``).
+    "src/chuk_lazarus/models_v2/blocks/__init__.py",
+    "src/chuk_lazarus/models_v2/blocks/base.py",
+    "src/chuk_lazarus/models_v2/models/__init__.py",
+    "src/chuk_lazarus/models_v2/models/base.py",
+    "src/chuk_lazarus/models_v2/heads/__init__.py",
+    "src/chuk_lazarus/models_v2/components/__init__.py",
+    "src/chuk_lazarus/models_v2/losses/__init__.py",
+    "src/chuk_lazarus/models_v2/losses/loss.py",
+    "src/chuk_lazarus/models_v2/families/__init__.py",
+    "src/chuk_lazarus/models_v2/families/llama/__init__.py",
+    "src/chuk_lazarus/models_v2/families/llama/model.py",
 ]
 
 # Backwards-compatible alias.  Epic 2 workstreams append to
