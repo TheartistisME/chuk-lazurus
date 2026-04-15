@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-import mlx.core as mx
+from ....inference._lazy_mlx import mx
 
 
 def load_model(model_id: str):

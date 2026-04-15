@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-import mlx.core as mx
+from .....inference._lazy_mlx import mx
 
 
 def extract_sparse(

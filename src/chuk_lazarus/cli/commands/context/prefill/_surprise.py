@@ -19,8 +19,8 @@ import sys
 import time
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
+from .....inference._lazy_mlx import mx
 
 
 def extract_surprise(

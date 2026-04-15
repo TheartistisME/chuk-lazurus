@@ -35,9 +35,9 @@ import sys
 import time
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
 
+from .....inference._lazy_mlx import mx
 from .....inference.context.vec_inject.providers import (
     VEC_INJECT_FILE,
     VecInjectMetaKey,
