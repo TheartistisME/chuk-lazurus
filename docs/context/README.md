@@ -2,6 +2,24 @@
 
 The context system breaks documents into fixed-size token windows, prefills each through the model, and stores extracted signals (residuals, compass bearings, K-vectors, keywords) for fast retrieval at query time. The model never sees more than one window at a time during prefill, but at generation time, multiple windows are concatenated into the KV cache so the model can attend across them.
 
+## Start Here
+
+This file is the canonical index for the context subsystem. Use it with:
+
+- [../README.md](../README.md) for the docs-wide hub
+- [../SPEC_PREFILL.md](../SPEC_PREFILL.md) for the prefill architecture/spec
+- [../SPEC_V7.md](../SPEC_V7.md) for the current knowledge-store architecture
+- [../refactor/README.md](../refactor/README.md) for active CUDA/refactor work that touches context flows
+
+## Canonical Structure
+
+| Area | Canonical docs | Notes |
+|---|---|---|
+| Context overview | This file | Start here before drilling into phases or routers. |
+| Prefill pipeline | `prefill/*.md` | One doc per extraction phase. |
+| Query-time routing | `routing/*.md` | One doc per retrieval strategy. |
+| Multi-step routing | `routing/mode7.md`, `routing/unified.md`, `routing/iterative.md`, `routing/probe.md` | Higher-level dispatch and orchestration. |
+
 ## Architecture
 
 ```
