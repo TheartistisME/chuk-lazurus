@@ -1,5 +1,7 @@
 # Introspection Layer Refactoring Roadmap
 
+> **Deprecated:** Historical refactor plan retained for context. The current introspection surface is documented in [introspection.md](introspection.md), and the active forward-looking roadmap is [roadmap-introspection-moe.md](roadmap-introspection-moe.md).
+
 ## Current State Analysis
 
 ### Files Over 500 Lines (Need Breaking Up)

@@ -1,5 +1,7 @@
 # SPEC: Prefill — What Exists, What's Missing, What to Build
 
+> **Deprecated:** Historical gap analysis retained for context. The missing items described here predate the current chained-prefill and persisted residual implementation. Use [SPEC_V7.md](SPEC_V7.md), [context/README.md](context/README.md), and [context/prefill/vec_inject.md](context/prefill/vec_inject.md) for the maintained architecture and phase behavior.
+
 **Author:** Chris Hay
 **Date:** 2026-03-20
 **Status:** Implementation Spec (aligned with codebase)

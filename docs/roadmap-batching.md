@@ -1,5 +1,7 @@
 # Batching & Training Infrastructure Roadmap
 
+> **Deprecated:** Historical implementation roadmap retained for context. For the maintained batching surface and current usage, use [batching.md](batching.md) and [training.md](training.md).
+
 A phased roadmap for implementing bucketing, packing, batch plans, and dynamic gym integration in Lazarus. Designed for offline reproducibility, distributed-readiness, and future RL/curriculum learning.
 
 ## Goals

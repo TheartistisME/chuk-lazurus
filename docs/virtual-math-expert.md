@@ -1,5 +1,7 @@
 # Virtual Math Expert: Teaching MoE Routers to Use Tools
 
+> **Deprecated:** Historical experiment write-up retained for context. For the maintained user guide and current CLI/API surface, use [virtual_experts.md](virtual_experts.md) and [introspection.md](introspection.md).
+
 ## Video Demo
 
 Run the full narrative demo:

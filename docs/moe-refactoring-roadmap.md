@@ -1,5 +1,7 @@
 # MoE Introspection Refactoring Roadmap
 
+> **Deprecated:** Historical refactor plan retained for context. The current module layout is documented in [introspection.md](introspection.md), and active MoE follow-on work is tracked in [roadmap-introspection-moe.md](roadmap-introspection-moe.md). For the maintained compression guide, use [expert-compression.md](expert-compression.md).
+
 ## Problem Statement
 
 `moe.py` is a 3,288-line monolith containing 8 distinct concerns:

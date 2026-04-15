@@ -1,5 +1,7 @@
 # SPEC: chuk-mlx Inference Engine — The Decoupled Attention Architecture
 
+> **Deprecated:** Historical design draft retained for context. For the current knowledge-store architecture, use [SPEC_V7.md](SPEC_V7.md). For current context/prefill implementation details, use [context/README.md](context/README.md) and [context/prefill/vec_inject.md](context/prefill/vec_inject.md).
+
 **Author:** Chris Hay
 **Date:** 2026-03-19
 **Status:** Implementation Spec
