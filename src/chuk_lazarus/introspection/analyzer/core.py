@@ -11,15 +11,23 @@ import asyncio
 import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
+if TYPE_CHECKING:  # pragma: no cover - type-checker only
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
+
+
+def _mx():
+    """Lazy accessor for ``mlx.core``."""
+    import mlx.core as mx  # noqa: PLC0415
+
+    return mx
+
 
 from ..hooks import CaptureConfig, ModelHooks
 from ..logit_lens import LogitLens
 from .config import AnalysisConfig, LayerStrategy, TrackStrategy
-from .loader import _load_model_sync
 from .models import (
     AnalysisResult,
     LayerPredictionResult,
@@ -29,7 +37,6 @@ from .models import (
     TokenEvolutionResult,
     TokenPrediction,
 )
-from .utils import compute_entropy, compute_js_divergence, compute_kl_divergence
 
 
 class ModelAnalyzer:
@@ -110,6 +117,8 @@ class ModelAnalyzer:
             >>> async with ModelAnalyzer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0") as analyzer:
             ...     result = await analyzer.analyze("Hello")
         """
+        from .loader import _load_model_sync  # noqa: PLC0415
+
         # Load model in thread pool to not block
         loop = asyncio.get_event_loop()
         model, tokenizer, config = await loop.run_in_executor(
@@ -232,6 +241,13 @@ class ModelAnalyzer:
         config: AnalysisConfig,
     ) -> AnalysisResult:
         """Synchronous analysis implementation."""
+        from .utils import (  # noqa: PLC0415
+            compute_entropy,
+            compute_js_divergence,
+            compute_kl_divergence,
+        )
+
+        mx = _mx()
         # Tokenize
         input_ids = mx.array(self._tokenizer.encode(prompt))[None, :]
         tokens = [self._tokenizer.decode([tid]) for tid in input_ids[0].tolist()]
@@ -379,6 +395,7 @@ class ModelAnalyzer:
         captured_layers: list[int],
     ) -> list[ResidualContribution]:
         """Compute residual stream decomposition using hidden state differences."""
+        mx = _mx()
         contributions = []
 
         # Get embeddings as the "layer -1" state
@@ -494,6 +511,7 @@ class ModelAnalyzer:
         top_k: int,
     ) -> list[TokenPrediction]:
         """Get top-k predictions from logits."""
+        mx = _mx()
         probs = mx.softmax(logits)
         top_idx = mx.argsort(probs)[::-1][:top_k].tolist()
         predictions = []

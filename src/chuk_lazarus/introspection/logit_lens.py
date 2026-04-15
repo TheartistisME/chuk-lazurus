@@ -26,11 +26,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
+if TYPE_CHECKING:  # pragma: no cover - type-checker only
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
 
-if TYPE_CHECKING:
     from .hooks import ModelHooks
+
+
+def _mx():
+    """Lazy accessor for ``mlx.core``."""
+    import mlx.core as mx  # noqa: PLC0415
+
+    return mx
 
 
 @dataclass
@@ -168,6 +175,7 @@ class LogitLens:
         Returns:
             List of LayerPrediction for each captured layer
         """
+        mx = _mx()
         predictions = []
 
         for layer_idx in sorted(self.hooks.state.hidden_states.keys()):
@@ -266,6 +274,7 @@ class LogitLens:
             token_id = token
             token_str = self.tokenizer.decode([token_id]) if self.tokenizer else f"[{token_id}]"
 
+        mx = _mx()
         layers = []
         probabilities = []
         ranks = []
@@ -432,6 +441,7 @@ def run_logit_lens(
     """
     from .hooks import CaptureConfig, ModelHooks
 
+    mx = _mx()
     # Tokenize
     input_ids = mx.array(tokenizer.encode(prompt))[None, :]
 
@@ -553,6 +563,7 @@ class LogitLensService:
         from ..models_v2.loader import load_model
         from .hooks import CaptureConfig, ModelHooks
 
+        mx = _mx()
         # Load model
         loaded = load_model(config.model)
         model = loaded.model

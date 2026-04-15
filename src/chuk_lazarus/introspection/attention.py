@@ -23,11 +23,18 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
+if TYPE_CHECKING:  # pragma: no cover - type-checker only
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
 
-if TYPE_CHECKING:
     from .hooks import CapturedState
+
+
+def _mx():
+    """Lazy accessor for ``mlx.core``."""
+    import mlx.core as mx  # noqa: PLC0415
+
+    return mx
 
 
 class AggregationStrategy(str, Enum):
@@ -145,6 +152,7 @@ class AttentionPattern:
         Returns:
             Aggregated attention of shape [batch, query_seq, key_seq]
         """
+        mx = _mx()
         if strategy == AggregationStrategy.MEAN:
             return mx.mean(self.weights, axis=1)
         elif strategy == AggregationStrategy.MAX:
@@ -344,6 +352,7 @@ class AttentionAnalyzer:
         if pattern is None:
             return None
 
+        mx = _mx()
         weights = pattern.aggregate(aggregation)[0]  # [seq, seq]
 
         # Compute entropy: -sum(p * log(p))

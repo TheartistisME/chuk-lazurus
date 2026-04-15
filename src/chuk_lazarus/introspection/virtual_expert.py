@@ -28,30 +28,91 @@ CLI Usage:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.nn as nn
 from pydantic import BaseModel, ConfigDict, Field
 
-# Re-export core classes from inference
-from chuk_lazarus.inference.virtual_expert import (
-    InferenceResult,
-    MathExpertPlugin,
-    RoutingDecision,
-    RoutingTrace,
-    SafeMathEvaluator,
-    VirtualDenseWrapper,
-    VirtualExpertAnalysis,
-    VirtualExpertApproach,
-    VirtualExpertPlugin,
-    VirtualExpertRegistry,
-    VirtualExpertResult,
-    VirtualMoEWrapper,
-    VirtualRouter,
-    create_virtual_expert_wrapper,
-    get_default_registry,
-)
-from chuk_lazarus.inference.virtual_experts.cot_rewriter import FewShotCoTRewriter
+if TYPE_CHECKING:  # pragma: no cover - type-checker only
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
+
+    # Re-export core classes from inference (type-only)
+    from chuk_lazarus.inference.virtual_expert import (
+        InferenceResult,
+        MathExpertPlugin,
+        RoutingDecision,
+        RoutingTrace,
+        SafeMathEvaluator,
+        VirtualDenseWrapper,
+        VirtualExpertAnalysis,
+        VirtualExpertApproach,
+        VirtualExpertPlugin,
+        VirtualExpertRegistry,
+        VirtualExpertResult,
+        VirtualMoEWrapper,
+        VirtualRouter,
+        create_virtual_expert_wrapper,
+        get_default_registry,
+    )
+    from chuk_lazarus.inference.virtual_experts.cot_rewriter import FewShotCoTRewriter
+
+
+_REEXPORT_NAMES = {
+    "InferenceResult": ("chuk_lazarus.inference.virtual_expert", "InferenceResult"),
+    "MathExpertPlugin": ("chuk_lazarus.inference.virtual_expert", "MathExpertPlugin"),
+    "RoutingDecision": ("chuk_lazarus.inference.virtual_expert", "RoutingDecision"),
+    "RoutingTrace": ("chuk_lazarus.inference.virtual_expert", "RoutingTrace"),
+    "SafeMathEvaluator": ("chuk_lazarus.inference.virtual_expert", "SafeMathEvaluator"),
+    "VirtualDenseWrapper": ("chuk_lazarus.inference.virtual_expert", "VirtualDenseWrapper"),
+    "VirtualExpertAnalysis": ("chuk_lazarus.inference.virtual_expert", "VirtualExpertAnalysis"),
+    "VirtualExpertApproach": ("chuk_lazarus.inference.virtual_expert", "VirtualExpertApproach"),
+    "VirtualExpertPlugin": ("chuk_lazarus.inference.virtual_expert", "VirtualExpertPlugin"),
+    "VirtualExpertRegistry": ("chuk_lazarus.inference.virtual_expert", "VirtualExpertRegistry"),
+    "VirtualExpertResult": ("chuk_lazarus.inference.virtual_expert", "VirtualExpertResult"),
+    "VirtualMoEWrapper": ("chuk_lazarus.inference.virtual_expert", "VirtualMoEWrapper"),
+    "VirtualRouter": ("chuk_lazarus.inference.virtual_expert", "VirtualRouter"),
+    "create_virtual_expert_wrapper": (
+        "chuk_lazarus.inference.virtual_expert",
+        "create_virtual_expert_wrapper",
+    ),
+    "get_default_registry": (
+        "chuk_lazarus.inference.virtual_expert",
+        "get_default_registry",
+    ),
+    "FewShotCoTRewriter": (
+        "chuk_lazarus.inference.virtual_experts.cot_rewriter",
+        "FewShotCoTRewriter",
+    ),
+}
+
+# Legacy compatibility aliases also resolve lazily via __getattr__
+_LEGACY_ALIASES = {
+    "ExpertHijacker": "VirtualMoEWrapper",
+    "VirtualExpertSlot": "VirtualMoEWrapper",
+    "HybridEmbeddingInjector": "VirtualMoEWrapper",
+}
+
+
+def __getattr__(name: str):
+    """PEP 562 lazy resolver for re-exported inference classes.
+
+    Defers heavy ``mlx``-backed imports until the caller actually touches one
+    of the re-exports.
+    """
+    if name in _REEXPORT_NAMES:
+        import importlib  # noqa: PLC0415
+
+        mod_path, attr = _REEXPORT_NAMES[name]
+        mod = importlib.import_module(mod_path)
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    if name in _LEGACY_ALIASES:
+        target = _LEGACY_ALIASES[name]
+        value = __getattr__(target)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class VirtualExpertAction(str, Enum):
@@ -73,10 +134,9 @@ class VirtualExpertAction(str, Enum):
     """Run interactive session with virtual expert."""
 
 
-# Legacy compatibility aliases
-ExpertHijacker = VirtualMoEWrapper
-VirtualExpertSlot = VirtualMoEWrapper
-HybridEmbeddingInjector = VirtualMoEWrapper
+# Legacy compatibility aliases (ExpertHijacker, VirtualExpertSlot,
+# HybridEmbeddingInjector) are resolved lazily via ``__getattr__`` above —
+# keeping them as module attributes would force eager mlx import.
 
 
 def demo_virtual_expert(
@@ -110,6 +170,8 @@ def demo_virtual_expert(
             "456 * 78 = ",
             "999 * 888 = ",
         ]
+
+    from chuk_lazarus.inference.virtual_expert import VirtualMoEWrapper  # noqa: PLC0415
 
     print("\n" + "=" * 70)
     print("VIRTUAL EXPERT DEMO")
@@ -186,6 +248,8 @@ def create_virtual_expert(
     Note: The 'approach' parameter is ignored - all approaches now use
     the unified VirtualMoEWrapper with plugins.
     """
+    from chuk_lazarus.inference.virtual_expert import VirtualMoEWrapper  # noqa: PLC0415
+
     return VirtualMoEWrapper(model, tokenizer, model_id, **kwargs)
 
 
@@ -277,6 +341,14 @@ class VirtualExpertService:
                                    Use this for models that are NOT CoT-trained.
                                    Default is False (assumes CoT-trained model).
         """
+        from chuk_lazarus.inference.virtual_expert import (  # noqa: PLC0415
+            VirtualDenseWrapper,
+            VirtualMoEWrapper,
+        )
+        from chuk_lazarus.inference.virtual_experts.cot_rewriter import (  # noqa: PLC0415
+            FewShotCoTRewriter,
+        )
+
         # Check if model has MoE layers
         has_moe = False
         if hasattr(model, "model") and hasattr(model.model, "layers"):
@@ -489,9 +561,11 @@ class VirtualExpertService:
         Returns:
             VirtualExpertServiceResult with comparison.
         """
-        from mlx_lm import generate, load
+        from mlx_lm import generate, load  # noqa: PLC0415
 
-        from ..models_v2 import load_model
+        from chuk_lazarus.inference.virtual_expert import VirtualMoEWrapper  # noqa: PLC0415
+
+        from ..models_v2 import load_model  # noqa: PLC0415
 
         if not config.prompt:
             raise ValueError("Prompt required for compare action")

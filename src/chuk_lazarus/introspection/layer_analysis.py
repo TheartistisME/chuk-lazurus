@@ -30,10 +30,18 @@ Example:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
+if TYPE_CHECKING:  # pragma: no cover - type-checker only
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
+
+
+def _mx():
+    """Lazy accessor for ``mlx.core``."""
+    import mlx.core as mx  # noqa: PLC0415
+
+    return mx
 
 
 @dataclass
@@ -229,6 +237,7 @@ class LayerAnalyzer:
         """
         from .hooks import CaptureConfig, ModelHooks, PositionSelection
 
+        mx = _mx()
         if layers is None:
             # Default: analyze key layers
             n = self.num_layers
@@ -307,6 +316,7 @@ class LayerAnalyzer:
         """
         from .hooks import CaptureConfig, ModelHooks, PositionSelection
 
+        mx = _mx()
         if layers is None:
             n = self.num_layers
             layers = [n // 4, n // 2]  # Default to quarter and half
@@ -351,6 +361,7 @@ class LayerAnalyzer:
         representations: dict[str, mx.array],
     ) -> list[list[float]]:
         """Compute cosine similarity between all prompt pairs."""
+        mx = _mx()
         n = len(prompts)
         matrix = [[0.0] * n for _ in range(n)]
 
@@ -504,6 +515,7 @@ class LayerAnalyzer:
             print(f"Attention from position {focus_idx} ({tokens[focus_idx]!r}):")
 
             # Average attention across heads
+            mx = _mx()
             attn = result.attention_weights[:, focus_idx, :]  # [heads, seq_len]
             avg_attn = mx.mean(attn, axis=0)  # [seq_len]
 
