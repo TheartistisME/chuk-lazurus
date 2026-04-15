@@ -22,21 +22,222 @@ Usage:
     trainer.train(dataset)
 """
 
-import logging
-from collections.abc import Callable, Iterator
-from pathlib import Path
-from typing import Any
+from __future__ import annotations
 
-import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as optim
+import json
+import logging
+import os
+from collections.abc import Callable, Iterator
+from contextlib import nullcontext
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
 from pydantic import BaseModel, Field
 
-from ...data import SFTDataset
+from .._lazy_mlx import mx, nn, optim
 from ..base_trainer import BaseTrainer, BaseTrainerConfig
 from ..losses.sft_loss import sft_loss
 
+if TYPE_CHECKING:  # pragma: no cover
+    import mlx.core  # noqa: F401
+    import mlx.nn  # noqa: F401
+    import mlx.optimizers  # noqa: F401
+
+    from ...data import SFTDataset
+
 logger = logging.getLogger(__name__)
+
+
+def _is_torch_model(model: Any) -> bool:
+    try:
+        import torch
+    except ImportError:
+        return False
+
+    return isinstance(model, torch.nn.Module)
+
+
+def _backend_name(model: Any | None = None) -> str:
+    backend = os.environ.get("CHUK_BACKEND", "").lower()
+    if backend in {"mlx", "torch"}:
+        return backend
+    return "torch" if model is not None and _is_torch_model(model) else "mlx"
+
+
+def _resolve_torch_device(model: Any) -> Any:
+    import torch
+
+    raw = os.environ.get("CHUK_DEVICE")
+    if raw:
+        if raw.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(
+                f"CHUK_DEVICE={raw!r} requested CUDA but torch.cuda.is_available() is False."
+            )
+        return torch.device(raw)
+
+    if _is_torch_model(model):
+        try:
+            return next(model.parameters()).device
+        except StopIteration:
+            pass
+
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _torch_autocast(model: Any):
+    import torch
+
+    device = _resolve_torch_device(model)
+    if device.type != "cuda":
+        return nullcontext()
+    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    return torch.autocast(device_type="cuda", dtype=amp_dtype)
+
+
+def _move_batch_to_torch(batch: dict[str, Any], device: Any) -> dict[str, Any]:
+    import torch
+
+    moved: dict[str, Any] = {}
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor):
+            moved[key] = value.to(device)
+        elif hasattr(value, "tolist"):
+            moved[key] = torch.as_tensor(value.tolist(), device=device)
+        else:
+            moved[key] = value
+    return moved
+
+
+def _metric_to_float(value: Any) -> float:
+    try:
+        import torch
+
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 1:
+                return float(value.detach().cpu().item())
+            return float(value.detach().float().mean().cpu().item())
+    except ImportError:
+        pass
+
+    return float(value)
+
+
+def _detach_metrics(metrics: dict[str, Any]) -> dict[str, float]:
+    return {key: _metric_to_float(value) for key, value in metrics.items()}
+
+
+def _save_torch_state(model: Any, path: Path) -> None:
+    from safetensors.torch import save_file
+
+    state = {
+        key: value.detach().cpu().contiguous()
+        for key, value in model.state_dict().items()
+    }
+    save_file(state, str(path))
+
+
+def _load_torch_state(model: Any, path: str) -> None:
+    from safetensors.torch import load_file
+
+    state = load_file(path)
+    model.load_state_dict(state)
+
+
+def _encode_text(tokenizer: Any, text: str) -> list[int]:
+    try:
+        return list(tokenizer.encode(text, add_special_tokens=False))
+    except TypeError:
+        return list(tokenizer.encode(text))
+
+
+class _TorchSFTDataset:
+    def __init__(self, data_path: Path, tokenizer: Any, max_length: int, mask_prompt: bool):
+        self.data_path = Path(data_path)
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.mask_prompt = mask_prompt
+        self.samples = self._load_samples()
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _load_samples(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        with self.data_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if "messages" in item:
+                    prompt_parts = []
+                    response = ""
+                    for msg in item["messages"]:
+                        role = msg.get("role")
+                        content = msg.get("content", "")
+                        if role in {"user", "system"}:
+                            prompt_parts.append(content)
+                        elif role == "assistant":
+                            response = content
+                    prompt = "\n".join(prompt_parts).strip()
+                else:
+                    prompt = str(item.get("prompt", item.get("input", ""))).strip()
+                    response = str(
+                        item.get("response", item.get("output", item.get("completion", "")))
+                    ).strip()
+                rows.append({"prompt": prompt, "response": response})
+        return rows
+
+    def _tokenize(self, sample: dict[str, Any]) -> dict[str, Any]:
+        prompt_tokens = _encode_text(self.tokenizer, sample["prompt"])
+        full_tokens = _encode_text(self.tokenizer, sample["prompt"] + sample["response"])
+        if len(full_tokens) > self.max_length:
+            full_tokens = full_tokens[: self.max_length]
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", 0) or 0
+        labels = full_tokens[1:] + [eos_token_id]
+        if self.mask_prompt:
+            prompt_len = min(len(prompt_tokens), len(labels))
+            loss_mask = [0.0] * prompt_len + [1.0] * (len(labels) - prompt_len)
+        else:
+            loss_mask = [1.0] * len(labels)
+        return {
+            "input_ids": full_tokens,
+            "labels": labels,
+            "loss_mask": loss_mask,
+        }
+
+    def iter_batches(
+        self, batch_size: int, shuffle: bool = True, pad_token_id: int = 0
+    ) -> Iterator[dict[str, Any]]:
+        import random
+        import torch
+
+        indices = list(range(len(self.samples)))
+        if shuffle:
+            random.shuffle(indices)
+
+        for start in range(0, len(indices), batch_size):
+            batch_indices = indices[start : start + batch_size]
+            items = [self._tokenize(self.samples[idx]) for idx in batch_indices]
+            max_len = max(len(item["input_ids"]) for item in items)
+
+            input_ids = []
+            labels = []
+            loss_mask = []
+            attention_mask = []
+            for item in items:
+                seq_len = len(item["input_ids"])
+                pad_len = max_len - seq_len
+                input_ids.append(item["input_ids"] + [pad_token_id] * pad_len)
+                labels.append(item["labels"] + [pad_token_id] * pad_len)
+                loss_mask.append(item["loss_mask"] + [0.0] * pad_len)
+                attention_mask.append([1.0] * seq_len + [0.0] * pad_len)
+
+            yield {
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "labels": torch.tensor(labels, dtype=torch.long),
+                "loss_mask": torch.tensor(loss_mask, dtype=torch.float32),
+                "attention_mask": torch.tensor(attention_mask, dtype=torch.float32),
+            }
 
 
 class SFTTrainingConfig(BaseModel):
@@ -136,6 +337,8 @@ class SFTTrainer(BaseTrainer):
         config: SFTConfig = None,
         optimizer: optim.Optimizer = None,
     ):
+        if optimizer is None and _is_torch_model(model):
+            os.environ.setdefault("CHUK_BACKEND", "torch")
         config = config or SFTConfig()
         super().__init__(model, tokenizer, config, optimizer)
 
@@ -155,12 +358,25 @@ class SFTTrainer(BaseTrainer):
         Returns:
             SFTTrainingResult with training outcomes
         """
-        from ...models_v2 import (
-            LoRAConfig,
-            load_model,
-            load_model_with_lora,
-            save_adapter,
-        )
+        backend = _backend_name()
+        if backend == "torch" and config.use_lora:
+            raise RuntimeError(
+                "SFTTrainer.run with CHUK_BACKEND=torch and use_lora=True is still blocked "
+                "by the MLX-only models_v2 LoRA stack outside EWS-10."
+            )
+        try:
+            from ...models_v2 import (
+                LoRAConfig,
+                load_model,
+                load_model_with_lora,
+                save_adapter,
+            )
+        except Exception as exc:  # pragma: no cover - exercised via backend smoke only
+            raise RuntimeError(
+                "SFTTrainer.run low-level torch training is ready, but high-level model "
+                "loading is still blocked by out-of-scope models_v2 eager MLX imports "
+                "(notably models_v2/__init__.py, models/base.py, and loader.py)."
+            ) from exc
 
         # Create output directory
         output_dir = Path(config.output_dir)
@@ -193,22 +409,40 @@ class SFTTrainer(BaseTrainer):
 
         # Load datasets
         logger.info(f"Loading dataset: {config.data_path}")
-        train_dataset = SFTDataset(
-            str(config.data_path),
-            tokenizer,
-            max_length=config.max_length,
-            mask_prompt=config.mask_prompt,
-        )
-        logger.info(f"  Loaded {len(train_dataset)} training samples")
-
-        eval_dataset = None
-        if config.eval_data_path:
-            eval_dataset = SFTDataset(
-                str(config.eval_data_path),
+        if backend == "torch":
+            train_dataset = _TorchSFTDataset(
+                config.data_path,
                 tokenizer,
                 max_length=config.max_length,
                 mask_prompt=config.mask_prompt,
             )
+        else:
+            from ...data import SFTDataset
+
+            train_dataset = SFTDataset(
+                str(config.data_path),
+                tokenizer,
+                max_length=config.max_length,
+                mask_prompt=config.mask_prompt,
+            )
+        logger.info(f"  Loaded {len(train_dataset)} training samples")
+
+        eval_dataset = None
+        if config.eval_data_path:
+            if backend == "torch":
+                eval_dataset = _TorchSFTDataset(
+                    config.eval_data_path,
+                    tokenizer,
+                    max_length=config.max_length,
+                    mask_prompt=config.mask_prompt,
+                )
+            else:
+                eval_dataset = SFTDataset(
+                    str(config.eval_data_path),
+                    tokenizer,
+                    max_length=config.max_length,
+                    mask_prompt=config.mask_prompt,
+                )
             logger.info(f"  Loaded {len(eval_dataset)} eval samples")
 
         # Create trainer config
@@ -297,16 +531,103 @@ class SFTTrainer(BaseTrainer):
             callback: Optional callback after each log interval
         """
         logger.info(f"Starting SFT training with {len(train_dataset)} samples")
-        super().train(
-            dataset=train_dataset,
-            num_epochs=self.sft_config.num_epochs,
-            eval_dataset=eval_dataset,
-            callback=callback,
-        )
+        if _backend_name(self.model) != "torch":
+            super().train(
+                dataset=train_dataset,
+                num_epochs=self.sft_config.num_epochs,
+                eval_dataset=eval_dataset,
+                callback=callback,
+            )
+            return
+
+        import torch
+
+        device = _resolve_torch_device(self.model)
+        self.model.to(device)
+        self._start_time = __import__("time").time()
+
+        for epoch in range(self.sft_config.num_epochs):
+            self.current_epoch = epoch
+            self.model.train()
+            epoch_metrics = self._create_epoch_metrics()
+            avg_metrics: dict[str, float] = {}
+
+            for batch in self.get_train_batches(train_dataset):
+                self.global_step += 1
+                batch = _move_batch_to_torch(batch, device)
+
+                self.optimizer.zero_grad(set_to_none=True)
+                with _torch_autocast(self.model):
+                    loss, metrics = self.compute_loss(batch)
+                loss.backward()
+
+                if self.config.max_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.config.max_grad_norm
+                    )
+                self.optimizer.step()
+
+                metric_values = _detach_metrics(metrics)
+                self._accumulate_metrics(epoch_metrics, metric_values)
+
+                if self.global_step % self.config.log_interval == 0:
+                    avg_metrics = self._compute_avg_metrics(epoch_metrics)
+                    self._log_metrics(avg_metrics)
+                    if callback:
+                        callback(avg_metrics)
+
+                if eval_dataset and hasattr(self.config, "eval_interval"):
+                    if self.global_step % self.config.eval_interval == 0:
+                        eval_metrics = self.evaluate(eval_dataset)
+                        self._log_eval_metrics(eval_metrics)
+
+                if self.global_step % self.config.checkpoint_interval == 0:
+                    if avg_metrics:
+                        self._save_checkpoint_if_best(avg_metrics)
+                    self.save_checkpoint(f"step_{self.global_step}")
+
+                if self.config.max_steps and self.global_step >= self.config.max_steps:
+                    logger.info(f"Reached max steps ({self.config.max_steps})")
+                    break
+
+                if avg_metrics and self._should_stop_early(avg_metrics):
+                    break
+
+            if self.config.max_steps and self.global_step >= self.config.max_steps:
+                break
+
+        self.save_checkpoint("final")
+        logger.info(f"Training complete. Total steps: {self.global_step}")
 
     def evaluate(self, dataset: SFTDataset) -> dict[str, float]:
         """Evaluate on a dataset."""
         all_metrics = {"loss": [], "perplexity": [], "num_tokens": []}
+
+        if _backend_name(self.model) == "torch":
+            import torch
+
+            device = _resolve_torch_device(self.model)
+            self.model.to(device)
+            self.model.eval()
+            with torch.no_grad():
+                for batch in dataset.iter_batches(
+                    batch_size=self.sft_config.batch_size,
+                    shuffle=False,
+                    pad_token_id=self.pad_token_id,
+                ):
+                    batch = _move_batch_to_torch(batch, device)
+                    output = self.model(batch["input_ids"])
+                    logits = output[0] if isinstance(output, tuple) else output
+                    loss, metrics = sft_loss(
+                        logits=logits,
+                        labels=batch["labels"],
+                        loss_mask=batch["loss_mask"],
+                    )
+                    metric_values = _detach_metrics(metrics)
+                    for key in all_metrics:
+                        if key in metric_values:
+                            all_metrics[key].append(metric_values[key])
+            return {k: sum(v) / len(v) if v else 0.0 for k, v in all_metrics.items()}
 
         for batch in dataset.iter_batches(
             batch_size=self.sft_config.batch_size,
@@ -368,3 +689,21 @@ class SFTTrainer(BaseTrainer):
                 logger.info(f"Reached target loss: {metrics['loss']:.4f}")
                 return True
         return False
+
+    def save_checkpoint(self, name: str):
+        if _backend_name(self.model) != "torch":
+            return super().save_checkpoint(name)
+
+        checkpoint_dir = Path(self.config.checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        weights_path = checkpoint_dir / f"{name}.safetensors"
+        _save_torch_state(self.model, weights_path)
+        logger.info(f"Saved checkpoint: {weights_path}")
+
+    def load_checkpoint(self, path: str):
+        if _backend_name(self.model) != "torch":
+            return super().load_checkpoint(path)
+
+        _load_torch_state(self.model, path)
+        self.model.to(_resolve_torch_device(self.model))
+        logger.info(f"Loaded checkpoint: {path}")

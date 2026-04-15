@@ -18,23 +18,60 @@ Usage:
     trainer.train(dataset)
 """
 
+from __future__ import annotations
+
 import json
 import logging
+import os
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
-import mlx.optimizers as optim
 from pydantic import Field
 
-from ...models_v2.adapters.lora import LoRAConfig, apply_lora, count_lora_parameters
+from .._lazy_mlx import mx, nn, optim
 from ..base_trainer import BaseTrainer, BaseTrainerConfig
 from ..losses.dual_reward_loss import DualRewardLossConfig, dual_reward_loss
 
+if TYPE_CHECKING:  # pragma: no cover
+    import mlx.core  # noqa: F401
+    import mlx.nn  # noqa: F401
+    import mlx.optimizers  # noqa: F401
+
+    from ...models_v2.adapters.lora import (
+        LoRAConfig,
+        apply_lora,
+        count_lora_parameters,
+    )
+
+
+def _import_lora():
+    from ...models_v2.adapters.lora import (
+        LoRAConfig,
+        apply_lora,
+        count_lora_parameters,
+    )
+
+    return LoRAConfig, apply_lora, count_lora_parameters
+
 logger = logging.getLogger(__name__)
+
+
+def _is_torch_model(model: Any) -> bool:
+    try:
+        import torch
+    except ImportError:
+        return False
+
+    return isinstance(model, torch.nn.Module)
+
+
+def _backend_name(model: Any | None = None) -> str:
+    backend = os.environ.get("CHUK_BACKEND", "").lower()
+    if backend in {"mlx", "torch"}:
+        return backend
+    return "torch" if model is not None and _is_torch_model(model) else "mlx"
 
 
 class DualRewardTrainerConfig(BaseTrainerConfig):
@@ -90,6 +127,11 @@ class DualRewardTrainer(BaseTrainer):
         config: DualRewardTrainerConfig,
         model_config: Any = None,
     ):
+        if _backend_name(model) == "torch":
+            raise RuntimeError(
+                "DualRewardTrainer on CHUK_BACKEND=torch is still blocked by the "
+                "MLX-only models_v2.adapters.lora implementation outside EWS-10."
+            )
         # Don't call super().__init__ yet - we need to set up LoRA first
         self.model = model
         self.tokenizer = tokenizer
@@ -116,6 +158,7 @@ class DualRewardTrainer(BaseTrainer):
         logger.info(f"Classifier tokens: {self.classifier_token_ids}")
 
         # Set up LoRA using centralized apply_lora
+        LoRAConfig, apply_lora, count_lora_parameters = _import_lora()
         self.lora_config = LoRAConfig(
             rank=config.lora_rank,
             alpha=config.lora_rank * 2.0,  # Standard scaling: alpha = 2 * rank

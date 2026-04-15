@@ -16,6 +16,7 @@ The reward function is provided via a user-defined Python script with:
 from __future__ import annotations
 
 import logging
+import os
 from argparse import Namespace
 
 from ._types import GRPOConfig, TrainMode, TrainResult
@@ -34,7 +35,14 @@ async def train_grpo_cmd(args: Namespace) -> None:
     Args:
         args: Parsed command-line arguments
     """
-    from ....training.trainers.grpo_trainer import GRPOTrainer, GRPOTrainerConfig
+    backend = getattr(args, "backend", None)
+    if backend:
+        os.environ["CHUK_BACKEND"] = backend
+    device = getattr(args, "device", None)
+    if device:
+        os.environ["CHUK_DEVICE"] = device
+
+    from ....training.trainers.grpo_trainer import GRPOTrainer, GRPOTrainingConfig
 
     # Convert CLI args to config
     config = GRPOConfig.from_args(args)
@@ -44,7 +52,7 @@ async def train_grpo_cmd(args: Namespace) -> None:
         raise ValueError("--reward-script is required for GRPO training")
 
     # Create trainer config from CLI config
-    trainer_config = GRPOTrainerConfig(
+    trainer_config = GRPOTrainingConfig(
         model=config.model,
         ref_model=config.reference_model,
         reward_script=config.reward_script,
@@ -61,7 +69,7 @@ async def train_grpo_cmd(args: Namespace) -> None:
     )
 
     # Run training - all logic is in the trainer
-    result = await GRPOTrainer.run(trainer_config)
+    result = GRPOTrainer.run(trainer_config)
 
     # Format output for CLI
     cli_result = TrainResult(
