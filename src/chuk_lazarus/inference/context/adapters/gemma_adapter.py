@@ -10,13 +10,21 @@ Gemma-specific details handled here:
 - per-head q_norm / k_norm before RoPE
 - sqrt(hidden_size) embedding scale
 - sliding-window attention with is_global_layer() config method
+
+Top-level ``mlx`` imports are intentionally absent.  Every method that
+touches ``mlx.core`` imports it lazily inside the function body so that
+``import chuk_lazarus.inference.context.adapters.gemma_adapter`` succeeds
+under ``CHUK_BACKEND=torch`` without pulling ``libmlx.so``.  The adapter
+algebra is unchanged — every call site still runs identical MLX ops
+when MLX is available.
 """
 
 from __future__ import annotations
 
-import mlx.core as mx
+from typing import TYPE_CHECKING, Any
 
-from chuk_lazarus.models_v2.families.gemma.model import clip_residual
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import mlx.core as mx  # noqa: F401
 
 
 class GemmaLayerAdapter:
@@ -24,10 +32,10 @@ class GemmaLayerAdapter:
     Adapts a single GemmaRSBlock to TransformerLayerProtocol.
 
     GemmaRSBlock norms:
-        input_layernorm          → pre_attn_norm
-        post_attention_layernorm → residual_add_attn (applied to delta)
-        pre_feedforward_layernorm→ pre_ffn_norm
-        post_feedforward_layernorm→ residual_add_ffn (applied to delta)
+        input_layernorm          -> pre_attn_norm
+        post_attention_layernorm -> residual_add_attn (applied to delta)
+        pre_feedforward_layernorm-> pre_ffn_norm
+        post_feedforward_layernorm-> residual_add_ffn (applied to delta)
     """
 
     __slots__ = ("_block",)
@@ -37,12 +45,12 @@ class GemmaLayerAdapter:
 
     # --- Attention ---
 
-    def pre_attn_norm(self, h: mx.array) -> mx.array:
+    def pre_attn_norm(self, h: Any) -> Any:
         return self._block.input_layernorm(h)
 
     def project_qkv(
-        self, x: mx.array, B: int, S: int, offset: int
-    ) -> tuple[mx.array, mx.array, mx.array]:
+        self, x: Any, B: int, S: int, offset: int
+    ) -> tuple[Any, Any, Any]:
         attn = self._block.self_attn
         nq = attn.num_heads
         nkv = attn.num_kv_heads
@@ -61,10 +69,10 @@ class GemmaLayerAdapter:
 
     def project_qkv_pre_rope(
         self,
-        x: mx.array,
+        x: Any,
         B: int,
         S: int,
-    ) -> tuple[mx.array, mx.array, mx.array]:
+    ) -> tuple[Any, Any, Any]:
         """Project Q, K, V with norms but WITHOUT RoPE.
 
         Returns pre-RoPE K,V for storage. RoPE is applied at injection time
@@ -81,33 +89,39 @@ class GemmaLayerAdapter:
 
         q = attn.q_norm(q)
         k = attn.k_norm(k)
-        # No RoPE — caller applies it later with desired positions
+        # No RoPE -- caller applies it later with desired positions
         return q, k, v
 
-    def apply_rope(self, x: mx.array, offset: int) -> mx.array:
+    def apply_rope(self, x: Any, offset: int) -> Any:
         """Apply RoPE to pre-RoPE Q or K at the desired position offset."""
         return self._block.self_attn.rope(x, offset=offset)
 
-    def head_output_projection(self, head_out: mx.array, head_idx: int) -> mx.array:
+    def head_output_projection(self, head_out: Any, head_idx: int) -> Any:
+        import mlx.core as mx
+
         o_weight = self._block.self_attn.o_proj.weight  # (D, nq*dh)
         dh = self._block.self_attn.head_dim
         return mx.matmul(head_out, o_weight[:, head_idx * dh : (head_idx + 1) * dh].T)
 
-    def output_project(self, attn_result: mx.array) -> mx.array:
+    def output_project(self, attn_result: Any) -> Any:
         return self._block.self_attn.o_proj(attn_result)
 
-    def residual_add_attn(self, h: mx.array, attn_out: mx.array) -> mx.array:
+    def residual_add_attn(self, h: Any, attn_out: Any) -> Any:
+        from chuk_lazarus.models_v2.families.gemma.model import clip_residual
+
         return clip_residual(h, self._block.post_attention_layernorm(attn_out))
 
     # --- FFN ---
 
-    def pre_ffn_norm(self, h: mx.array) -> mx.array:
+    def pre_ffn_norm(self, h: Any) -> Any:
         return self._block.pre_feedforward_layernorm(h)
 
-    def ffn(self, x: mx.array) -> mx.array:
+    def ffn(self, x: Any) -> Any:
         return self._block.mlp(x)
 
-    def residual_add_ffn(self, h: mx.array, ffn_out: mx.array) -> mx.array:
+    def residual_add_ffn(self, h: Any, ffn_out: Any) -> Any:
+        from chuk_lazarus.models_v2.families.gemma.model import clip_residual
+
         return clip_residual(h, self._block.post_feedforward_layernorm(ffn_out))
 
     # --- Dimensions ---
@@ -137,7 +151,7 @@ class GemmaBackboneAdapter:
     """
     Adapts GemmaForCausalLM or GemmaResidualStreamForCausalLM to ModelBackboneProtocol.
 
-    Handles both model types — GemmaResidualStream has private helpers (_embed,
+    Handles both model types -- GemmaResidualStream has private helpers (_embed,
     _mask_for_layer, _unembed); GemmaModel uses embed_tokens/embedding_scale/
     _create_attention_mask/lm_head instead.
     """
@@ -158,15 +172,17 @@ class GemmaBackboneAdapter:
     def adapted_layers(self) -> list[GemmaLayerAdapter]:
         return self._adapted
 
-    def embed(self, input_ids: mx.array) -> mx.array:
+    def embed(self, input_ids: Any) -> Any:
         if hasattr(self._backbone, "_embed"):
             return self._backbone._embed(input_ids)
         # GemmaModel: embed_tokens + sqrt(hidden_size) scaling
+        import mlx.core as mx
+
         h = self._backbone.embed_tokens(input_ids)
         scale = mx.array(self._backbone.embedding_scale, dtype=mx.bfloat16).astype(h.dtype)
         return h * scale
 
-    def unembed(self, h: mx.array) -> mx.array:
+    def unembed(self, h: Any) -> Any:
         if hasattr(self._model, "_unembed"):
             return self._model._unembed(h)
         # GemmaForCausalLM
@@ -174,10 +190,10 @@ class GemmaBackboneAdapter:
             return self._model.model.embed_tokens.as_linear(h)
         return self._model.lm_head(h)
 
-    def final_norm(self, h: mx.array) -> mx.array:
+    def final_norm(self, h: Any) -> Any:
         return self._backbone.norm(h)
 
-    def prefill_mask(self, layer_idx: int, h: mx.array) -> mx.array | None:
+    def prefill_mask(self, layer_idx: int, h: Any) -> Any | None:
         if hasattr(self._backbone, "_mask_for_layer"):
             return self._backbone._mask_for_layer(layer_idx, h)
         # GemmaModel fallback
@@ -199,7 +215,7 @@ class GemmaBackboneAdapter:
         return self._backbone.config.hidden_size
 
     @property
-    def embed_matrix(self) -> mx.array:
+    def embed_matrix(self) -> Any:
         """Token embedding weight matrix, shape (vocab_size, hidden_size)."""
         return self._backbone.embed_tokens.weight
 

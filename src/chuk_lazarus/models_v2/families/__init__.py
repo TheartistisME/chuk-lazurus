@@ -1,50 +1,31 @@
 """
 Model family implementations.
 
-Each family provides:
-- Configuration class (Pydantic BaseModel)
-- Model implementation (CausalLM)
-- Weight conversion utilities (HF -> our format)
-- Registry integration for auto-detection
-
-Available families:
-- gemma: Gemma 3, FunctionGemma
-- gpt2: GPT-2 and compatible models
-- granite: IBM Granite 3.x/4.x with hybrid Mamba-2/Transformer
-- jamba: Jamba hybrid Mamba-Transformer MoE from AI21 Labs
-- llama: Llama 1/2/3, Mistral, and compatible models
-- llama4: Llama 4 with MoE and multimodal support
-- mamba: Mamba SSM models
-- qwen3: Qwen 2/3 models
-- starcoder2: StarCoder2 code generation models
-
-Usage:
-    from chuk_lazarus.models_v2.families import detect_model_family, get_family_info
-
-    # Auto-detect from config.json
-    family_type = detect_model_family(hf_config)
-    family_info = get_family_info(family_type)
-
-    # Create model
-    config = family_info.config_class.from_hf_config(hf_config)
-    model = family_info.model_class(config)
+Top-level family submodule imports are intentionally absent; every
+submodule and registry re-export is resolved lazily via PEP 562 module
+``__getattr__`` so that importing this package does not pull ``mlx.*``
+under ``CHUK_BACKEND=torch``.
 """
 
-from . import gemma, gpt2, granite, jamba, llama, llama4, mamba, qwen3, starcoder2
-from .registry import (
-    FamilyInfo,
-    IntrospectionHooks,
-    ModelFamilyRegistry,
-    ModelFamilyType,
-    WeightConverter,
-    detect_model_family,
-    get_family_info,
-    get_family_registry,
-    list_model_families,
-)
+from __future__ import annotations
 
-__all__ = [
-    # Families
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from . import gemma, gpt2, granite, jamba, llama, llama4, mamba, qwen3, starcoder2  # noqa: F401
+    from .registry import (  # noqa: F401
+        FamilyInfo,
+        IntrospectionHooks,
+        ModelFamilyRegistry,
+        ModelFamilyType,
+        WeightConverter,
+        detect_model_family,
+        get_family_info,
+        get_family_registry,
+        list_model_families,
+    )
+
+_FAMILIES = (
     "gemma",
     "gpt2",
     "granite",
@@ -54,14 +35,34 @@ __all__ = [
     "mamba",
     "qwen3",
     "starcoder2",
-    # Registry
-    "ModelFamilyType",
-    "ModelFamilyRegistry",
-    "FamilyInfo",
-    "WeightConverter",
-    "IntrospectionHooks",
-    "detect_model_family",
-    "get_family_info",
-    "get_family_registry",
-    "list_model_families",
-]
+)
+
+_REGISTRY: dict[str, tuple[str, str]] = {
+    "ModelFamilyType": (".registry", "ModelFamilyType"),
+    "ModelFamilyRegistry": (".registry", "ModelFamilyRegistry"),
+    "FamilyInfo": (".registry", "FamilyInfo"),
+    "WeightConverter": (".registry", "WeightConverter"),
+    "IntrospectionHooks": (".registry", "IntrospectionHooks"),
+    "detect_model_family": (".registry", "detect_model_family"),
+    "get_family_info": (".registry", "get_family_info"),
+    "get_family_registry": (".registry", "get_family_registry"),
+    "list_model_families": (".registry", "list_model_families"),
+}
+
+__all__ = list(_FAMILIES) + list(_REGISTRY.keys())
+
+
+def __getattr__(name: str):
+    import importlib
+
+    if name in _FAMILIES:
+        mod = importlib.import_module(f".{name}", __name__)
+        globals()[name] = mod
+        return mod
+    if name in _REGISTRY:
+        mod_name, attr = _REGISTRY[name]
+        mod = importlib.import_module(mod_name, __name__)
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

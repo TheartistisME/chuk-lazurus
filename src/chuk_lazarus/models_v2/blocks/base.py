@@ -1,125 +1,124 @@
 """
 Base block abstractions.
 
-Defines the common interface for all block types.
+Top-level ``import mlx.*`` is intentionally absent: this module is listed
+in ``tests/ci/test_no_top_level_mlx.py::BACKEND_IN_SCOPE``. The real
+``mlx.nn.Module``-backed abstractions are built lazily inside
+``_build()`` and surfaced via PEP 562 ``__getattr__``.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
-import mlx.core as mx
-import mlx.nn as nn
+if TYPE_CHECKING:  # pragma: no cover
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
 
-from ..core.enums import BlockType
+__all__ = ["Block", "BlockOutput", "SequenceModule"]
 
-
-@dataclass
-class BlockOutput:
-    """
-    Output from a block forward pass.
-
-    Attributes:
-        hidden_states: Output tensor, shape (batch, seq_len, hidden_size)
-        cache: Optional cache for inference (type depends on block)
-        aux_loss: Optional auxiliary loss (e.g., from MoE load balancing)
-    """
-
-    hidden_states: mx.array
-    cache: Any | None = None
-    aux_loss: mx.array | None = None
+_built: dict[str, type] = {}
 
 
-class Block(nn.Module, ABC):
-    """
-    Abstract base class for all blocks.
+def _build() -> dict[str, type]:
+    if _built:
+        return _built
 
-    A block is a complete layer that can be stacked to form a backbone.
-    It typically combines:
-    - A sequence modeling component (attention, SSM, or RNN)
-    - A feedforward network
-    - Normalization layers
-    - Residual connections
+    from abc import ABC, abstractmethod
+    from dataclasses import dataclass
+    from typing import Any
 
-    All blocks must implement the same interface for composability.
-    """
+    import mlx.core as mx
+    import mlx.nn as nn
 
-    @property
-    @abstractmethod
-    def block_type(self) -> BlockType:
-        """Return the type of this block."""
-        pass
+    from ..core.enums import BlockType
 
-    @property
-    @abstractmethod
-    def hidden_size(self) -> int:
-        """Return the hidden dimension."""
-        pass
-
-    @abstractmethod
-    def __call__(
-        self,
-        x: mx.array,
-        mask: mx.array | None = None,
-        cache: Any | None = None,
-    ) -> BlockOutput:
+    @dataclass
+    class BlockOutput:
         """
-        Forward pass through the block.
-
-        Args:
-            x: Input tensor, shape (batch, seq_len, hidden_size)
-            mask: Optional attention/causal mask
-            cache: Optional cache for inference
-
-        Returns:
-            BlockOutput with hidden states and optional cache/aux_loss
+        Output from a block forward pass.
         """
-        pass
 
-    def init_cache(self, batch_size: int, max_seq_len: int) -> Any:
+        hidden_states: mx.array
+        cache: Any | None = None
+        aux_loss: mx.array | None = None
+
+    class Block(nn.Module, ABC):
         """
-        Initialize cache for inference.
-
-        Default implementation returns None. Override in subclasses
-        that support caching.
-
-        Args:
-            batch_size: Batch size
-            max_seq_len: Maximum sequence length
-
-        Returns:
-            Initial cache state (type depends on block)
+        Abstract base class for all blocks.
         """
-        return None
 
+        @property
+        @abstractmethod
+        def block_type(self) -> BlockType:
+            """Return the type of this block."""
 
-class SequenceModule(nn.Module, ABC):
-    """
-    Abstract base for sequence modeling modules.
+        @property
+        @abstractmethod
+        def hidden_size(self) -> int:
+            """Return the hidden dimension."""
 
-    This is the core component within a block that processes
-    the sequence (attention, SSM, or RNN).
-    """
+        @abstractmethod
+        def __call__(
+            self,
+            x: mx.array,
+            mask: mx.array | None = None,
+            cache: Any | None = None,
+        ) -> "BlockOutput":
+            """Forward pass through the block."""
 
-    @abstractmethod
-    def __call__(
-        self,
-        x: mx.array,
-        mask: mx.array | None = None,
-        cache: Any | None = None,
-    ) -> tuple[mx.array, Any | None]:
+        def init_cache(self, batch_size: int, max_seq_len: int) -> Any:
+            return None
+
+    class SequenceModule(nn.Module, ABC):
         """
-        Process sequence.
-
-        Args:
-            x: Input, shape (batch, seq_len, hidden_size)
-            mask: Optional mask
-            cache: Optional cache
-
-        Returns:
-            - Output tensor
-            - Updated cache (or None)
+        Abstract base for sequence modeling modules.
         """
-        pass
+
+        @abstractmethod
+        def __call__(
+            self,
+            x: mx.array,
+            mask: mx.array | None = None,
+            cache: Any | None = None,
+        ) -> tuple[mx.array, Any | None]:
+            """Process sequence."""
+
+    _built["Block"] = Block
+    _built["BlockOutput"] = BlockOutput
+    _built["SequenceModule"] = SequenceModule
+    return _built
+
+
+def _make_facade(name: str) -> type:
+    """Façade class whose instantiation triggers the real class build."""
+
+    class _Meta(type):
+        def __instancecheck__(cls, instance):
+            return isinstance(instance, _build()[name])
+
+        def __subclasscheck__(cls, subclass):
+            return issubclass(subclass, _build()[name])
+
+        def __getattr__(cls, attr):
+            return getattr(_build()[name], attr)
+
+    class _Facade(metaclass=_Meta):
+        __qualname__ = name
+
+        def __new__(cls, *args, **kwargs):
+            return _build()[name](*args, **kwargs)
+
+    _Facade.__name__ = name
+    return _Facade
+
+
+_facades: dict[str, type] = {}
+
+
+def __getattr__(name: str):
+    if name in ("Block", "BlockOutput", "SequenceModule"):
+        if name not in _facades:
+            _facades[name] = _make_facade(name)
+        return _facades[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

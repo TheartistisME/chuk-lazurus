@@ -1,31 +1,54 @@
 """
 Llama model family.
 
-Supports:
-- Llama 1 (original Meta models)
-- Llama 2 (7B, 13B, 70B)
-- Llama 3 (8B, 70B)
-- Mistral (7B, with sliding window)
-- Mixtral (8x7B MoE)
-- Code Llama
-- And other compatible architectures
-
-This is the reference implementation demonstrating how to use the
-models_v2 composable architecture.
+Top-level ``import mlx.*`` is intentionally absent: re-exports resolved
+via PEP 562 module ``__getattr__``.
 """
 
-from .config import LlamaConfig
-from .convert import LLAMA_WEIGHT_MAP, convert_hf_weights, load_hf_config, load_weights
-from .model import LlamaBlock, LlamaForCausalLM, LlamaModel
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .config import LlamaConfig  # noqa: F401
+    from .convert import (  # noqa: F401
+        LLAMA_WEIGHT_MAP,
+        convert_hf_weights,
+        load_hf_config,
+        load_weights,
+    )
+    from .model import LlamaBlock, LlamaForCausalLM, LlamaModel  # noqa: F401
 
 __all__ = [
     "LlamaConfig",
     "LlamaForCausalLM",
     "LlamaModel",
     "LlamaBlock",
-    # Loading utilities
     "load_hf_config",
     "load_weights",
     "convert_hf_weights",
     "LLAMA_WEIGHT_MAP",
 ]
+
+_LAZY: dict[str, tuple[str, str]] = {
+    "LlamaConfig": (".config", "LlamaConfig"),
+    "LlamaForCausalLM": (".model", "LlamaForCausalLM"),
+    "LlamaModel": (".model", "LlamaModel"),
+    "LlamaBlock": (".model", "LlamaBlock"),
+    "load_hf_config": (".convert", "load_hf_config"),
+    "load_weights": (".convert", "load_weights"),
+    "convert_hf_weights": (".convert", "convert_hf_weights"),
+    "LLAMA_WEIGHT_MAP": (".convert", "LLAMA_WEIGHT_MAP"),
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        import importlib
+
+        mod_name, attr = _LAZY[name]
+        mod = importlib.import_module(mod_name, __name__)
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

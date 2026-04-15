@@ -10,12 +10,23 @@ Llama-specific details handled here:
 - No embedding scale
 - No sliding-window for standard Llama (all layers global)
   SlidingWindowAttention blocks are detected and treated as non-global
+
+Top-level ``mlx`` imports are intentionally absent.  Every method that
+touches ``mlx.core`` / ``mlx.nn`` imports it lazily inside the function
+body so that
+``import chuk_lazarus.inference.context.adapters.llama_adapter`` succeeds
+under ``CHUK_BACKEND=torch`` without pulling ``libmlx.so``.  The adapter
+algebra is unchanged -- every call site still runs identical MLX ops
+when MLX is available.
 """
 
 from __future__ import annotations
 
-import mlx.core as mx
-import mlx.nn as nn
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
 
 
 class LlamaLayerAdapter:
@@ -23,8 +34,8 @@ class LlamaLayerAdapter:
     Adapts a single LlamaBlock to TransformerLayerProtocol.
 
     LlamaBlock norms:
-        input_layernorm          → pre_attn_norm
-        post_attention_layernorm → pre_ffn_norm (applied to full residual, not delta)
+        input_layernorm          -> pre_attn_norm
+        post_attention_layernorm -> pre_ffn_norm (applied to full residual, not delta)
 
     Residual adds are plain addition (no norm applied to the delta).
     """
@@ -36,12 +47,12 @@ class LlamaLayerAdapter:
 
     # --- Attention ---
 
-    def pre_attn_norm(self, h: mx.array) -> mx.array:
+    def pre_attn_norm(self, h: Any) -> Any:
         return self._block.input_layernorm(h)
 
     def project_qkv(
-        self, x: mx.array, B: int, S: int, offset: int
-    ) -> tuple[mx.array, mx.array, mx.array]:
+        self, x: Any, B: int, S: int, offset: int
+    ) -> tuple[Any, Any, Any]:
         attn = self._block.self_attn
         nq = attn.num_heads
         nkv = attn.num_kv_heads
@@ -51,15 +62,15 @@ class LlamaLayerAdapter:
         k = attn.k_proj(x).reshape(B, S, nkv, dh).transpose(0, 2, 1, 3)
         v = attn.v_proj(x).reshape(B, S, nkv, dh).transpose(0, 2, 1, 3)
 
-        # Llama has no q_norm / k_norm — apply RoPE directly
+        # Llama has no q_norm / k_norm -- apply RoPE directly
         if attn.rope is not None:
             q = attn.rope(q, offset=offset)
             k = attn.rope(k, offset=offset)
         return q, k, v
 
     def project_qkv_pre_rope(
-        self, x: mx.array, B: int, S: int
-    ) -> tuple[mx.array, mx.array, mx.array]:
+        self, x: Any, B: int, S: int
+    ) -> tuple[Any, Any, Any]:
         """Project Q, K, V WITHOUT RoPE for position-independent storage.
 
         Llama has no per-head q_norm/k_norm, so this is just the linear
@@ -73,39 +84,41 @@ class LlamaLayerAdapter:
         q = attn.q_proj(x).reshape(B, S, nq, dh).transpose(0, 2, 1, 3)
         k = attn.k_proj(x).reshape(B, S, nkv, dh).transpose(0, 2, 1, 3)
         v = attn.v_proj(x).reshape(B, S, nkv, dh).transpose(0, 2, 1, 3)
-        # No RoPE — caller applies it later with desired positions
+        # No RoPE -- caller applies it later with desired positions
         return q, k, v
 
-    def apply_rope(self, x: mx.array, offset: int) -> mx.array:
+    def apply_rope(self, x: Any, offset: int) -> Any:
         """Apply RoPE to pre-RoPE Q or K at the desired position offset."""
         attn = self._block.self_attn
         if attn.rope is not None:
             return attn.rope(x, offset=offset)
         return x
 
-    def head_output_projection(self, head_out: mx.array, head_idx: int) -> mx.array:
+    def head_output_projection(self, head_out: Any, head_idx: int) -> Any:
+        import mlx.core as mx
+
         o_weight = self._block.self_attn.o_proj.weight  # (D, nq*dh)
         dh = self._block.self_attn.head_dim
         return mx.matmul(head_out, o_weight[:, head_idx * dh : (head_idx + 1) * dh].T)
 
-    def output_project(self, attn_result: mx.array) -> mx.array:
+    def output_project(self, attn_result: Any) -> Any:
         return self._block.self_attn.o_proj(attn_result)
 
-    def residual_add_attn(self, h: mx.array, attn_out: mx.array) -> mx.array:
-        # Plain add — Llama applies no norm to the attention delta
+    def residual_add_attn(self, h: Any, attn_out: Any) -> Any:
+        # Plain add -- Llama applies no norm to the attention delta
         return h + attn_out
 
     # --- FFN ---
 
-    def pre_ffn_norm(self, h: mx.array) -> mx.array:
+    def pre_ffn_norm(self, h: Any) -> Any:
         # Llama's post_attention_layernorm is applied to the full residual before FFN
         return self._block.post_attention_layernorm(h)
 
-    def ffn(self, x: mx.array) -> mx.array:
+    def ffn(self, x: Any) -> Any:
         return self._block.mlp(x)
 
-    def residual_add_ffn(self, h: mx.array, ffn_out: mx.array) -> mx.array:
-        # Plain add — Llama applies no norm to the FFN delta
+    def residual_add_ffn(self, h: Any, ffn_out: Any) -> Any:
+        # Plain add -- Llama applies no norm to the FFN delta
         return h + ffn_out
 
     # --- Dimensions ---
@@ -156,17 +169,19 @@ class LlamaBackboneAdapter:
     def adapted_layers(self) -> list[LlamaLayerAdapter]:
         return self._adapted
 
-    def embed(self, input_ids: mx.array) -> mx.array:
+    def embed(self, input_ids: Any) -> Any:
         # No embedding scale in Llama
         return self._backbone.embed_tokens(input_ids)
 
-    def unembed(self, h: mx.array) -> mx.array:
+    def unembed(self, h: Any) -> Any:
         return self._model.lm_head(h)
 
-    def final_norm(self, h: mx.array) -> mx.array:
+    def final_norm(self, h: Any) -> Any:
         return self._backbone.norm(h)
 
-    def prefill_mask(self, layer_idx: int, h: mx.array) -> mx.array | None:
+    def prefill_mask(self, layer_idx: int, h: Any) -> Any | None:
+        import mlx.nn as nn
+
         _, seq_len, _ = h.shape
         if seq_len <= 1:
             return None
@@ -196,7 +211,7 @@ class LlamaBackboneAdapter:
         return self._model.config.hidden_size
 
     @property
-    def embed_matrix(self) -> mx.array:
+    def embed_matrix(self) -> Any:
         """Token embedding weight matrix, shape (vocab_size, hidden_size)."""
         return self._backbone.embed_tokens.weight
 
