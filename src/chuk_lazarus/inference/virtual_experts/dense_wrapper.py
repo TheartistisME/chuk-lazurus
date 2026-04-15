@@ -21,8 +21,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 
 from .base import (
@@ -36,93 +34,129 @@ from .plugins.math import MathExpertPlugin
 from .registry import VirtualExpertRegistry, get_default_registry
 
 
-class VirtualDenseRouter(nn.Module):
-    """
-    Virtual router for dense (non-MoE) models.
+def _mx():
+    import mlx.core as mx
 
-    Creates routing decisions based on learned directions in activation space,
-    without requiring an actual MoE architecture.
-    """
+    return mx
 
-    def __init__(self, hidden_size: int, num_virtual_experts: int = 1):
-        super().__init__()
 
-        self.hidden_size = hidden_size
-        self.num_virtual_experts = num_virtual_experts
+def _nn():
+    import mlx.nn as nn
 
-        # Learned parameters for each virtual expert
-        self.directions: list[mx.array] = [
-            mx.zeros((hidden_size,)) for _ in range(num_virtual_experts)
-        ]
-        self.scales: list[float] = [1.0] * num_virtual_experts
-        self.biases: list[float] = [0.0] * num_virtual_experts
-        self.thresholds: list[float] = [0.0] * num_virtual_experts
+    return nn
 
-        self._calibrated: list[bool] = [False] * num_virtual_experts
 
-    def calibrate_expert(
-        self,
-        expert_idx: int,
-        positive_activations: list[mx.array],
-        negative_activations: list[mx.array],
-    ) -> None:
-        """Calibrate a virtual expert using positive/negative examples."""
-        if expert_idx >= self.num_virtual_experts:
-            raise ValueError(f"Expert index {expert_idx} >= {self.num_virtual_experts}")
+_VIRTUAL_DENSE_ROUTER_CLS = None
 
-        pos_stack = mx.stack(positive_activations)
-        neg_stack = mx.stack(negative_activations)
 
-        pos_mean = mx.mean(pos_stack, axis=0)
-        neg_mean = mx.mean(neg_stack, axis=0)
+def _build_virtual_dense_router():
+    mx = _mx()
+    nn = _nn()
 
-        direction = pos_mean - neg_mean
-        norm = mx.linalg.norm(direction)
-        direction = direction / (norm + 1e-10)
+    class VirtualDenseRouter(nn.Module):
+        """
+        Virtual router for dense (non-MoE) models.
 
-        mx.eval(direction)
-        self.directions[expert_idx] = direction
+        Creates routing decisions based on learned directions in activation space,
+        without requiring an actual MoE architecture.
+        """
 
-        pos_projs = [float(mx.sum(h * direction)) for h in positive_activations]
-        neg_projs = [float(mx.sum(h * direction)) for h in negative_activations]
+        def __init__(self, hidden_size: int, num_virtual_experts: int = 1):
+            super().__init__()
 
-        self.thresholds[expert_idx] = (np.mean(pos_projs) + np.mean(neg_projs)) / 2
+            self.hidden_size = hidden_size
+            self.num_virtual_experts = num_virtual_experts
 
-        avg_pos_proj = np.mean(pos_projs)
-        threshold = self.thresholds[expert_idx]
-        if abs(avg_pos_proj - threshold) > 0.01:
-            self.scales[expert_idx] = 5.0 / (avg_pos_proj - threshold)
-        else:
-            self.scales[expert_idx] = 1.0
+            # Learned parameters for each virtual expert
+            self.directions: list[mx.array] = [
+                mx.zeros((hidden_size,)) for _ in range(num_virtual_experts)
+            ]
+            self.scales: list[float] = [1.0] * num_virtual_experts
+            self.biases: list[float] = [0.0] * num_virtual_experts
+            self.thresholds: list[float] = [0.0] * num_virtual_experts
 
-        self.biases[expert_idx] = -threshold * self.scales[expert_idx]
-        self._calibrated[expert_idx] = True
+            self._calibrated: list[bool] = [False] * num_virtual_experts
 
-    def get_routing_score(self, x: mx.array, expert_idx: int = 0) -> float:
-        """Get routing score for a virtual expert."""
-        if not self._calibrated[expert_idx]:
-            return 0.0
+        def calibrate_expert(
+            self,
+            expert_idx: int,
+            positive_activations: list[mx.array],
+            negative_activations: list[mx.array],
+        ) -> None:
+            """Calibrate a virtual expert using positive/negative examples."""
+            if expert_idx >= self.num_virtual_experts:
+                raise ValueError(f"Expert index {expert_idx} >= {self.num_virtual_experts}")
 
-        if x.ndim == 3:
-            x = x.reshape(-1, x.shape[-1])
+            pos_stack = mx.stack(positive_activations)
+            neg_stack = mx.stack(negative_activations)
 
-        x_last = x[-1]
-        proj = float(mx.sum(x_last * self.directions[expert_idx]))
+            pos_mean = mx.mean(pos_stack, axis=0)
+            neg_mean = mx.mean(neg_stack, axis=0)
 
-        threshold = self.thresholds[expert_idx]
-        score = (proj - threshold) / (abs(threshold) + 1.0)
-        score = max(0.0, min(1.0, (score + 1) / 2))
+            direction = pos_mean - neg_mean
+            norm = mx.linalg.norm(direction)
+            direction = direction / (norm + 1e-10)
 
-        return score
+            mx.eval(direction)
+            self.directions[expert_idx] = direction
 
-    def should_route_to_expert(
-        self,
-        x: mx.array,
-        expert_idx: int = 0,
-        threshold: float = 0.5,
-    ) -> bool:
-        """Determine if input should route to virtual expert."""
-        return self.get_routing_score(x, expert_idx) > threshold
+            pos_projs = [float(mx.sum(h * direction)) for h in positive_activations]
+            neg_projs = [float(mx.sum(h * direction)) for h in negative_activations]
+
+            self.thresholds[expert_idx] = (np.mean(pos_projs) + np.mean(neg_projs)) / 2
+
+            avg_pos_proj = np.mean(pos_projs)
+            threshold = self.thresholds[expert_idx]
+            if abs(avg_pos_proj - threshold) > 0.01:
+                self.scales[expert_idx] = 5.0 / (avg_pos_proj - threshold)
+            else:
+                self.scales[expert_idx] = 1.0
+
+            self.biases[expert_idx] = -threshold * self.scales[expert_idx]
+            self._calibrated[expert_idx] = True
+
+        def get_routing_score(self, x: mx.array, expert_idx: int = 0) -> float:
+            """Get routing score for a virtual expert."""
+            if not self._calibrated[expert_idx]:
+                return 0.0
+
+            if x.ndim == 3:
+                x = x.reshape(-1, x.shape[-1])
+
+            x_last = x[-1]
+            proj = float(mx.sum(x_last * self.directions[expert_idx]))
+
+            threshold = self.thresholds[expert_idx]
+            score = (proj - threshold) / (abs(threshold) + 1.0)
+            score = max(0.0, min(1.0, (score + 1) / 2))
+
+            return score
+
+        def should_route_to_expert(
+            self,
+            x: mx.array,
+            expert_idx: int = 0,
+            threshold: float = 0.5,
+        ) -> bool:
+            """Determine if input should route to virtual expert."""
+            return self.get_routing_score(x, expert_idx) > threshold
+
+    return VirtualDenseRouter
+
+
+def _get_virtual_dense_router():
+    global _VIRTUAL_DENSE_ROUTER_CLS
+    if _VIRTUAL_DENSE_ROUTER_CLS is None:
+        _VIRTUAL_DENSE_ROUTER_CLS = _build_virtual_dense_router()
+    return _VIRTUAL_DENSE_ROUTER_CLS
+
+
+def __getattr__(name: str):
+    if name == "VirtualDenseRouter":
+        value = _get_virtual_dense_router()
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class VirtualDenseWrapper:
@@ -182,7 +216,8 @@ class VirtualDenseWrapper:
 
         # Create virtual router
         num_plugins = max(1, len(self.registry))
-        self.router = VirtualDenseRouter(self.hidden_size, num_plugins)
+        router_cls = _get_virtual_dense_router()
+        self.router = router_cls(self.hidden_size, num_plugins)
 
         self._calibrated = False
         self._use_cot_calibration = False  # Set True when calibrated with action JSONs
@@ -226,7 +261,8 @@ class VirtualDenseWrapper:
         self.registry.register(plugin)
         # Rebuild router
         num_plugins = len(self.registry)
-        self.router = VirtualDenseRouter(self.hidden_size, num_plugins)
+        router_cls = _get_virtual_dense_router()
+        self.router = router_cls(self.hidden_size, num_plugins)
         self._calibrated = False
 
     def set_cot_rewriter(self, rewriter: CoTRewriter) -> None:
@@ -269,6 +305,8 @@ class VirtualDenseWrapper:
 
     def _get_hidden_state(self, prompt: str) -> mx.array:
         """Get hidden state at target layer for last position."""
+        mx = _mx()
+        nn = _nn()
         input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
 
         h = self._embed(input_ids)
@@ -334,6 +372,7 @@ class VirtualDenseWrapper:
 
     def _generate_direct(self, prompt: str, max_tokens: int = 20) -> str:
         """Generate directly without virtual experts."""
+        mx = _mx()
         input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
         generated = []
 

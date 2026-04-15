@@ -13,7 +13,7 @@ import operator
 import re
 from typing import Any, ClassVar
 
-from chuk_virtual_expert import VirtualExpert
+from .._optional import VirtualExpert
 
 
 class MathExpert(VirtualExpert):

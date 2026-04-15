@@ -7,15 +7,16 @@ A global default registry is provided with the math plugin pre-registered.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-
-# Import VirtualExpert (aliased as VirtualExpertPlugin for backwards compat)
-from chuk_virtual_expert import VirtualExpert
+from ._optional import VirtualExpert
 
 if TYPE_CHECKING:
-    pass
+    import mlx.core as mx
+
+    Activation = mx.array
+else:
+    Activation = Any
 
 
 class VirtualExpertRegistry:
@@ -39,7 +40,7 @@ class VirtualExpertRegistry:
 
     def __init__(self):
         self._plugins: dict[str, VirtualExpert] = {}
-        self._calibration_data: dict[str, tuple[list[mx.array], list[mx.array]]] = {}
+        self._calibration_data: dict[str, tuple[list[Activation], list[Activation]]] = {}
 
     def register(self, plugin: VirtualExpert) -> None:
         """
@@ -97,8 +98,8 @@ class VirtualExpertRegistry:
     def set_calibration_data(
         self,
         name: str,
-        positive: list[mx.array],
-        negative: list[mx.array],
+        positive: list[Activation],
+        negative: list[Activation],
     ) -> None:
         """
         Store calibration data for an expert.
@@ -113,7 +114,7 @@ class VirtualExpertRegistry:
     def get_calibration_data(
         self,
         name: str,
-    ) -> tuple[list[mx.array], list[mx.array]] | None:
+    ) -> tuple[list[Activation], list[Activation]] | None:
         """Get stored calibration data for an expert."""
         return self._calibration_data.get(name)
 

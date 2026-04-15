@@ -22,8 +22,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-# Import VirtualExpertAction from chuk-virtual-expert
-from chuk_virtual_expert import VirtualExpertAction
+from ._optional import VirtualExpertAction
 
 if TYPE_CHECKING:
     pass

@@ -10,10 +10,7 @@ import asyncio
 import re
 from typing import Any
 
-import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
-from chuk_virtual_expert import VirtualExpertAction
 
 from .base import (
     InferenceResult,
@@ -22,9 +19,22 @@ from .base import (
     VirtualExpertApproach,
     VirtualExpertPlugin,
 )
+from .cot_rewriter import VirtualExpertAction
 from .plugins.math import MathExpertPlugin
 from .registry import VirtualExpertRegistry, get_default_registry
-from .router import VirtualRouter
+from . import router as router_module
+
+
+def _mx():
+    import mlx.core as mx
+
+    return mx
+
+
+def _nn():
+    import mlx.nn as nn
+
+    return nn
 
 
 class VirtualMoEWrapper:
@@ -84,8 +94,8 @@ class VirtualMoEWrapper:
         self.target_layers = target_layers
 
         # Create virtual routers
-        self.virtual_routers: dict[int, VirtualRouter] = {}
-        self.original_moe_layers: dict[int, nn.Module] = {}
+        self.virtual_routers: dict[int, Any] = {}
+        self.original_moe_layers: dict[int, Any] = {}
 
         self._setup_virtual_layers()
         self._calibrated = False
@@ -122,6 +132,7 @@ class VirtualMoEWrapper:
     def _setup_virtual_layers(self):
         """Set up virtual routers for target layers."""
         num_plugins = len(self.registry)
+        virtual_router_cls = router_module.VirtualRouter
 
         for layer_idx in self.target_layers:
             if layer_idx not in self.moe_layers:
@@ -135,7 +146,7 @@ class VirtualMoEWrapper:
             num_experts_per_tok = router.num_experts_per_tok
             hidden_size = router.weight.shape[1]
 
-            virtual_router = VirtualRouter(
+            virtual_router = virtual_router_cls(
                 original_router=router,
                 hidden_size=hidden_size,
                 num_experts=num_experts,
@@ -159,6 +170,8 @@ class VirtualMoEWrapper:
 
     def _get_hidden_state(self, prompt: str, layer_idx: int) -> mx.array:
         """Get hidden state at a specific layer for last position."""
+        mx = _mx()
+        nn = _nn()
         input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
 
         h = self._embed(input_ids)
@@ -232,6 +245,8 @@ class VirtualMoEWrapper:
         Returns:
             (text, used_virtual, virtual_count, total_tokens, score, plugin_name, trace)
         """
+        mx = _mx()
+        nn = _nn()
         input_ids = self.tokenizer.encode(prompt)
         current_ids = mx.array(input_ids)[None, :]
         generated = []
@@ -385,6 +400,7 @@ class VirtualMoEWrapper:
 
     def _generate_direct(self, prompt: str, max_tokens: int = 20) -> str:
         """Generate directly without virtual experts."""
+        mx = _mx()
         input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
         generated = []
 

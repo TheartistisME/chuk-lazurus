@@ -33,33 +33,33 @@ Example - Using TimeExpert from chuk-virtual-expert-time:
     >>> wrapper.register_plugin(adapter)
 """
 
-# Re-export VirtualExpert from chuk-virtual-expert
-from chuk_virtual_expert import VirtualExpert
+from importlib import import_module
 
-from .base import (
-    InferenceResult,
-    RoutingDecision,
-    RoutingTrace,
-    VirtualExpertAnalysis,
-    VirtualExpertApproach,
-    VirtualExpertPlugin,  # Alias for VirtualExpert (backwards compat)
-    VirtualExpertResult,
-)
-from .cot_rewriter import (
-    CoTRewriter,
-    DirectCoTRewriter,
-    FewShotCoTRewriter,
-    VirtualExpertAction,
-)
-from .dense_wrapper import (
-    VirtualDenseRouter,
-    VirtualDenseWrapper,
-    create_virtual_dense_wrapper,
-)
-from .plugins.math import MathExpert, MathExpertPlugin, SafeMathEvaluator
-from .registry import VirtualExpertRegistry, get_default_registry
-from .router import VirtualRouter
-from .wrapper import VirtualMoEWrapper, create_virtual_expert_wrapper
+_EXPORTS = {
+    "VirtualExpert": ("._optional", "VirtualExpert"),
+    "VirtualExpertPlugin": (".base", "VirtualExpertPlugin"),
+    "VirtualExpertResult": (".base", "VirtualExpertResult"),
+    "VirtualExpertAnalysis": (".base", "VirtualExpertAnalysis"),
+    "VirtualExpertApproach": (".base", "VirtualExpertApproach"),
+    "InferenceResult": (".base", "InferenceResult"),
+    "VirtualExpertAction": (".cot_rewriter", "VirtualExpertAction"),
+    "CoTRewriter": (".cot_rewriter", "CoTRewriter"),
+    "FewShotCoTRewriter": (".cot_rewriter", "FewShotCoTRewriter"),
+    "DirectCoTRewriter": (".cot_rewriter", "DirectCoTRewriter"),
+    "RoutingDecision": (".base", "RoutingDecision"),
+    "RoutingTrace": (".base", "RoutingTrace"),
+    "VirtualExpertRegistry": (".registry", "VirtualExpertRegistry"),
+    "get_default_registry": (".registry", "get_default_registry"),
+    "VirtualRouter": (".router", "VirtualRouter"),
+    "VirtualMoEWrapper": (".wrapper", "VirtualMoEWrapper"),
+    "create_virtual_expert_wrapper": (".wrapper", "create_virtual_expert_wrapper"),
+    "VirtualDenseRouter": (".dense_wrapper", "VirtualDenseRouter"),
+    "VirtualDenseWrapper": (".dense_wrapper", "VirtualDenseWrapper"),
+    "create_virtual_dense_wrapper": (".dense_wrapper", "create_virtual_dense_wrapper"),
+    "MathExpert": (".plugins.math", "MathExpert"),
+    "MathExpertPlugin": (".plugins.math", "MathExpertPlugin"),
+    "SafeMathEvaluator": (".plugins.math", "SafeMathEvaluator"),
+}
 
 __all__ = [
     # Base classes (from chuk-virtual-expert)
@@ -95,3 +95,15 @@ __all__ = [
     "MathExpertPlugin",  # Alias for backwards compat
     "SafeMathEvaluator",
 ]
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attr_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(module_name, __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value

@@ -11,8 +11,8 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 
-# Import core classes from chuk-virtual-expert
-from chuk_virtual_expert import (
+from ._optional import (
+    HAS_CHUK_VIRTUAL_EXPERT,
     VirtualExpert,
     VirtualExpertAction,
     VirtualExpertResult,
@@ -31,6 +31,8 @@ __all__ = [
     # Backwards compatibility
     "VirtualExpertPlugin",
 ]
+
+CHUK_VIRTUAL_EXPERT_AVAILABLE = HAS_CHUK_VIRTUAL_EXPERT
 
 # Backwards compatibility alias
 VirtualExpertPlugin = VirtualExpert
