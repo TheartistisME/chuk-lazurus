@@ -2,6 +2,7 @@
 
 import asyncio
 from argparse import Namespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,7 +21,9 @@ class TestIntrospectCircuitCapture:
             layer=19,
             results=None,
             extract_direction=False,
-            output=None,
+            save="capture.npz",
+            backend="torch",
+            device="cuda:0",
         )
 
     def test_capture_requires_layer(self):
@@ -42,10 +45,23 @@ class TestIntrospectCircuitCapture:
         """Test basic circuit capture."""
         from chuk_lazarus.cli.commands.introspect import introspect_circuit_capture
 
-        asyncio.run(introspect_circuit_capture(capture_args))
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "CIRCUIT CAPTURE"
+
+        with (
+            patch("chuk_lazarus.introspection.circuit.CircuitCaptureConfig") as mock_config,
+            patch(
+                "chuk_lazarus.introspection.circuit.CircuitService.capture",
+                AsyncMock(return_value=mock_result),
+            ),
+        ):
+            asyncio.run(introspect_circuit_capture(capture_args))
 
         captured = capsys.readouterr()
         assert "CIRCUIT" in captured.out
+        assert mock_config.call_args.kwargs["output_path"] == "capture.npz"
+        assert mock_config.call_args.kwargs["backend"] == "torch"
+        assert mock_config.call_args.kwargs["device"] == "cuda:0"
 
     def test_capture_with_results(self, capture_args, capsys):
         """Test capture with explicit results."""
@@ -101,21 +117,36 @@ class TestIntrospectCircuitInvoke:
         return Namespace(
             model="test-model",
             circuit=str(circuit_file),
-            prompts="5*5=|8*7=",
+            invoke_prompts="5*5=|8*7=",
             method="steer",
             coefficient=None,
             layer=None,
             top_k=5,
+            backend="torch",
+            device="cuda:0",
         )
 
     def test_invoke_basic(self, invoke_args, capsys):
         """Test basic circuit invocation."""
         from chuk_lazarus.cli.commands.introspect import introspect_circuit_invoke
 
-        asyncio.run(introspect_circuit_invoke(invoke_args))
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "CIRCUIT INVOCATION"
+
+        with (
+            patch("chuk_lazarus.introspection.circuit.CircuitInvokeConfig") as mock_config,
+            patch(
+                "chuk_lazarus.introspection.circuit.CircuitService.invoke",
+                AsyncMock(return_value=mock_result),
+            ),
+        ):
+            asyncio.run(introspect_circuit_invoke(invoke_args))
 
         captured = capsys.readouterr()
         assert "CIRCUIT" in captured.out or "INVOCATION" in captured.out
+        assert mock_config.call_args.kwargs["prompts"] == ["5*5=", "8*7="]
+        assert mock_config.call_args.kwargs["backend"] == "torch"
+        assert mock_config.call_args.kwargs["device"] == "cuda:0"
 
     def test_invoke_interpolate_with_coefficient(self, invoke_args, capsys):
         """Test that interpolate method works with --coefficient."""
@@ -172,21 +203,38 @@ class TestIntrospectCircuitDecode:
 
         return Namespace(
             model="test-model",
-            circuit=str(circuit_file),
+            inject=str(circuit_file),
             prompt="5*5=",
             inject_idx=0,
             max_tokens=10,
             raw=False,
+            backend="torch",
+            device="cuda:0",
         )
 
     def test_decode_basic(self, decode_args, capsys):
         """Test basic circuit decode."""
         from chuk_lazarus.cli.commands.introspect import introspect_circuit_decode
 
-        asyncio.run(introspect_circuit_decode(decode_args))
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "DECODE INJECTION"
+
+        with (
+            patch("chuk_lazarus.introspection.circuit.CircuitDecodeConfig") as mock_config,
+            patch(
+                "chuk_lazarus.introspection.circuit.CircuitService.decode",
+                AsyncMock(return_value=mock_result),
+            ),
+        ):
+            asyncio.run(introspect_circuit_decode(decode_args))
 
         captured = capsys.readouterr()
         assert "DECODE" in captured.out or "INJECTION" in captured.out
+        assert mock_config.call_args.kwargs["circuit_file"] == decode_args.inject
+        assert mock_config.call_args.kwargs["top_k"] == 10
+        assert mock_config.call_args.kwargs["activation_index"] == 0
+        assert mock_config.call_args.kwargs["backend"] == "torch"
+        assert mock_config.call_args.kwargs["device"] == "cuda:0"
 
 
 class TestIntrospectCircuitView:
@@ -241,18 +289,33 @@ class TestIntrospectCircuitTest:
             model="test-model",
             circuit=str(circuit_file),
             prompts="5*5=|8*7=",
-            expected="25|56",
+            results="25|56",
             max_tokens=10,
+            backend="torch",
+            device="cuda:0",
         )
 
     def test_test_basic(self, test_args, capsys):
         """Test basic circuit testing."""
         from chuk_lazarus.cli.commands.introspect import introspect_circuit_test
 
-        asyncio.run(introspect_circuit_test(test_args))
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "CIRCUIT TEST"
+
+        with (
+            patch("chuk_lazarus.introspection.circuit.CircuitTestConfig") as mock_config,
+            patch(
+                "chuk_lazarus.introspection.circuit.CircuitService.test",
+                AsyncMock(return_value=mock_result),
+            ),
+        ):
+            asyncio.run(introspect_circuit_test(test_args))
 
         captured = capsys.readouterr()
         assert "CIRCUIT" in captured.out or "TEST" in captured.out or captured.out != ""
+        assert mock_config.call_args.kwargs["expected_results"] == [25, 56]
+        assert mock_config.call_args.kwargs["backend"] == "torch"
+        assert mock_config.call_args.kwargs["device"] == "cuda:0"
 
 
 class TestIntrospectCircuitCompare:

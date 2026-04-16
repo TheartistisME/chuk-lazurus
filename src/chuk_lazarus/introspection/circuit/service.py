@@ -7,10 +7,13 @@ functionality for CLI commands.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
+
+from .._backend_dispatch import backend_matmul, from_backend_tensor, to_backend_tensor
 
 
 class CircuitCaptureConfig(BaseModel):
@@ -24,6 +27,8 @@ class CircuitCaptureConfig(BaseModel):
     results: list[int] | None = Field(default=None, description="Expected results")
     extract_direction: bool = Field(default=False, description="Extract direction")
     output_path: str | None = Field(default=None, description="Output path")
+    backend: str | None = Field(default=None, description="Optional runtime backend selector")
+    device: str | None = Field(default=None, description="Optional device override")
 
 
 class CircuitCaptureResult(BaseModel):
@@ -66,6 +71,8 @@ class CircuitInvokeConfig(BaseModel):
     coefficient: float | None = Field(default=None, description="Coefficient")
     layer: int | None = Field(default=None, description="Target layer")
     top_k: int = Field(default=10, description="Top-k predictions")
+    backend: str | None = Field(default=None, description="Optional runtime backend selector")
+    device: str | None = Field(default=None, description="Optional device override")
 
 
 class CircuitInvokeResult(BaseModel):
@@ -103,6 +110,8 @@ class CircuitTestConfig(BaseModel):
     prompts: list[str] = Field(..., description="Test prompts")
     expected_results: list[int] | None = Field(default=None, description="Expected results")
     threshold: float = Field(default=0.1, description="Threshold")
+    backend: str | None = Field(default=None, description="Optional runtime backend selector")
+    device: str | None = Field(default=None, description="Optional device override")
 
 
 class CircuitTestResult(BaseModel):
@@ -195,6 +204,9 @@ class CircuitDecodeConfig(BaseModel):
     model: str = Field(..., description="Model path or name")
     circuit_file: str = Field(..., description="Circuit file path")
     top_k: int = Field(default=20, description="Top-k tokens")
+    activation_index: int = Field(default=0, description="Activation index when no direction exists")
+    backend: str | None = Field(default=None, description="Optional runtime backend selector")
+    device: str | None = Field(default=None, description="Optional device override")
 
 
 class CircuitDecodeResult(BaseModel):
@@ -246,52 +258,250 @@ class CircuitExportResult(BaseModel):
 class CircuitService:
     """Service class for circuit operations."""
 
+    @staticmethod
+    def _get_embed(model: Any) -> Any:
+        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
+            return model.model.embed_tokens
+        return getattr(model, "embed_tokens", None)
+
+    @staticmethod
+    def _get_norm(model: Any) -> Any | None:
+        if hasattr(model, "model") and hasattr(model.model, "norm"):
+            return model.model.norm
+        return getattr(model, "norm", None)
+
+    @classmethod
+    def _get_lm_head(cls, model: Any) -> Any | None:
+        if hasattr(model, "lm_head") and model.lm_head is not None:
+            return model.lm_head
+
+        embed = cls._get_embed(model)
+        if embed is not None and hasattr(embed, "as_linear"):
+            return embed.as_linear
+
+        return None
+
+    @staticmethod
+    def _unwrap_logits(outputs: Any) -> Any:
+        return outputs.logits if hasattr(outputs, "logits") else outputs
+
+    @staticmethod
+    def _get_embedding_weight(embed: Any) -> Any:
+        weight = getattr(embed, "weight", None)
+        if weight is None:
+            raise AttributeError("Cannot resolve embedding projection weight.")
+        return getattr(weight, "weight", weight)
+
+    @staticmethod
+    def _reshape_hidden_for_head(hidden: Any, backend_name: str) -> Any:
+        if backend_name == "torch":
+            hidden = hidden.clone()
+            if hidden.ndim == 1:
+                return hidden.unsqueeze(0).unsqueeze(0)
+            if hidden.ndim == 2:
+                return hidden.unsqueeze(1)
+            return hidden
+
+        if backend_name == "mlx":
+            import mlx.core as mx
+
+            if hidden.ndim == 1:
+                return hidden[None, None, :]
+            if hidden.ndim == 2:
+                return hidden[:, None, :]
+            return hidden
+
+        raise NotImplementedError(f"Unsupported backend: {backend_name}")
+
+    @classmethod
+    def _project_logits(cls, model: Any, hidden: np.ndarray, backend: Any) -> np.ndarray:
+        backend_name = str(backend.name).lower()
+        hidden_tensor = to_backend_tensor(hidden, backend=backend)
+        hidden_3d = cls._reshape_hidden_for_head(hidden_tensor, backend_name)
+        norm = cls._get_norm(model)
+        if norm is not None:
+            hidden_3d = norm(hidden_3d)
+
+        lm_head = cls._get_lm_head(model)
+        if lm_head is not None:
+            logits = cls._unwrap_logits(lm_head(hidden_3d))
+        else:
+            embed = cls._get_embed(model)
+            if embed is None:
+                raise AttributeError("Cannot resolve embedding or lm_head for vocabulary projection.")
+            embed_weight = cls._get_embedding_weight(embed)
+            logits = backend_matmul(hidden_3d, embed_weight.T, backend=backend)
+
+        return from_backend_tensor(logits, backend=backend)[0, -1, :]
+
+    @staticmethod
+    def _load_pipeline(model_id: str, *, backend: str | None = None, device: str | None = None):
+        from ...inference import UnifiedPipeline, UnifiedPipelineConfig
+        from ...models_v2.core.backend import get_backend
+
+        resolved_backend = get_backend(name=backend, device=device)
+        backend_name = str(resolved_backend.name).lower()
+        resolved_device = (
+            getattr(resolved_backend, "device", None) if backend_name == "torch" else None
+        )
+
+        try:
+            pipeline = UnifiedPipeline.from_pretrained(
+                model_id,
+                pipeline_config=UnifiedPipelineConfig(
+                    backend_name=backend_name,
+                    device=resolved_device,
+                ),
+                verbose=False,
+            )
+        except ValueError as exc:
+            message = str(exc).lower()
+            if "detect model family" in message or "supported yet" in message:
+                raise ValueError(f"Unsupported model: {model_id}") from exc
+            raise
+
+        return pipeline, resolved_backend
+
+    @staticmethod
+    def _extract_hidden_vector(runtime: Any, backend: Any, prompt: str, *, layer: int) -> np.ndarray:
+        residual_state = runtime.extract_residual_state(prompt, layer_index=layer)
+        array = from_backend_tensor(residual_state.tensor, backend=backend)
+        if array.ndim > 1:
+            array = array[0]
+        return np.asarray(array, dtype=np.float32).reshape(-1)
+
+    @staticmethod
+    def _build_circuit_payload_from_npz(path: str) -> dict[str, Any]:
+        from ..models.circuit import CapturedCircuit
+
+        circuit = CapturedCircuit.load(path)
+        activations = circuit.activations
+        if activations is None:
+            entry_activations = [entry.activation for entry in circuit.entries if entry.activation is not None]
+            if entry_activations:
+                activations = np.stack(entry_activations).astype(np.float32, copy=False)
+
+        payload: dict[str, Any] = {
+            "model": circuit.model_id,
+            "layer": circuit.layer,
+            "num_prompts": circuit.num_entries,
+            "prompts": [entry.prompt for entry in circuit.entries],
+        }
+
+        results = [entry.result for entry in circuit.entries]
+        if any(result is not None for result in results):
+            payload["results"] = results
+        if activations is not None:
+            payload["activations"] = activations.tolist()
+        if circuit.direction is not None:
+            payload["direction"] = np.asarray(
+                circuit.direction.direction, dtype=np.float32
+            ).tolist()
+
+        return payload
+
+    @classmethod
+    def _load_circuit_data(cls, circuit_file: str) -> dict[str, Any]:
+        path = Path(circuit_file)
+        if path.suffix.lower() == ".npz":
+            try:
+                return cls._build_circuit_payload_from_npz(circuit_file)
+            except Exception:
+                pass
+
+        with open(circuit_file) as f:
+            return json.load(f)
+
+    @classmethod
+    def _save_circuit_data(
+        cls,
+        *,
+        config: CircuitCaptureConfig,
+        activations: np.ndarray,
+        direction: np.ndarray | None,
+    ) -> None:
+        if config.output_path is None:
+            return
+
+        path = Path(config.output_path)
+        if path.suffix.lower() == ".npz":
+            from ..models.circuit import CapturedCircuit, CircuitDirection, CircuitEntry
+
+            entries = [
+                CircuitEntry(
+                    prompt=prompt,
+                    result=config.results[idx] if config.results else None,
+                    activation=activations[idx],
+                )
+                for idx, prompt in enumerate(config.prompts)
+            ]
+            circuit_direction = None
+            if direction is not None:
+                vector = np.asarray(direction, dtype=np.float32)
+                circuit_direction = CircuitDirection(
+                    direction=vector,
+                    norm=float(np.linalg.norm(vector)),
+                )
+
+            CapturedCircuit(
+                model_id=config.model,
+                layer=config.layer,
+                entries=entries,
+                direction=circuit_direction,
+                activations=activations,
+            ).save(config.output_path)
+            return
+
+        output_data: dict[str, Any] = {
+            "model": config.model,
+            "layer": config.layer,
+            "num_prompts": len(config.prompts),
+            "prompts": config.prompts,
+            "activations": activations.tolist(),
+        }
+        if config.results:
+            output_data["results"] = config.results
+        if direction is not None:
+            output_data["direction"] = np.asarray(direction, dtype=np.float32).tolist()
+
+        with open(config.output_path, "w") as f:
+            json.dump(output_data, f, indent=2)
+
+    @staticmethod
+    def _resolve_decode_vector(
+        circuit_data: dict[str, Any],
+        *,
+        activation_index: int,
+    ) -> np.ndarray:
+        direction = np.asarray(circuit_data.get("direction", []), dtype=np.float32).reshape(-1)
+        if direction.size:
+            return direction
+
+        activations = np.asarray(circuit_data.get("activations", []), dtype=np.float32)
+        if activations.ndim == 1 and activations.size:
+            return activations.reshape(-1)
+        if activations.ndim >= 2 and activations.shape[0] > 0:
+            index = max(0, min(int(activation_index), activations.shape[0] - 1))
+            return activations[index].reshape(-1)
+
+        return np.array([], dtype=np.float32)
+
     @classmethod
     async def capture(cls, config: CircuitCaptureConfig) -> CircuitCaptureResult:
         """Capture circuit activations."""
-        import mlx.core as mx
-
-        from ...models_v2 import load_model
-        from ..accessor import ModelAccessor
-
-        # Load model using framework loader
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
-        model_config = load_result.config
-
-        accessor = ModelAccessor(model=model, config=model_config)
-
-        def get_hidden_at_layer(prompt: str, layer: int) -> np.ndarray:
-            """Get hidden state at specific layer."""
-            input_ids = mx.array(tokenizer.encode(prompt))[None, :]
-            h = accessor.embed(input_ids)
-
-            seq_len = input_ids.shape[1]
-            mask = accessor.create_causal_mask(seq_len, h.dtype)
-
-            for idx, lyr in enumerate(accessor.layers):
-                try:
-                    out = lyr(h, mask=mask)
-                except TypeError:
-                    out = lyr(h)
-                h = (
-                    out.hidden_states
-                    if hasattr(out, "hidden_states")
-                    else (out[0] if isinstance(out, tuple) else out)
-                )
-                if idx == layer:
-                    return np.array(h[0, -1, :].tolist())
-
-            return np.array(h[0, -1, :].tolist())
+        pipeline, backend = cls._load_pipeline(
+            config.model,
+            backend=config.backend,
+            device=config.device,
+        )
 
         # Collect activations
-        activations = []
-        for prompt in config.prompts:
-            h = get_hidden_at_layer(prompt, config.layer)
-            activations.append(h)
-
-        activations = np.array(activations)
+        activations = np.stack(
+            [
+                cls._extract_hidden_vector(pipeline.runtime, backend, prompt, layer=config.layer)
+                for prompt in config.prompts
+            ]
+        ).astype(np.float32, copy=False)
 
         # Extract direction if requested
         direction = None
@@ -306,21 +516,11 @@ class CircuitService:
             direction = ridge.coef_
             direction_norm = float(np.linalg.norm(direction))
 
-        # Save if output path specified
-        if config.output_path:
-            output_data = {
-                "model": config.model,
-                "layer": config.layer,
-                "num_prompts": len(config.prompts),
-                "prompts": config.prompts,
-            }
-            if config.results:
-                output_data["results"] = config.results
-            if direction is not None:
-                output_data["direction"] = direction.tolist()
-
-            with open(config.output_path, "w") as f:
-                json.dump(output_data, f, indent=2)
+        cls._save_circuit_data(
+            config=config,
+            activations=activations,
+            direction=None if direction is None else np.asarray(direction, dtype=np.float32),
+        )
 
         return CircuitCaptureResult(
             num_prompts=len(config.prompts),
@@ -333,54 +533,21 @@ class CircuitService:
     @classmethod
     async def invoke(cls, config: CircuitInvokeConfig) -> CircuitInvokeResult:
         """Invoke a captured circuit."""
-        import mlx.core as mx
-
-        from ...models_v2 import load_model
-        from ..accessor import ModelAccessor
-
-        # Load circuit
-        with open(config.circuit_file) as f:
-            circuit_data = json.load(f)
-
-        direction = np.array(circuit_data.get("direction", []))
+        circuit_data = cls._load_circuit_data(config.circuit_file)
+        direction = np.asarray(circuit_data.get("direction", []), dtype=np.float32).reshape(-1)
         layer = config.layer or circuit_data.get("layer", 0)
-
-        # Load model using framework loader
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
-        model_config = load_result.config
-
-        accessor = ModelAccessor(model=model, config=model_config)
-
-        def get_hidden_at_layer(prompt: str, layer: int) -> np.ndarray:
-            input_ids = mx.array(tokenizer.encode(prompt))[None, :]
-            h = accessor.embed(input_ids)
-
-            seq_len = input_ids.shape[1]
-            mask = accessor.create_causal_mask(seq_len, h.dtype)
-
-            for idx, lyr in enumerate(accessor.layers):
-                try:
-                    out = lyr(h, mask=mask)
-                except TypeError:
-                    out = lyr(h)
-                h = (
-                    out.hidden_states
-                    if hasattr(out, "hidden_states")
-                    else (out[0] if isinstance(out, tuple) else out)
-                )
-                if idx == layer:
-                    return np.array(h[0, -1, :].tolist())
-
-            return np.array(h[0, -1, :].tolist())
+        pipeline, backend = cls._load_pipeline(
+            config.model,
+            backend=config.backend,
+            device=config.device,
+        )
 
         results = []
         for prompt in config.prompts:
-            h = get_hidden_at_layer(prompt, layer)
+            h = cls._extract_hidden_vector(pipeline.runtime, backend, prompt, layer=layer)
 
             # Project onto direction
-            if len(direction) > 0:
+            if direction.size:
                 score = float(np.dot(h, direction) / (np.linalg.norm(direction) + 1e-8))
                 prediction = "positive" if score > 0 else "negative"
             else:
@@ -397,7 +564,7 @@ class CircuitService:
 
         return CircuitInvokeResult(
             results=results,
-            method=config.method,
+            method=config.method.value if hasattr(config.method, "value") else str(config.method),
         )
 
     @classmethod
@@ -408,6 +575,8 @@ class CircuitService:
             model=config.model,
             circuit_file=config.circuit_file,
             prompts=config.prompts,
+            backend=config.backend,
+            device=config.device,
         )
         invoke_result = await cls.invoke(invoke_config)
 
@@ -443,17 +612,19 @@ class CircuitService:
     @classmethod
     async def view(cls, config: CircuitViewConfig) -> CircuitViewResult:
         """View circuit contents."""
-        with open(config.circuit_file) as f:
-            circuit_data = json.load(f)
+        circuit_data = cls._load_circuit_data(config.circuit_file)
 
         info = {
             "model": circuit_data.get("model", "unknown"),
             "layer": circuit_data.get("layer", "unknown"),
-            "num_prompts": circuit_data.get("num_prompts", 0),
+            "num_prompts": circuit_data.get(
+                "num_prompts",
+                len(circuit_data.get("prompts", [])),
+            ),
         }
 
         if config.show_direction and "direction" in circuit_data:
-            direction = np.array(circuit_data["direction"])
+            direction = np.asarray(circuit_data["direction"], dtype=np.float32)
             info["direction_dim"] = len(direction)
             info["direction_norm"] = float(np.linalg.norm(direction))
 
@@ -462,10 +633,8 @@ class CircuitService:
     @classmethod
     async def compare(cls, config: CircuitCompareConfig) -> CircuitCompareResult:
         """Compare two circuits."""
-        with open(config.circuit_file_a) as f:
-            circuit_a = json.load(f)
-        with open(config.circuit_file_b) as f:
-            circuit_b = json.load(f)
+        circuit_a = cls._load_circuit_data(config.circuit_file_a)
+        circuit_b = cls._load_circuit_data(config.circuit_file_b)
 
         differences = []
 
@@ -481,8 +650,8 @@ class CircuitService:
 
         # Compare directions
         similarity = 0.0
-        dir_a = np.array(circuit_a.get("direction", []))
-        dir_b = np.array(circuit_b.get("direction", []))
+        dir_a = np.asarray(circuit_a.get("direction", []), dtype=np.float32)
+        dir_b = np.asarray(circuit_b.get("direction", []), dtype=np.float32)
 
         if len(dir_a) > 0 and len(dir_b) > 0 and len(dir_a) == len(dir_b):
             similarity = float(
@@ -499,36 +668,25 @@ class CircuitService:
     @classmethod
     async def decode(cls, config: CircuitDecodeConfig) -> CircuitDecodeResult:
         """Decode circuit through vocabulary."""
-        from ...models_v2 import load_model
-
-        # Load circuit
-        with open(config.circuit_file) as f:
-            circuit_data = json.load(f)
-
-        direction = np.array(circuit_data.get("direction", []))
-        if len(direction) == 0:
+        circuit_data = cls._load_circuit_data(config.circuit_file)
+        vector = cls._resolve_decode_vector(
+            circuit_data,
+            activation_index=config.activation_index,
+        )
+        if vector.size == 0:
             return CircuitDecodeResult(top_tokens=[])
 
-        # Load model using framework loader
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
-
-        # Get unembedding matrix
-        if hasattr(model, "lm_head"):
-            unembed = np.array(model.lm_head.weight.tolist())
-        elif hasattr(model, "output"):
-            unembed = np.array(model.output.weight.tolist())
-        else:
-            return CircuitDecodeResult(top_tokens=[])
-
-        # Project direction through vocabulary
-        scores = np.dot(unembed, direction)
+        pipeline, backend = cls._load_pipeline(
+            config.model,
+            backend=config.backend,
+            device=config.device,
+        )
+        scores = cls._project_logits(pipeline.model, vector, backend)
         top_indices = np.argsort(scores)[-config.top_k :][::-1]
 
         top_tokens = []
         for idx in top_indices:
-            token = tokenizer.decode([int(idx)])
+            token = pipeline.tokenizer.decode([int(idx)])
             top_tokens.append(
                 {
                     "token": token,
@@ -542,8 +700,7 @@ class CircuitService:
     @classmethod
     async def export(cls, config: CircuitExportConfig) -> CircuitExportResult:
         """Export circuit in various formats."""
-        with open(config.circuit_file) as f:
-            circuit_data = json.load(f)
+        circuit_data = cls._load_circuit_data(config.circuit_file)
 
         if config.output_format == "json":
             content = json.dumps(circuit_data, indent=2)

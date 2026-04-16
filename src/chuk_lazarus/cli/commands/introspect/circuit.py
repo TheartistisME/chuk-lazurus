@@ -51,7 +51,9 @@ async def introspect_circuit_capture(args: Namespace) -> None:
         layer=layer,
         results=results,
         extract_direction=extract_arg(args, "extract_direction", False),
-        output_path=extract_arg(args, "output"),
+        output_path=extract_arg(args, "save", extract_arg(args, "output")),
+        backend=extract_arg(args, "backend"),
+        device=extract_arg(args, "device"),
     )
 
     # Run capture - all logic is in the service
@@ -71,7 +73,10 @@ async def introspect_circuit_invoke(args: Namespace) -> None:
     from ....introspection.enums import InvocationMethod
     from .._constants import AnalysisDefaults
 
-    prompts = parse_prompts(args.prompts)
+    prompts_arg = extract_arg(args, "invoke_prompts", extract_arg(args, "prompts"))
+    if prompts_arg is None:
+        raise ValueError("Must specify --prompts for circuit invoke")
+    prompts = parse_prompts(prompts_arg)
 
     # Parse method
     method = InvocationMethod(extract_arg(args, "method", InvocationMethod.STEER.value))
@@ -90,6 +95,8 @@ async def introspect_circuit_invoke(args: Namespace) -> None:
         coefficient=coefficient,
         layer=extract_arg(args, "layer"),
         top_k=extract_arg(args, "top_k", AnalysisDefaults.TOP_K),
+        backend=extract_arg(args, "backend"),
+        device=extract_arg(args, "device"),
     )
 
     # Run invocation - all logic is in the service
@@ -111,7 +118,7 @@ async def introspect_circuit_test(args: Namespace) -> None:
 
     # Parse expected results (using shared utility)
     results = None
-    results_arg = extract_arg(args, "results")
+    results_arg = extract_arg(args, "results", extract_arg(args, "expected"))
     if results_arg:
         results = parse_value_list(results_arg, value_type=int)
 
@@ -121,6 +128,8 @@ async def introspect_circuit_test(args: Namespace) -> None:
         prompts=prompts,
         expected_results=results,
         threshold=CircuitDefaults.THRESHOLD,
+        backend=extract_arg(args, "backend"),
+        device=extract_arg(args, "device"),
     )
 
     # Run test - all logic is in the service
@@ -181,8 +190,11 @@ async def introspect_circuit_decode(args: Namespace) -> None:
 
     config = CircuitDecodeConfig(
         model=args.model,
-        circuit_file=args.circuit,
-        top_k=extract_arg(args, "top_k", 20),
+        circuit_file=extract_arg(args, "inject", extract_arg(args, "circuit")),
+        top_k=extract_arg(args, "top_k", extract_arg(args, "max_tokens", 20)),
+        activation_index=extract_arg(args, "inject_idx", 0),
+        backend=extract_arg(args, "backend"),
+        device=extract_arg(args, "device"),
     )
 
     # Decode circuit - all logic is in the service
