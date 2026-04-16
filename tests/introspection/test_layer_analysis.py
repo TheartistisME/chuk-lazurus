@@ -7,8 +7,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-mx = pytest.importorskip("mlx.core")
-nn = pytest.importorskip("mlx.nn")
+mx = pytest.importorskip("mlx.core", exc_type=ImportError)
+nn = pytest.importorskip("mlx.nn", exc_type=ImportError)
 
 from chuk_lazarus.introspection.layer_analysis import (
     AttentionResult,

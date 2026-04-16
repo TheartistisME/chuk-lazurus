@@ -1,6 +1,6 @@
 """Tests for introspect embedding CLI commands."""
 
-import importlib.util
+import importlib
 import sys
 import tempfile
 from argparse import Namespace
@@ -13,7 +13,17 @@ import pytest
 
 from .conftest import requires_sklearn
 
-MLX_AVAILABLE = importlib.util.find_spec("mlx") is not None
+
+def _mlx_available() -> bool:
+    """Return True only when ``mlx.core`` can actually import on this host."""
+    try:
+        importlib.import_module("mlx.core")
+    except Exception:
+        return False
+    return True
+
+
+MLX_AVAILABLE = _mlx_available()
 requires_mlx = pytest.mark.skipif(not MLX_AVAILABLE, reason="mlx not available")
 
 
