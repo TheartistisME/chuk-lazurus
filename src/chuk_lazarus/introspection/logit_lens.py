@@ -26,6 +26,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
+from ._backend_dispatch import from_backend_tensor, to_backend_tensor
+
 if TYPE_CHECKING:  # pragma: no cover - type-checker only
     import mlx.core as mx  # noqa: F401
     import mlx.nn as nn  # noqa: F401
@@ -33,11 +37,27 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker only
     from .hooks import ModelHooks
 
 
-def _mx():
-    """Lazy accessor for ``mlx.core``."""
-    import mlx.core as mx  # noqa: PLC0415
+def _to_numpy(x: Any) -> np.ndarray:
+    """Convert backend tensors to numpy for backend-neutral analysis math."""
+    return np.asarray(from_backend_tensor(x))
 
-    return mx
+
+def _get_backend():
+    """Resolve the currently selected backend without re-autodetecting it."""
+    from chuk_lazarus.models_v2.core import backend as backend_mod
+
+    current = getattr(backend_mod, "_current_backend", None)
+    if current is not None:
+        return current
+    return backend_mod.get_backend()
+
+
+def _softmax_numpy(logits: Any) -> np.ndarray:
+    """Stable softmax over the final axis."""
+    logits_np = _to_numpy(logits).astype(np.float64, copy=False)
+    shifted = logits_np - np.max(logits_np, axis=-1, keepdims=True)
+    exp = np.exp(shifted)
+    return exp / np.sum(exp, axis=-1, keepdims=True)
 
 
 @dataclass
@@ -175,7 +195,6 @@ class LogitLens:
         Returns:
             List of LayerPrediction for each captured layer
         """
-        mx = _mx()
         predictions = []
 
         for layer_idx in sorted(self.hooks.state.hidden_states.keys()):
@@ -189,14 +208,9 @@ class LogitLens:
             else:
                 pos_logits = logits[position, :]  # [vocab]
 
-            # Get probabilities
-            probs = mx.softmax(pos_logits, axis=-1)
-
-            # Get top-k
-            # MLX doesn't have topk, so we sort
-            sorted_indices = mx.argsort(probs)[::-1][:top_k]
-            top_ids = sorted_indices.tolist()
-            top_probs = probs[sorted_indices].tolist()
+            probs = _softmax_numpy(pos_logits)
+            top_ids = np.argsort(probs)[::-1][:top_k].tolist()
+            top_probs = probs[top_ids].astype(float).tolist()
 
             # Decode tokens
             if self.tokenizer is not None:
@@ -274,7 +288,6 @@ class LogitLens:
             token_id = token
             token_str = self.tokenizer.decode([token_id]) if self.tokenizer else f"[{token_id}]"
 
-        mx = _mx()
         layers = []
         probabilities = []
         ranks = []
@@ -290,13 +303,13 @@ class LogitLens:
             else:
                 pos_logits = logits[position, :]
 
-            probs = mx.softmax(pos_logits, axis=-1)
+            probs = _softmax_numpy(pos_logits)
 
             # Get probability of target token
             target_prob = float(probs[token_id])
 
             # Get rank
-            sorted_indices = mx.argsort(probs)[::-1][:top_k_for_rank].tolist()
+            sorted_indices = np.argsort(probs)[::-1][:top_k_for_rank].tolist()
             if token_id in sorted_indices:
                 rank = sorted_indices.index(token_id) + 1
             else:
@@ -441,9 +454,9 @@ def run_logit_lens(
     """
     from .hooks import CaptureConfig, ModelHooks
 
-    mx = _mx()
     # Tokenize
-    input_ids = mx.array(tokenizer.encode(prompt))[None, :]
+    token_ids = np.asarray(tokenizer.encode(prompt), dtype=np.int64)[None, :]
+    input_ids = to_backend_tensor(token_ids, backend=_get_backend())
 
     # Setup hooks
     hooks = ModelHooks(model)
@@ -563,7 +576,6 @@ class LogitLensService:
         from ..models_v2.loader import load_model
         from .hooks import CaptureConfig, ModelHooks
 
-        mx = _mx()
         # Load model
         loaded = load_model(config.model)
         model = loaded.model
@@ -580,7 +592,10 @@ class LogitLensService:
                 layers.append(num_layers - 1)
 
         # Tokenize
-        input_ids = mx.array(tokenizer.encode(config.prompt))[None, :]
+        input_ids = to_backend_tensor(
+            np.asarray(tokenizer.encode(config.prompt), dtype=np.int64)[None, :],
+            backend=_get_backend(),
+        )
 
         # Setup hooks
         hooks = ModelHooks(model)

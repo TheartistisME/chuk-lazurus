@@ -7,22 +7,20 @@ divergence, and other mathematical operations used in analysis.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any
 
-if TYPE_CHECKING:  # pragma: no cover - type-checker only
-    import mlx.core as mx  # noqa: F401
+import numpy as np
 
+from .._backend_dispatch import from_backend_tensor
 from .config import LayerStrategy
 
 
-def _mx():
-    """Lazy accessor for ``mlx.core``."""
-    import mlx.core as mx  # noqa: PLC0415
-
-    return mx
+def _to_numpy(x: Any) -> np.ndarray:
+    """Convert backend tensors to numpy for backend-neutral analyzer math."""
+    return np.asarray(from_backend_tensor(x), dtype=np.float64)
 
 
-def compute_entropy(probs: mx.array) -> float:
+def compute_entropy(probs: Any) -> float:
     """
     Compute Shannon entropy of a probability distribution.
 
@@ -32,14 +30,12 @@ def compute_entropy(probs: mx.array) -> float:
     Returns:
         Shannon entropy value
     """
-    mx = _mx()
-    # Avoid log(0) by clipping
-    probs_clipped = mx.clip(probs, 1e-10, 1.0)
-    entropy = -mx.sum(probs_clipped * mx.log(probs_clipped))
+    probs_np = np.clip(_to_numpy(probs), 1e-10, 1.0)
+    entropy = -np.sum(probs_np * np.log(probs_np))
     return float(entropy)
 
 
-def compute_kl_divergence(p: mx.array, q: mx.array) -> float:
+def compute_kl_divergence(p: Any, q: Any) -> float:
     """
     Compute KL divergence D(P || Q).
 
@@ -50,15 +46,13 @@ def compute_kl_divergence(p: mx.array, q: mx.array) -> float:
     Returns:
         KL divergence value (always >= 0)
     """
-    mx = _mx()
-    # Clip to avoid log(0) and division by zero
-    p_clipped = mx.clip(p, 1e-10, 1.0)
-    q_clipped = mx.clip(q, 1e-10, 1.0)
-    kl = mx.sum(p_clipped * mx.log(p_clipped / q_clipped))
-    return float(mx.maximum(kl, mx.array(0.0)))  # KL should be >= 0
+    p_clipped = np.clip(_to_numpy(p), 1e-10, 1.0)
+    q_clipped = np.clip(_to_numpy(q), 1e-10, 1.0)
+    kl = np.sum(p_clipped * np.log(p_clipped / q_clipped))
+    return float(max(kl, 0.0))
 
 
-def compute_js_divergence(p: mx.array, q: mx.array) -> float:
+def compute_js_divergence(p: Any, q: Any) -> float:
     """
     Compute Jensen-Shannon divergence (symmetric, bounded [0, ln(2)]).
 

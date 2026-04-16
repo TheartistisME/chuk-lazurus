@@ -1,7 +1,11 @@
 """Tests for introspect analyze CLI commands."""
 
 import asyncio
+import os
+import subprocess
+import sys
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -224,3 +228,143 @@ class TestAnalysisConfig:
 
         assert Delimiters.LAYER_SEPARATOR == ","
         assert Delimiters.PROMPT_SEPARATOR == "|"
+
+
+class TestIntrospectAnalyzeTorchRuntime:
+    """Real analyzer/CLI wiring test for the torch runtime path."""
+
+    def test_analyze_uses_real_torch_analyzer_path(self):
+        pytest.importorskip("torch")
+
+        repo_root = Path(__file__).resolve().parents[4]
+        src = repo_root / "src"
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(src) + os.pathsep + env.get("PYTHONPATH", "")
+
+        code = """
+import asyncio
+from argparse import Namespace
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import torch
+
+from chuk_lazarus.cli.commands.introspect.analyze import introspect_analyze
+from chuk_lazarus.models_v2.core.backend import get_backend, reset_backend
+
+
+class TinyTorchBlock(torch.nn.Module):
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.norm = torch.nn.LayerNorm(hidden_size)
+        self.linear = torch.nn.Linear(hidden_size, hidden_size)
+        self.activation = torch.nn.GELU()
+
+    def forward(self, x, output_attentions: bool = False, **_):
+        hidden = x + self.activation(self.linear(self.norm(x)))
+        if not output_attentions:
+            return hidden
+        batch, seq_len, _ = hidden.shape
+        attn = torch.zeros(batch, 1, seq_len, seq_len, dtype=hidden.dtype, device=hidden.device)
+        return hidden, attn
+
+
+class TinyTorchBackbone(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.embed_tokens = torch.nn.Embedding(32, 12)
+        self.layers = torch.nn.ModuleList([TinyTorchBlock(12) for _ in range(3)])
+        self.norm = torch.nn.LayerNorm(12)
+        self.hidden_size = 12
+
+    def forward(self, input_ids, output_attentions: bool = False, **_):
+        hidden = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            layer_out = layer(hidden, output_attentions=output_attentions)
+            hidden = layer_out[0] if output_attentions else layer_out
+        return self.norm(hidden), None
+
+
+class TinyTorchForCausalLM(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = TinyTorchBackbone()
+        self.lm_head = torch.nn.Linear(12, 32, bias=False)
+        self.tie_word_embeddings = False
+
+    def forward(self, input_ids=None, output_attentions: bool = False, **_):
+        hidden, _ = self.model(input_ids=input_ids, output_attentions=output_attentions)
+        return SimpleNamespace(logits=self.lm_head(hidden))
+
+
+class TinyTokenizer:
+    vocab_size = 32
+
+    def encode(self, text: str):
+        encoded = [ord(ch) % self.vocab_size for ch in text[:5]]
+        return encoded or [0]
+
+    def decode(self, ids):
+        return f"<{ids[0]}>"
+
+
+async def main():
+    reset_backend()
+    get_backend("torch", device="cpu")
+    args = Namespace(
+        model="tiny-torch",
+        prompt="2+2=",
+        prefix=None,
+        adapter=None,
+        embedding_scale=None,
+        raw=False,
+        layers=None,
+        all_layers=True,
+        layer_strategy="evenly_spaced",
+        layer_step=4,
+        top_k=3,
+        track=None,
+        steer=None,
+        steer_neuron=None,
+        steer_layer=None,
+        strength=None,
+        inject_layer=None,
+        inject_token=None,
+        inject_blend=1.0,
+        compute_override="none",
+        compute_layer=None,
+        find_answer=None,
+        no_find_answer=False,
+        gen_tokens=30,
+        expected=None,
+        output=None,
+    )
+    model = TinyTorchForCausalLM()
+    tokenizer = TinyTokenizer()
+    config = SimpleNamespace(
+        num_hidden_layers=3,
+        hidden_size=12,
+        vocab_size=32,
+        tie_word_embeddings=False,
+    )
+    with patch(
+        "chuk_lazarus.introspection.analyzer.core._load_model_sync",
+        return_value=(model, tokenizer, config),
+    ):
+        await introspect_analyze(args)
+    reset_backend()
+
+
+asyncio.run(main())
+"""
+
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+        assert "Logit Lens Analysis" in result.stdout
+        assert "Final prediction" in result.stdout

@@ -13,17 +13,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
+from .._backend_dispatch import from_backend_tensor, to_backend_tensor
+
 if TYPE_CHECKING:  # pragma: no cover - type-checker only
     import mlx.core as mx  # noqa: F401
     import mlx.nn as nn  # noqa: F401
-
-
-def _mx():
-    """Lazy accessor for ``mlx.core``."""
-    import mlx.core as mx  # noqa: PLC0415
-
-    return mx
-
 
 from ..hooks import CaptureConfig, ModelHooks
 from ..logit_lens import LogitLens
@@ -37,6 +33,39 @@ from .models import (
     TokenEvolutionResult,
     TokenPrediction,
 )
+
+
+def _load_model_sync(
+    model_id: str,
+    adapter_path: str | None = None,
+) -> tuple[Any, Any, Any]:
+    """Patch-friendly lazy loader shim for ``ModelAnalyzer.from_pretrained``."""
+    from .loader import _load_model_sync as load_model_sync  # noqa: PLC0415
+
+    return load_model_sync(model_id, adapter_path=adapter_path)
+
+
+def _to_numpy(x: Any) -> np.ndarray:
+    """Convert backend tensors to numpy for backend-neutral analyzer math."""
+    return np.asarray(from_backend_tensor(x))
+
+
+def _get_backend():
+    """Resolve the currently selected backend without re-autodetecting it."""
+    from chuk_lazarus.models_v2.core import backend as backend_mod
+
+    current = getattr(backend_mod, "_current_backend", None)
+    if current is not None:
+        return current
+    return backend_mod.get_backend()
+
+
+def _softmax_numpy(logits: Any) -> np.ndarray:
+    """Stable softmax over the final axis."""
+    logits_np = _to_numpy(logits).astype(np.float64, copy=False)
+    shifted = logits_np - np.max(logits_np, axis=-1, keepdims=True)
+    exp = np.exp(shifted)
+    return exp / np.sum(exp, axis=-1, keepdims=True)
 
 
 class ModelAnalyzer:
@@ -117,8 +146,6 @@ class ModelAnalyzer:
             >>> async with ModelAnalyzer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0") as analyzer:
             ...     result = await analyzer.analyze("Hello")
         """
-        from .loader import _load_model_sync  # noqa: PLC0415
-
         # Load model in thread pool to not block
         loop = asyncio.get_event_loop()
         model, tokenizer, config = await loop.run_in_executor(
@@ -203,7 +230,7 @@ class ModelAnalyzer:
         if config is None:
             config = AnalysisConfig()
 
-        # Run analysis in thread pool (MLX operations)
+        # Run analysis off the event loop so backend inference stays synchronous here.
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
@@ -235,6 +262,18 @@ class ModelAnalyzer:
             results.append(result)
         return results
 
+    def _select_last_token_logits(self, logits: Any) -> Any:
+        """Select the final-token logits from 2D or 3D tensors."""
+        if logits.ndim == 3:
+            return logits[0, -1, :]
+        return logits[-1, :]
+
+    def _select_last_hidden_vector(self, hidden: Any) -> np.ndarray:
+        """Select the last hidden vector and return it as numpy."""
+        if hidden.ndim == 3:
+            return _to_numpy(hidden[0, -1, :]).astype(np.float64, copy=False)
+        return _to_numpy(hidden[-1, :]).astype(np.float64, copy=False)
+
     def _analyze_sync(
         self,
         prompt: str,
@@ -247,10 +286,12 @@ class ModelAnalyzer:
             compute_kl_divergence,
         )
 
-        mx = _mx()
-        # Tokenize
-        input_ids = mx.array(self._tokenizer.encode(prompt))[None, :]
-        tokens = [self._tokenizer.decode([tid]) for tid in input_ids[0].tolist()]
+        token_ids = self._tokenizer.encode(prompt)
+        input_ids = to_backend_tensor(
+            np.asarray(token_ids, dtype=np.int64)[None, :],
+            backend=_get_backend(),
+        )
+        tokens = [self._tokenizer.decode([tid]) for tid in token_ids]
 
         # Get layers to capture
         num_layers = self._get_num_layers()
@@ -274,12 +315,15 @@ class ModelAnalyzer:
         logits = hooks.forward(input_ids)
 
         # Get final predictions
-        final_predictions = self._get_top_predictions(logits[0, -1, :], config.top_k)
+        final_predictions = self._get_top_predictions(
+            self._select_last_token_logits(logits),
+            config.top_k,
+        )
 
         # Get layer predictions using logit lens with entropy
         lens = LogitLens(hooks, self._tokenizer)
         layer_predictions = []
-        layer_probs_cache: dict[int, mx.array] = {}  # Cache probs for transition computation
+        layer_probs_cache: dict[int, np.ndarray] = {}
         vocab_size = self._get_vocab_size()
         max_entropy = math.log(vocab_size)  # Maximum entropy for uniform distribution
 
@@ -302,11 +346,7 @@ class ModelAnalyzer:
             if config.compute_entropy:
                 layer_logits = hooks.get_layer_logits(pred.layer_idx, normalize=True)
                 if layer_logits is not None:
-                    if layer_logits.ndim == 3:
-                        pos_logits = layer_logits[0, -1, :]
-                    else:
-                        pos_logits = layer_logits[-1, :]
-                    probs = mx.softmax(pos_logits)
+                    probs = _softmax_numpy(self._select_last_token_logits(layer_logits))
                     layer_probs_cache[pred.layer_idx] = probs
                     entropy = compute_entropy(probs)
                     entropy_normalized = entropy / max_entropy if max_entropy > 0 else 0.0
@@ -395,7 +435,6 @@ class ModelAnalyzer:
         captured_layers: list[int],
     ) -> list[ResidualContribution]:
         """Compute residual stream decomposition using hidden state differences."""
-        mx = _mx()
         contributions = []
 
         # Get embeddings as the "layer -1" state
@@ -403,43 +442,28 @@ class ModelAnalyzer:
         if embeddings is None:
             return contributions
 
-        # Get last position hidden state from embeddings
-        if embeddings.ndim == 3:
-            prev_hidden = embeddings[0, -1, :]
-        else:
-            prev_hidden = embeddings[-1, :]
+        prev_hidden = self._select_last_hidden_vector(embeddings)
 
         for layer_idx in captured_layers:
             hidden = hooks.state.hidden_states.get(layer_idx)
             if hidden is None:
                 continue
 
-            if hidden.ndim == 3:
-                curr_hidden = hidden[0, -1, :]
-            else:
-                curr_hidden = hidden[-1, :]
+            curr_hidden = self._select_last_hidden_vector(hidden)
 
             # Compute total layer contribution (delta)
             delta = curr_hidden - prev_hidden
-            total_norm = float(mx.sqrt(mx.sum(delta * delta)))
+            total_norm = float(np.linalg.norm(delta))
 
             # Try to get attention and FFN contributions
             attn_output = hooks.state.attention_outputs.get(layer_idx)
             ffn_output = hooks.state.ffn_outputs.get(layer_idx)
 
             if attn_output is not None and ffn_output is not None:
-                if attn_output.ndim == 3:
-                    attn_vec = attn_output[0, -1, :]
-                else:
-                    attn_vec = attn_output[-1, :]
-
-                if ffn_output.ndim == 3:
-                    ffn_vec = ffn_output[0, -1, :]
-                else:
-                    ffn_vec = ffn_output[-1, :]
-
-                attn_norm = float(mx.sqrt(mx.sum(attn_vec * attn_vec)))
-                ffn_norm = float(mx.sqrt(mx.sum(ffn_vec * ffn_vec)))
+                attn_vec = self._select_last_hidden_vector(attn_output)
+                ffn_vec = self._select_last_hidden_vector(ffn_output)
+                attn_norm = float(np.linalg.norm(attn_vec))
+                ffn_norm = float(np.linalg.norm(ffn_vec))
             else:
                 # Approximate: split total contribution equally
                 attn_norm = total_norm / 2.0
@@ -507,13 +531,12 @@ class ModelAnalyzer:
 
     def _get_top_predictions(
         self,
-        logits: mx.array,
+        logits: Any,
         top_k: int,
     ) -> list[TokenPrediction]:
         """Get top-k predictions from logits."""
-        mx = _mx()
-        probs = mx.softmax(logits)
-        top_idx = mx.argsort(probs)[::-1][:top_k].tolist()
+        probs = _softmax_numpy(logits)
+        top_idx = np.argsort(probs)[::-1][:top_k].tolist()
         predictions = []
         for rank, idx in enumerate(top_idx, 1):
             predictions.append(
