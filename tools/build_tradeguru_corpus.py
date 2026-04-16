@@ -71,6 +71,34 @@ class Record:
     info: str
 
 
+@dataclass(frozen=True)
+class CorpusModeConfig:
+    name: str
+    required_keys: tuple[str, ...]
+    default_record_format: str
+    skip_metadata_files: bool = False
+
+
+MODE_CONFIGS: dict[str, CorpusModeConfig] = {
+    "tradeguru": CorpusModeConfig(
+        name="tradeguru",
+        required_keys=("Title", "Info"),
+        default_record_format="compact",
+    ),
+    "aus3000": CorpusModeConfig(
+        name="aus3000",
+        required_keys=(
+            "standard_id",
+            "standard_title",
+            "clause_id",
+            "clause_title",
+        ),
+        default_record_format="compact",
+        skip_metadata_files=True,
+    ),
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract Title/Info fields from JSON pages into a Lazarus-ready corpus text file."
@@ -96,8 +124,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--record-format",
         choices=("compact", "labeled", "tagged"),
-        default="compact",
+        default=None,
         help="How to render each record in the text corpus",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=tuple(MODE_CONFIGS),
+        default="tradeguru",
+        help="Extraction mode / source schema profile",
     )
     parser.add_argument(
         "--model",
@@ -227,19 +261,50 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def load_record(path: Path) -> Record:
-    data = load_json(path)
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected a JSON object, found {type(data).__name__}")
-
+def _load_tradeguru_record(path: Path, data: dict[str, Any]) -> Record:
     title = normalize_text(str(data.get("Title", "")).strip())
     info = normalize_text(str(data.get("Info", "")).strip())
     if not title:
         raise ValueError("Missing or empty Title")
     if not info:
         raise ValueError("Missing or empty Info")
-
     return Record(source_file=path.name, title=title, info=info)
+
+
+def _load_aus3000_record(path: Path, data: dict[str, Any]) -> Record:
+    standard_id = normalize_text(str(data.get("standard_id", "")).strip())
+    standard_title = normalize_text(str(data.get("standard_title", "")).strip())
+    clause_id = normalize_text(str(data.get("clause_id", "")).strip())
+    clause_title = normalize_text(str(data.get("clause_title", "")).strip())
+    clause_content = normalize_text(str(data.get("clause_content", "")).strip())
+
+    if not all((standard_id, standard_title, clause_id, clause_title)):
+        raise ValueError(
+            "Missing one or more required aus3000 fields: "
+            "standard_id, standard_title, clause_id, clause_title"
+        )
+
+    info = "\n".join(
+        [
+            f"standard_id: {standard_id}",
+            f"standard_title: {standard_title}",
+            f"clause_id: {clause_id}",
+            f"clause_content: {clause_content}",
+        ]
+    ).strip()
+    return Record(source_file=path.name, title=f"clause_title: {clause_title}", info=info)
+
+
+def load_record(path: Path, mode: str) -> Record:
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected a JSON object, found {type(data).__name__}")
+
+    if mode == "tradeguru":
+        return _load_tradeguru_record(path, data)
+    if mode == "aus3000":
+        return _load_aus3000_record(path, data)
+    raise ValueError(f"Unsupported mode: {mode}")
 
 
 def copy_to_quarantine(path: Path, quarantine_dir: Path) -> None:
@@ -310,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
     input_dir = args.input_dir.resolve()
     output_path = args.output.resolve()
     manifest_path = args.manifest.resolve()
+    mode_config = MODE_CONFIGS[args.mode]
+    record_format = args.record_format or mode_config.default_record_format
 
     if not input_dir.exists():
         print(f"Input directory not found: {input_dir}", file=sys.stderr)
@@ -324,10 +391,14 @@ def main(argv: list[str] | None = None) -> int:
 
     records: list[Record] = []
     failures: list[dict[str, str]] = []
+    skipped_files: list[dict[str, str]] = []
 
     for path in json_files:
+        if mode_config.skip_metadata_files and path.name.endswith("_metadata.json"):
+            skipped_files.append({"file": path.name, "reason": "metadata sidecar skipped by mode"})
+            continue
         try:
-            records.append(load_record(path))
+            records.append(load_record(path, args.mode))
         except Exception as exc:  # pragma: no cover - exercised via real files
             failures.append({"file": path.name, "error": str(exc)})
             if args.quarantine_dir is not None:
@@ -335,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
 
     corpus_text, included_records, token_count = build_corpus_text(
         records,
-        record_format=args.record_format,
+        record_format=record_format,
         tokenizer=tokenizer,
         max_tokens=args.max_tokens,
     )
@@ -346,10 +417,13 @@ def main(argv: list[str] | None = None) -> int:
     manifest = {
         "input_dir": str(input_dir),
         "output_path": str(output_path),
-        "record_format": args.record_format,
+        "mode": args.mode,
+        "record_format": record_format,
         "model": args.model,
         "max_tokens": args.max_tokens,
         "source_file_count": len(json_files),
+        "skipped_file_count": len(skipped_files),
+        "skipped_files": skipped_files,
         "parsed_record_count": len(records),
         "included_record_count": len(included_records),
         "excluded_due_to_budget_count": len(records) - len(included_records),
@@ -382,6 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Output: {output_path}")
     print(f"Manifest: {manifest_path}")
     print(f"Source JSON files: {len(json_files)}")
+    print(f"Skipped files: {len(skipped_files)}")
     print(f"Included records: {len(included_records)}")
     print(f"Failures: {len(failures)}")
     print(f"Output chars: {len(corpus_text)}")
