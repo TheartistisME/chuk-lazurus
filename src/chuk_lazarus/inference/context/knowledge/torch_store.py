@@ -178,7 +178,7 @@ class TorchKnowledgeStore:
 
     def route(self, query_text: str, tokenizer=None, method: str = "auto") -> int | None:
         if method == "auto":
-            exact_windows = self._route_exact(query_text)
+            exact_windows = self._route_exact(query_text, tokenizer=tokenizer)
             if exact_windows:
                 return exact_windows[0]
             if tokenizer is not None and self.window_tokens:
@@ -204,7 +204,7 @@ class TorchKnowledgeStore:
         if k <= 0:
             return []
 
-        exact_windows = self._route_exact(query_text)
+        exact_windows = self._route_exact(query_text, tokenizer=tokenizer)
         if exact_windows:
             if len(exact_windows) >= k or tokenizer is None:
                 return exact_windows
@@ -303,11 +303,75 @@ class TorchKnowledgeStore:
         router = self._get_keyword_router()
         return router.route(query_text)
 
-    def _route_exact(self, query_text: str) -> list[int]:
+    def _route_exact(self, query_text: str, tokenizer=None) -> list[int]:
         router = self._get_clause_router()
         if router is None:
             return []
-        return router.route_primary_windows(query_text)
+        strong_matches, weak_matches = router.collect_matches(query_text)
+        matches = strong_matches or weak_matches
+        if not matches:
+            return []
+
+        if tokenizer is None or not self.window_tokens:
+            window_ids: list[int] = []
+            seen_window_ids: set[int] = set()
+            for match in matches:
+                for window_id in router.clause_id_to_primary_windows.get(match.clause_id, []):
+                    if window_id not in seen_window_ids:
+                        seen_window_ids.add(window_id)
+                        window_ids.append(window_id)
+            return window_ids
+
+        query_ids = _encode_token_ids(tokenizer, query_text, add_special_tokens=False)
+        tfidf_router = self._get_tfidf_router()
+
+        if strong_matches:
+            scored: list[tuple[int, float, int]] = []
+            for match in strong_matches:
+                for window_id in router.clause_id_to_primary_windows.get(match.clause_id, []):
+                    scored.append((match.start, tfidf_router.score_window(query_ids, window_id), window_id))
+            scored.sort(key=lambda item: (item[0], -item[1], item[2]))
+            window_ids: list[int] = []
+            seen_window_ids: set[int] = set()
+            for _, _, window_id in scored:
+                if window_id not in seen_window_ids:
+                    seen_window_ids.add(window_id)
+                    window_ids.append(window_id)
+            return window_ids
+
+        tfidf_candidates = tfidf_router.route(query_ids, top_k=max(5, len(weak_matches)))
+        if not isinstance(tfidf_candidates, list):
+            tfidf_candidates = [tfidf_candidates] if tfidf_candidates is not None else []
+
+        candidate_ids: list[int] = []
+        weak_ids = set()
+        for match in weak_matches:
+            for window_id in router.clause_id_to_primary_windows.get(match.clause_id, []):
+                if window_id not in weak_ids:
+                    weak_ids.add(window_id)
+                    candidate_ids.append(window_id)
+        for window_id in tfidf_candidates:
+            if window_id not in weak_ids and window_id not in candidate_ids:
+                candidate_ids.append(window_id)
+
+        if not candidate_ids:
+            return []
+
+        scored_candidates: list[tuple[float, int, int]] = []
+        for window_id in candidate_ids:
+            score = tfidf_router.score_window(query_ids, window_id)
+            if window_id in weak_ids:
+                score -= 0.25
+            scored_candidates.append((score, window_id, window_id))
+
+        scored_candidates.sort(key=lambda item: (-item[0], item[1]))
+        window_ids: list[int] = []
+        seen_window_ids: set[int] = set()
+        for _, _, window_id in scored_candidates:
+            if window_id not in seen_window_ids:
+                seen_window_ids.add(window_id)
+                window_ids.append(window_id)
+        return window_ids
 
     def _get_tfidf_router(self) -> TFIDFRouter:
         if self._tfidf_router is None:

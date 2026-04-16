@@ -43,28 +43,23 @@ def _write_npz_mapping(path: Path, mapping: dict[int, list[int] | set[int]]) -> 
 def _write_store(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
 
-    (root / "manifest.json").write_text(
-        json.dumps(
-            {
-                "version": 12,
-                "num_entries": 0,
-                "num_windows": 3,
-                "num_tokens": 9,
-                "entries_per_window": 8,
-                "crystal_layer": 30,
-                "window_size": 512,
-                "arch_config": {
-                    "retrieval_layer": 29,
-                    "query_head": 4,
-                    "injection_layer": 30,
-                },
-                "has_residuals": False,
-                "window_metadata": "window_metadata.json",
-            },
-            indent=2,
-        )
-        + "\n"
-    )
+    manifest = {
+        "version": 12,
+        "num_entries": 0,
+        "num_windows": 9,
+        "num_tokens": 26,
+        "entries_per_window": 8,
+        "crystal_layer": 30,
+        "window_size": 512,
+        "arch_config": {
+            "retrieval_layer": 29,
+            "query_head": 4,
+            "injection_layer": 30,
+        },
+        "has_residuals": False,
+        "window_metadata": "window_metadata.json",
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     _write_npz_mapping(
         root / "window_tokens.npz",
@@ -72,6 +67,12 @@ def _write_store(root: Path) -> Path:
             0: {1, 7},
             1: {1, 2},
             2: {3, 4, 5, 6},
+            3: {10, 11, 30, 31},
+            4: {10, 11, 12, 13, 14, 15},
+            5: {20, 21, 22, 23, 24, 25},
+            6: {11},
+            7: {23},
+            8: {24},
         },
     )
     np.savez(
@@ -80,11 +81,59 @@ def _write_store(root: Path) -> Path:
             "0": np.array([1, 7], dtype=np.uint32),
             "1": np.array([1, 2], dtype=np.uint32),
             "2": np.array([3, 4, 5, 6], dtype=np.uint32),
+            "3": np.array([10, 11, 30, 31], dtype=np.uint32),
+            "4": np.array([10, 11, 12, 13, 14, 15], dtype=np.uint32),
+            "5": np.array([20, 21, 22, 23, 24, 25], dtype=np.uint32),
+            "6": np.array([11], dtype=np.uint32),
+            "7": np.array([23], dtype=np.uint32),
+            "8": np.array([24], dtype=np.uint32),
         },
     )
-    (root / "idf.json").write_text(json.dumps({1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0, 6: 1.0, 7: 1.0}, indent=2) + "\n")
+    (root / "idf.json").write_text(
+        json.dumps(
+            {
+                1: 1.0,
+                2: 1.0,
+                3: 1.0,
+                4: 1.0,
+                5: 1.0,
+                6: 1.0,
+                7: 1.0,
+                10: 1.0,
+                11: 1.0,
+                12: 1.0,
+                13: 1.0,
+                14: 1.0,
+                15: 1.0,
+                20: 1.0,
+                21: 1.0,
+                22: 1.0,
+                23: 1.0,
+                24: 1.0,
+                25: 1.0,
+                30: 1.0,
+                31: 1.0,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     (root / "keywords.json").write_text(
-        json.dumps({0: ["accessible"], 1: ["accessible", "readily"], 2: ["rcd"]}, indent=2) + "\n"
+        json.dumps(
+            {
+                0: ["accessible"],
+                1: ["accessible", "readily"],
+                2: ["rcd"],
+                3: ["basic", "protection"],
+                4: ["basic", "protection"],
+                5: ["faults", "live", "conductors"],
+                6: ["protection"],
+                7: ["live"],
+                8: ["conductors"],
+            },
+            indent=2,
+        )
+        + "\n"
     )
     (root / "window_metadata.json").write_text(
         json.dumps(
@@ -99,6 +148,42 @@ def _write_store(root: Path) -> Path:
                 "2": {
                     "clause_id": "1.4.102",
                     "clause_title": "Residual current device (RCD)",
+                    "part_index": 1,
+                    "part_count": 1,
+                },
+                "3": {
+                    "clause_id": "1.5.4",
+                    "clause_title": "Basic protection",
+                    "part_index": 1,
+                    "part_count": 1,
+                },
+                "4": {
+                    "clause_id": "1.5.6.1",
+                    "clause_title": "Basic protection",
+                    "part_index": 1,
+                    "part_count": 1,
+                },
+                "5": {
+                    "clause_id": "2.6.1",
+                    "clause_title": "General",
+                    "part_index": 1,
+                    "part_count": 1,
+                },
+                "6": {
+                    "clause_id": "4.10.2",
+                    "clause_title": "PROTECTION",
+                    "part_index": 1,
+                    "part_count": 1,
+                },
+                "7": {
+                    "clause_id": "1.4.78",
+                    "clause_title": "Live",
+                    "part_index": 1,
+                    "part_count": 1,
+                },
+                "8": {
+                    "clause_id": "5.5.6.1",
+                    "clause_title": "Conductors",
                     "part_index": 1,
                     "part_count": 1,
                 },
@@ -149,7 +234,42 @@ def test_exact_routing_beats_tf_idf_ties(tmp_path):
     store = TorchKnowledgeStore.load(_write_store(tmp_path / "clause_store"))
     tokenizer = SimpleTokenizer({"accessible": 1})
 
-    # TF-IDF would prefer window 1 on a tie because it has the higher id, but
-    # the exact title route must pin the prompt to the clause 1.4.2 window.
     assert store.route("Accessible", tokenizer=tokenizer, method="auto") == 0
 
+
+def test_rcd_prompts_fall_through_to_stronger_clause_evidence(tmp_path):
+    store = TorchKnowledgeStore.load(_write_store(tmp_path / "clause_store"))
+    tokenizer = SimpleTokenizer(
+        {
+            "accessible": 1,
+            "readily": 2,
+            "residual": 3,
+            "current": 4,
+            "device": 5,
+            "rcd": 6,
+            "rcds": 6,
+            "basic": 10,
+            "protection": 11,
+            "sole": 12,
+            "means": 13,
+            "normal": 14,
+            "service": 15,
+            "recognized": 16,
+            "provide": 20,
+            "faults": 21,
+            "between": 22,
+            "live": 23,
+            "conductors": 24,
+        }
+    )
+
+    assert store.route(
+        "Are RCDs recognized as a sole means of basic protection in normal service?",
+        tokenizer=tokenizer,
+        method="auto",
+    ) == 4
+    assert store.route(
+        "Do RCDs provide protection against faults between live conductors?",
+        tokenizer=tokenizer,
+        method="auto",
+    ) == 5

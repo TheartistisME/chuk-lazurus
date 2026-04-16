@@ -22,6 +22,7 @@ from ..research._stopwords import WORD_RE as _WORD_RE
 _CLAUSE_ID_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
 _CLAUSE_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _PAREN_CONTENT_RE = re.compile(r"\(([^)]*)\)")
+_GENERIC_SINGLE_TOKEN_TITLES = {"rcds", "protection", "live", "conductors", "general"}
 
 # ── Keyword extraction helpers ───────────────────────────────────────
 
@@ -86,6 +87,14 @@ class _ClauseAliasPattern:
     clause_id: str
 
 
+@dataclass(frozen=True)
+class _ClauseMatch:
+    clause_id: str
+    start: int
+    token_count: int
+    is_weak: bool
+
+
 @dataclass
 class ClauseMetadataRouter:
     """Exact clause router built from window_metadata.json.
@@ -147,24 +156,26 @@ class ClauseMetadataRouter:
             alias_patterns=alias_patterns,
         )
 
-    def route_primary_windows(self, query_text: str) -> list[int]:
-        """Return primary windows for exact clause-id and title matches."""
+    def collect_matches(self, query_text: str) -> tuple[list[_ClauseMatch], list[_ClauseMatch]]:
+        """Return strong and weak clause matches in query order."""
 
         if not self.window_metadata:
-            return []
+            return [], []
 
-        matched_clause_ids: list[str] = []
-        seen_clause_ids: set[str] = set()
+        strong_by_clause: dict[str, _ClauseMatch] = {}
+        weak_by_clause: dict[str, _ClauseMatch] = {}
 
         for clause_match in _CLAUSE_ID_RE.finditer(query_text):
             clause_id = clause_match.group(0)
-            if clause_id in self.clause_id_to_primary_windows and clause_id not in seen_clause_ids:
-                seen_clause_ids.add(clause_id)
-                matched_clause_ids.append(clause_id)
+            if clause_id in self.clause_id_to_primary_windows:
+                strong_by_clause[clause_id] = _ClauseMatch(
+                    clause_id=clause_id,
+                    start=clause_match.start(),
+                    token_count=0,
+                    is_weak=False,
+                )
 
         query_tokens = _normalize_clause_tokens(query_text)
-        occupied: set[int] = set()
-        alias_hits: list[tuple[int, int, str]] = []
         for pattern in self.alias_patterns:
             tokens = pattern.tokens
             token_count = len(tokens)
@@ -172,28 +183,44 @@ class ClauseMetadataRouter:
                 continue
             max_start = len(query_tokens) - token_count
             for start in range(max_start + 1):
-                span = range(start, start + token_count)
-                if any(index in occupied for index in span):
+                if tuple(query_tokens[start : start + token_count]) != tokens:
                     continue
-                if tuple(query_tokens[start : start + token_count]) == tokens:
-                    occupied.update(span)
-                    alias_hits.append((start, token_count, pattern.clause_id))
-                    break
 
-        alias_hits.sort(key=lambda item: (item[0], -item[1]))
-        for _, _, clause_id in alias_hits:
-            if clause_id not in seen_clause_ids:
-                seen_clause_ids.add(clause_id)
-                matched_clause_ids.append(clause_id)
+                match = _ClauseMatch(
+                    clause_id=pattern.clause_id,
+                    start=start,
+                    token_count=token_count,
+                    is_weak=token_count == 1 and tokens[0] in _GENERIC_SINGLE_TOKEN_TITLES,
+                )
+                if match.is_weak:
+                    if pattern.clause_id not in strong_by_clause and pattern.clause_id not in weak_by_clause:
+                        weak_by_clause[pattern.clause_id] = match
+                else:
+                    existing = strong_by_clause.get(pattern.clause_id)
+                    if existing is None or (match.start, -match.token_count) < (existing.start, -existing.token_count):
+                        strong_by_clause[pattern.clause_id] = match
+                break
 
+        strong_matches = sorted(
+            strong_by_clause.values(),
+            key=lambda item: (item.start, -item.token_count, item.clause_id),
+        )
+        weak_matches = sorted(
+            weak_by_clause.values(),
+            key=lambda item: (item.start, -item.token_count, item.clause_id),
+        )
+        return strong_matches, weak_matches
+
+    def route_primary_windows(self, query_text: str) -> list[int]:
+        strong_matches, weak_matches = self.collect_matches(query_text)
+        matches = strong_matches or weak_matches
         window_ids: list[int] = []
         seen_window_ids: set[int] = set()
-        for clause_id in matched_clause_ids:
-            for window_id in self.clause_id_to_primary_windows.get(clause_id, []):
+        for match in matches:
+            for window_id in self.clause_id_to_primary_windows.get(match.clause_id, []):
                 if window_id not in seen_window_ids:
                     seen_window_ids.add(window_id)
                     window_ids.append(window_id)
-
         return window_ids
 
 
@@ -309,6 +336,14 @@ class TFIDFRouter:
                 best_score = score
                 best_wid = wid
         return best_wid, best_score
+
+    def score_window(self, query_token_ids: list[int], window_id: int) -> float:
+        tokens = self.window_tokens.get(window_id)
+        if not tokens:
+            return 0.0
+        query_set = set(query_token_ids)
+        overlap = query_set & tokens
+        return sum(self.idf.get(t, 0.0) for t in overlap)
 
     # ── Build helpers ─────────────────────────────────────────────────
 
