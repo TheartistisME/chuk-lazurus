@@ -9,34 +9,34 @@ from unittest.mock import patch
 
 
 def _make_args(**overrides) -> Namespace:
-    base = dict(
-        model="test-model",
-        checkpoint=None,
-        prompt="hello world",
-        prompt_file=None,
-        max_tokens=32,
-        temperature=0.25,
-        replay=None,
-        find=None,
-        top_k=None,
-        strategy=None,
-        speculative_tokens=50,
-        max_rounds=3,
-        system_prompt=None,
-        no_chat_template=False,
-        max_keywords=3,
-        no_framing=False,
-        span_radius=None,
-        mode="auto",
-        token_budget=None,
-        broad_windows=None,
-        broad_strategy=None,
-        routing_layer=29,
-        routing_head=4,
-        confidence_threshold=0.15,
-        backend=None,
-        device=None,
-    )
+    base = {
+        "model": "test-model",
+        "checkpoint": None,
+        "prompt": "hello world",
+        "prompt_file": None,
+        "max_tokens": 32,
+        "temperature": 0.25,
+        "replay": None,
+        "find": None,
+        "top_k": None,
+        "strategy": None,
+        "speculative_tokens": 50,
+        "max_rounds": 3,
+        "system_prompt": None,
+        "no_chat_template": False,
+        "max_keywords": 3,
+        "no_framing": False,
+        "span_radius": None,
+        "mode": "auto",
+        "token_budget": None,
+        "broad_windows": None,
+        "broad_strategy": None,
+        "routing_layer": 29,
+        "routing_head": 4,
+        "confidence_threshold": 0.15,
+        "backend": None,
+        "device": None,
+    }
     base.update(overrides)
     return Namespace(**base)
 
@@ -109,7 +109,6 @@ def test_generate_checkpoint_torch_dispatches_to_sidecar_query(tmp_path: Path) -
         backend="torch",
         device="cuda:0",
         system_prompt="keep it grounded",
-        no_chat_template=True,
     )
 
     with (
@@ -132,8 +131,175 @@ def test_generate_checkpoint_torch_dispatches_to_sidecar_query(tmp_path: Path) -
         device="cuda:0",
         store_path=store_path,
         system_prompt="keep it grounded",
+        no_chat_template=False,
+    )
+
+
+def test_generate_checkpoint_torch_uses_manual_runner_for_no_chat_template(
+    tmp_path: Path,
+) -> None:
+    from chuk_lazarus.cli.commands.context.generate._cmd import context_generate_cmd
+
+    checkpoint = tmp_path / "checkpoint"
+    store_path = _write_torch_sidecar(checkpoint)
+    (store_path / "manifest.json").write_text("{}\n")
+    args = _make_args(
+        checkpoint=str(checkpoint),
+        top_k=7,
+        backend="torch",
+        device="cuda:0",
+        system_prompt="keep it grounded",
         no_chat_template=True,
     )
+
+    with (
+        patch(
+            "chuk_lazarus.models_v2.core.backend.get_backend",
+            return_value=SimpleNamespace(name="torch", device="cuda:0"),
+        ),
+        patch(
+            "chuk_lazarus.cli.commands.context.generate._torch._run_torch_store_generate"
+        ) as mocked_manual,
+        patch(
+            "chuk_lazarus.inference.context.knowledge.torch_query.run_torch_query_command"
+        ) as mocked_query,
+    ):
+        asyncio.run(context_generate_cmd(args))
+
+    mocked_manual.assert_called_once_with(
+        model_id="test-model",
+        prompt="hello world",
+        max_new_tokens=32,
+        temperature=0.25,
+        top_k=7,
+        device="cuda:0",
+        store_path=store_path,
+        replay_arg=None,
+        find_term=None,
+        system_prompt="keep it grounded",
+        no_chat_template=True,
+    )
+    mocked_query.assert_not_called()
+
+
+def test_generate_checkpoint_torch_uses_manual_runner_for_explicit_replay(
+    tmp_path: Path,
+) -> None:
+    from chuk_lazarus.cli.commands.context.generate._cmd import context_generate_cmd
+
+    checkpoint = tmp_path / "checkpoint"
+    store_path = _write_torch_sidecar(checkpoint)
+    (store_path / "manifest.json").write_text("{}\n")
+    args = _make_args(
+        checkpoint=str(checkpoint),
+        replay=["0", "1"],
+        backend="torch",
+        device="cuda:0",
+    )
+
+    with (
+        patch(
+            "chuk_lazarus.models_v2.core.backend.get_backend",
+            return_value=SimpleNamespace(name="torch", device="cuda:0"),
+        ),
+        patch(
+            "chuk_lazarus.cli.commands.context.generate._torch._run_torch_store_generate"
+        ) as mocked_manual,
+        patch(
+            "chuk_lazarus.inference.context.knowledge.torch_query.run_torch_query_command"
+        ) as mocked_query,
+    ):
+        asyncio.run(context_generate_cmd(args))
+
+    mocked_manual.assert_called_once_with(
+        model_id="test-model",
+        prompt="hello world",
+        max_new_tokens=32,
+        temperature=0.25,
+        top_k=3,
+        device="cuda:0",
+        store_path=store_path,
+        replay_arg=["0", "1"],
+        find_term=None,
+        system_prompt=None,
+        no_chat_template=False,
+    )
+    mocked_query.assert_not_called()
+
+
+def test_generate_checkpoint_torch_uses_unified_default_top_k(tmp_path: Path) -> None:
+    from chuk_lazarus.cli.commands.context.generate._cmd import context_generate_cmd
+
+    checkpoint = tmp_path / "checkpoint"
+    store_path = _write_torch_sidecar(checkpoint)
+    (store_path / "manifest.json").write_text("{}\n")
+    args = _make_args(
+        checkpoint=str(checkpoint),
+        strategy="unified",
+        backend="torch",
+        device="cuda:0",
+    )
+
+    with (
+        patch(
+            "chuk_lazarus.models_v2.core.backend.get_backend",
+            return_value=SimpleNamespace(name="torch", device="cuda:0"),
+        ),
+        patch(
+            "chuk_lazarus.inference.context.knowledge.torch_query.run_torch_query_command"
+        ) as mocked_query,
+    ):
+        asyncio.run(context_generate_cmd(args))
+
+    mocked_query.assert_called_once_with(
+        model_id="test-model",
+        prompt="hello world",
+        max_new_tokens=32,
+        temperature=0.25,
+        top_k=10,
+        device="cuda:0",
+        store_path=store_path,
+        system_prompt=None,
+        no_chat_template=False,
+    )
+
+
+def test_render_torch_context_prompt_raw_mode_omits_system_prompt() -> None:
+    from chuk_lazarus.cli.commands.context.generate._torch import _render_torch_context_prompt
+
+    tokenizer = SimpleNamespace(
+        apply_chat_template=lambda *args, **kwargs: "chat-template should not be used"
+    )
+    prompt = _render_torch_context_prompt(
+        tokenizer,
+        question="Where was Apollo discussed?",
+        context_blocks=["apollo launch transcript"],
+        window_keywords=["apollo", "launch"],
+        mode="context-replay",
+        system_prompt="keep it grounded",
+        no_chat_template=True,
+    )
+
+    assert "SYSTEM:" not in prompt
+    assert "keep it grounded" not in prompt
+    assert "Knowledge store context:" in prompt
+    assert "Question: Where was Apollo discussed?" in prompt
+    assert prompt.endswith("Answer:")
+
+
+def test_torch_replay_library_view_finds_window_case_insensitively() -> None:
+    from chuk_lazarus.cli.commands.context.generate._torch import _TorchReplayLibraryView
+
+    store = SimpleNamespace(
+        num_windows=2,
+        get_window_text=lambda window_id, tokenizer: (
+            "apollo launch transcript" if window_id == 0 else "coyle follow up"
+        ),
+    )
+
+    view = _TorchReplayLibraryView(store, tokenizer=object())
+
+    assert view.find_window_for_term("COYLE", None) == 1
 
 
 def test_generate_checkpoint_torch_errors_when_sidecar_missing(
