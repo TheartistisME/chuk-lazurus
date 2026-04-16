@@ -43,7 +43,12 @@ def _write_npz_mapping(path: Path, mapping: dict[int, list[int] | set[int]]) -> 
     np.savez(str(path), **arrays)
 
 
-def _make_synthetic_store(root: Path) -> Path:
+def _write_window_metadata(path: Path, metadata: dict[int, dict[str, object]]) -> None:
+    payload = {str(window_id): value for window_id, value in metadata.items()}
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _make_synthetic_store(root: Path, window_metadata: dict[int, dict[str, object]] | None = None) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "boundaries").mkdir(exist_ok=True)
 
@@ -62,6 +67,8 @@ def _make_synthetic_store(root: Path) -> Path:
         },
         "has_residuals": False,
     }
+    if window_metadata is not None:
+        manifest["num_windows"] = max(manifest["num_windows"], max(window_metadata.keys(), default=-1) + 1)
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     _write_npz_mapping(
@@ -84,6 +91,8 @@ def _make_synthetic_store(root: Path) -> Path:
     (root / "keywords.json").write_text(
         json.dumps({0: ["apollo", "launch"], 1: ["coyle", "transcript"]}, indent=2) + "\n"
     )
+    if window_metadata is not None:
+        _write_window_metadata(root / "window_metadata.json", window_metadata)
     np.savez(
         str(root / "entries.npz"),
         entries=np.array(
@@ -154,6 +163,7 @@ def test_synthetic_store_routes_and_loads_boundaries(tmp_path):
     assert store.route("coyle discussion", method="keyword") == 1
     assert store.get_window_text(1, tokenizer) == "coyle transcript"
     assert store.route_top_k("apollo launch", tokenizer, k=2, expansion_ids=[5, 6]) == [0, 1]
+    assert store.window_metadata == {}
 
     boundary = store.load_boundary(0)
     assert boundary.shape == (4,)
@@ -174,3 +184,38 @@ def test_log_stats_reports_torch_store(capsys, tmp_path):
     captured = capsys.readouterr()
     assert "TorchKnowledgeStore v12" in captured.out
     assert "2 windows" in captured.out
+
+
+def test_loads_window_metadata_and_routes_exact_clauses(tmp_path):
+    metadata = {
+        0: {"clause_id": "1.4.2", "clause_title": "Accessible", "part_index": 1, "part_count": 1},
+        1: {
+            "clause_id": "1.4.3",
+            "clause_title": "Accessible, readily",
+            "part_index": 1,
+            "part_count": 1,
+        },
+        2: {
+            "clause_id": "1.4.102",
+            "clause_title": "Residual current device (RCD)",
+            "part_index": 1,
+            "part_count": 1,
+        },
+    }
+    store = TorchKnowledgeStore.load(_make_synthetic_store(tmp_path / "clause_store", metadata))
+    tokenizer = SimpleTokenizer(
+        {
+            "accessible": 1,
+            "readily": 2,
+            "residual": 3,
+            "current": 4,
+            "device": 5,
+            "rcd": 6,
+        }
+    )
+
+    assert store.window_metadata[0]["clause_id"] == "1.4.2"
+    assert store.route("1.4.2", tokenizer=tokenizer, method="auto") == 0
+    assert store.route("Accessible", tokenizer=tokenizer, method="auto") == 0
+    assert store.route("Residual current device (RCD)", tokenizer=tokenizer, method="auto") == 2
+    assert store.route_top_k("Accessible and Accessible, readily", tokenizer, k=1) == [0, 1]

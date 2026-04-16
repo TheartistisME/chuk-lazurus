@@ -11,11 +11,17 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..research._stopwords import FUNCTION_WORDS as _FUNCTION_WORDS
 from ..research._stopwords import WORD_RE as _WORD_RE
+
+_CLAUSE_ID_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
+_CLAUSE_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_PAREN_CONTENT_RE = re.compile(r"\(([^)]*)\)")
 
 # ── Keyword extraction helpers ───────────────────────────────────────
 
@@ -35,6 +41,35 @@ def _extract_keywords_from_text(text: str, max_keywords: int = 10) -> list[str]:
     return result
 
 
+def _normalize_clause_tokens(text: str) -> list[str]:
+    return _CLAUSE_TOKEN_RE.findall(text.lower())
+
+
+def _title_alias_token_sequences(title: str) -> list[tuple[str, ...]]:
+    """Generate normalized token sequences that can identify a clause title.
+
+    The full title is always included. If the title contains parenthetical
+    acronyms, also include the stripped title and the acronym itself.
+    """
+
+    candidates: list[tuple[str, ...]] = []
+
+    full_title = tuple(_normalize_clause_tokens(title))
+    if full_title:
+        candidates.append(full_title)
+
+    stripped_title = tuple(_normalize_clause_tokens(_PAREN_CONTENT_RE.sub(" ", title)))
+    if stripped_title and stripped_title not in candidates:
+        candidates.append(stripped_title)
+
+    for content in _PAREN_CONTENT_RE.findall(title):
+        content_tokens = tuple(_normalize_clause_tokens(content))
+        if content_tokens and content_tokens not in candidates:
+            candidates.append(content_tokens)
+
+    return candidates
+
+
 def extract_window_keywords(
     token_ids: list[int],
     tokenizer,
@@ -43,6 +78,123 @@ def extract_window_keywords(
     """Extract keywords from a window's tokens for the sparse index."""
     text = tokenizer.decode(token_ids, skip_special_tokens=True)
     return _extract_keywords_from_text(text, max_keywords=max_keywords)
+
+
+@dataclass(frozen=True)
+class _ClauseAliasPattern:
+    tokens: tuple[str, ...]
+    clause_id: str
+
+
+@dataclass
+class ClauseMetadataRouter:
+    """Exact clause router built from window_metadata.json.
+
+    The router is intentionally conservative: it only matches exact clause
+    ids or normalized clause-title / acronym phrases, then returns the
+    primary window for each matched clause in query order.
+    """
+
+    window_metadata: dict[int, dict[str, Any]]
+    clause_id_to_primary_windows: dict[str, list[int]]
+    alias_patterns: list[_ClauseAliasPattern]
+
+    @classmethod
+    def from_window_metadata(
+        cls, window_metadata: dict[int, dict[str, Any]]
+    ) -> ClauseMetadataRouter:
+        clause_groups: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        for window_id, metadata in window_metadata.items():
+            clause_id = str(metadata.get("clause_id", "")).strip()
+            if not clause_id:
+                continue
+            clause_groups.setdefault(clause_id, []).append((int(window_id), metadata))
+
+        clause_id_to_primary_windows: dict[str, list[int]] = {}
+        alias_patterns: list[_ClauseAliasPattern] = []
+
+        for clause_id, rows in clause_groups.items():
+            rows.sort(
+                key=lambda item: (
+                    int(item[1].get("part_index", 1) or 1),
+                    int(item[0]),
+                )
+            )
+            primary_windows = [
+                window_id
+                for window_id, metadata in rows
+                if int(metadata.get("part_index", 1) or 1) == 1
+            ]
+            if not primary_windows:
+                primary_windows = [rows[0][0]]
+            clause_id_to_primary_windows[clause_id] = primary_windows
+
+            representative = rows[0][1]
+            title = str(representative.get("clause_title", "")).strip()
+            alias_tokens = _title_alias_token_sequences(title)
+            for tokens in alias_tokens:
+                alias_patterns.append(
+                    _ClauseAliasPattern(
+                        tokens=tokens,
+                        clause_id=clause_id,
+                    )
+                )
+
+        alias_patterns.sort(key=lambda pattern: (-len(pattern.tokens), pattern.clause_id))
+        return cls(
+            window_metadata=window_metadata,
+            clause_id_to_primary_windows=clause_id_to_primary_windows,
+            alias_patterns=alias_patterns,
+        )
+
+    def route_primary_windows(self, query_text: str) -> list[int]:
+        """Return primary windows for exact clause-id and title matches."""
+
+        if not self.window_metadata:
+            return []
+
+        matched_clause_ids: list[str] = []
+        seen_clause_ids: set[str] = set()
+
+        for clause_match in _CLAUSE_ID_RE.finditer(query_text):
+            clause_id = clause_match.group(0)
+            if clause_id in self.clause_id_to_primary_windows and clause_id not in seen_clause_ids:
+                seen_clause_ids.add(clause_id)
+                matched_clause_ids.append(clause_id)
+
+        query_tokens = _normalize_clause_tokens(query_text)
+        occupied: set[int] = set()
+        alias_hits: list[tuple[int, int, str]] = []
+        for pattern in self.alias_patterns:
+            tokens = pattern.tokens
+            token_count = len(tokens)
+            if token_count == 0 or token_count > len(query_tokens):
+                continue
+            max_start = len(query_tokens) - token_count
+            for start in range(max_start + 1):
+                span = range(start, start + token_count)
+                if any(index in occupied for index in span):
+                    continue
+                if tuple(query_tokens[start : start + token_count]) == tokens:
+                    occupied.update(span)
+                    alias_hits.append((start, token_count, pattern.clause_id))
+                    break
+
+        alias_hits.sort(key=lambda item: (item[0], -item[1]))
+        for _, _, clause_id in alias_hits:
+            if clause_id not in seen_clause_ids:
+                seen_clause_ids.add(clause_id)
+                matched_clause_ids.append(clause_id)
+
+        window_ids: list[int] = []
+        seen_window_ids: set[int] = set()
+        for clause_id in matched_clause_ids:
+            for window_id in self.clause_id_to_primary_windows.get(clause_id, []):
+                if window_id not in seen_window_ids:
+                    seen_window_ids.add(window_id)
+                    window_ids.append(window_id)
+
+        return window_ids
 
 
 # ── Sparse keyword index ─────────────────────────────────────────────

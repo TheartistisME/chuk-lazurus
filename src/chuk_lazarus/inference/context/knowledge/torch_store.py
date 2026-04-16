@@ -22,13 +22,14 @@ except Exception:  # pragma: no cover - exercised only on hosts without torch
     torch = None
 
 from .config import ArchitectureConfig
-from .route import KeywordRouter, TFIDFRouter
+from .route import ClauseMetadataRouter, KeywordRouter, TFIDFRouter
 
 MANIFEST_FILE = "manifest.json"
 WINDOW_TOKENS_FILE = "window_tokens.npz"
 WINDOW_TOKEN_LISTS_FILE = "window_token_lists.npz"
 IDF_FILE = "idf.json"
 KEYWORDS_FILE = "keywords.json"
+WINDOW_METADATA_FILE = "window_metadata.json"
 BOUNDARIES_DIR = "boundaries"
 STORE_VERSION = 12
 
@@ -71,6 +72,27 @@ def _load_json_int_list_map(path: Path) -> dict[int, list[str]]:
     return {int(k): [str(v) for v in values] for k, values in raw.items()}
 
 
+def _load_window_metadata_map(path: Path) -> dict[int, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text())
+    result: dict[int, dict[str, Any]] = {}
+
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            result[int(key)] = dict(value)
+        return result
+
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict) or "window_id" not in item:
+                continue
+            result[int(item["window_id"])] = dict(item)
+        return result
+
+    raise ValueError(f"Unsupported window metadata format in {path}")
+
+
 def _encode_token_ids(tokenizer: Any, text: str, *, add_special_tokens: bool = False) -> list[int]:
     try:
         token_ids = tokenizer.encode(text, add_special_tokens=add_special_tokens)
@@ -95,11 +117,13 @@ class TorchKnowledgeStore:
     idf: dict[int, float]
     keywords: dict[int, list[str]]
     config: ArchitectureConfig
+    window_metadata: dict[int, dict[str, Any]] = field(default_factory=dict)
     num_windows: int = 0
     num_tokens: int = 0
     _store_path: Path | None = field(default=None, repr=False)
     _tfidf_router: TFIDFRouter | None = field(default=None, repr=False)
     _keyword_router: KeywordRouter | None = field(default=None, repr=False)
+    _clause_router: ClauseMetadataRouter | None = field(default=None, repr=False)
 
     @classmethod
     def load(cls, path: Path | str) -> TorchKnowledgeStore:
@@ -119,10 +143,18 @@ class TorchKnowledgeStore:
             idf = TFIDFRouter.compute_idf(window_tokens)
 
         keywords = _load_json_int_list_map(path / KEYWORDS_FILE)
+        window_metadata_name = manifest.get("window_metadata", WINDOW_METADATA_FILE)
+        window_metadata_path = Path(window_metadata_name)
+        if not window_metadata_path.is_absolute():
+            window_metadata_path = path / window_metadata_path
+        window_metadata = _load_window_metadata_map(window_metadata_path)
 
         num_windows = int(manifest.get("num_windows", max(window_tokens.keys(), default=-1) + 1))
         if num_windows == 0 and window_token_lists:
             num_windows = max(window_token_lists.keys(), default=-1) + 1
+        if window_metadata:
+            metadata_num_windows = max(window_metadata.keys(), default=-1) + 1
+            num_windows = max(num_windows, metadata_num_windows)
 
         num_tokens = int(
             manifest.get(
@@ -137,6 +169,7 @@ class TorchKnowledgeStore:
             idf=idf,
             keywords=keywords,
             config=config,
+            window_metadata=window_metadata,
             num_windows=num_windows,
             num_tokens=num_tokens,
         )
@@ -145,6 +178,9 @@ class TorchKnowledgeStore:
 
     def route(self, query_text: str, tokenizer=None, method: str = "auto") -> int | None:
         if method == "auto":
+            exact_windows = self._route_exact(query_text)
+            if exact_windows:
+                return exact_windows[0]
             if tokenizer is not None and self.window_tokens:
                 wid = self._route_tfidf(query_text, tokenizer)
                 if wid is not None:
@@ -167,6 +203,32 @@ class TorchKnowledgeStore:
     ) -> list[int]:
         if k <= 0:
             return []
+
+        exact_windows = self._route_exact(query_text)
+        if exact_windows:
+            if len(exact_windows) >= k or tokenizer is None:
+                return exact_windows
+
+            router = self._get_tfidf_router()
+            query_ids = _encode_token_ids(tokenizer, query_text, add_special_tokens=False)
+            if expansion_ids:
+                useful = [int(t) for t in expansion_ids if self.idf.get(int(t), 0.0) > 0]
+                if useful:
+                    query_ids = query_ids + useful
+            tfidf_result = router.route(query_ids, top_k=k)
+            if not isinstance(tfidf_result, list):
+                tfidf_result = [tfidf_result] if tfidf_result is not None else []
+
+            seen = set(exact_windows)
+            merged = list(exact_windows)
+            for wid in tfidf_result:
+                if wid not in seen:
+                    merged.append(wid)
+                    seen.add(wid)
+                if len(merged) >= k:
+                    break
+            return merged
+
         router = self._get_tfidf_router()
         query_ids = _encode_token_ids(tokenizer, query_text, add_special_tokens=False)
 
@@ -241,6 +303,12 @@ class TorchKnowledgeStore:
         router = self._get_keyword_router()
         return router.route(query_text)
 
+    def _route_exact(self, query_text: str) -> list[int]:
+        router = self._get_clause_router()
+        if router is None:
+            return []
+        return router.route_primary_windows(query_text)
+
     def _get_tfidf_router(self) -> TFIDFRouter:
         if self._tfidf_router is None:
             self._tfidf_router = TFIDFRouter(self.window_tokens, self.idf)
@@ -250,6 +318,11 @@ class TorchKnowledgeStore:
         if self._keyword_router is None:
             self._keyword_router = KeywordRouter(self.keywords)
         return self._keyword_router
+
+    def _get_clause_router(self) -> ClauseMetadataRouter | None:
+        if self._clause_router is None and self.window_metadata:
+            self._clause_router = ClauseMetadataRouter.from_window_metadata(self.window_metadata)
+        return self._clause_router
 
 
 __all__ = ["TorchKnowledgeStore", "STORE_VERSION"]
