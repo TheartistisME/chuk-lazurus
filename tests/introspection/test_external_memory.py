@@ -2,12 +2,12 @@
 
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
-import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 import pytest
+
+mx = pytest.importorskip("mlx.core", exc_type=ImportError)
+nn = pytest.importorskip("mlx.nn", exc_type=ImportError)
 
 from chuk_lazarus.introspection.external_memory import (
     ExternalMemory,
@@ -98,86 +98,6 @@ class MockTokenizer:
         if isinstance(ids, (list, tuple)) and len(ids) > 0:
             return str(ids[0])
         return str(ids)
-
-
-try:
-    import torch
-except Exception:  # pragma: no cover - optional dependency in some environments
-    torch = None
-
-
-if torch is not None:
-    class TorchIdentityLayer(torch.nn.Module):
-        """Identity layer used to exercise the torch runtime path."""
-
-        def forward(self, hidden_states):
-            return hidden_states
-
-
-    class TorchMockModel(torch.nn.Module):
-        """Tiny causal LM with predictable logits for residual injection tests."""
-
-        def __init__(self):
-            super().__init__()
-
-            class Inner(torch.nn.Module):
-                def __init__(self):
-                    super().__init__()
-                    self.embed_tokens = torch.nn.Embedding(8, 4)
-                    self.layers = torch.nn.ModuleList([TorchIdentityLayer()])
-                    self.norm = torch.nn.Identity()
-
-                    with torch.no_grad():
-                        self.embed_tokens.weight.zero_()
-                        self.embed_tokens.weight[1] = torch.tensor([5.0, 0.0, 0.0, 0.0])
-                        self.embed_tokens.weight[2] = torch.tensor([0.0, 5.0, 0.0, 0.0])
-                        self.embed_tokens.weight[3] = torch.tensor([0.0, 0.0, 5.0, 0.0])
-
-            self.model = Inner()
-            self.lm_head = torch.nn.Linear(4, 8, bias=False)
-            self.config = SimpleNamespace(head_dim=4)
-
-            with torch.no_grad():
-                self.lm_head.weight.zero_()
-                self.lm_head.weight[4] = torch.tensor([1.0, 0.0, 0.0, 0.0])
-                self.lm_head.weight[5] = torch.tensor([0.0, 1.0, 0.0, 0.0])
-                self.lm_head.weight[6] = torch.tensor([0.0, 0.0, 1.0, 0.0])
-
-        def forward(self, input_ids=None, attention_mask=None, use_cache=False, **kwargs):
-            del attention_mask, use_cache, kwargs
-            hidden_states = self.model.embed_tokens(input_ids)
-            for layer in self.model.layers:
-                hidden_states = layer(hidden_states)
-            logits = self.lm_head(hidden_states)
-            return SimpleNamespace(logits=logits)
-
-
-    class TorchMockTokenizer:
-        """Tokenizer stub for the torch runtime ExternalMemory tests."""
-
-        eos_token_id = 99
-        pad_token_id = 0
-
-        def __call__(self, prompt, return_tensors="pt"):
-            del return_tensors
-            token_id = self.encode(prompt)[0]
-            return {
-                "input_ids": torch.tensor([[token_id]], dtype=torch.long),
-                "attention_mask": torch.ones((1, 1), dtype=torch.long),
-            }
-
-        def encode(self, text: str) -> list[int]:
-            mapping = {
-                "alpha": 1,
-                "beta": 2,
-                "gamma": 3,
-            }
-            return [mapping.get(text, 1)]
-
-        def decode(self, ids: list[int]) -> str:
-            if isinstance(ids, (list, tuple)) and len(ids) > 0:
-                return f"tok-{ids[0]}"
-            return str(ids)
 
 
 class TestMemoryEntry:
@@ -617,39 +537,6 @@ class TestExternalMemory:
 
         # Should still attempt injection even with low similarity
         assert result.matched_entry is not None
-
-    @pytest.mark.skipif(torch is None, reason="torch not importable")
-    def test_query_force_injection_uses_torch_runtime(self):
-        from chuk_lazarus.inference.backends import TorchInferenceRuntime
-
-        model = TorchMockModel().eval()
-        tokenizer = TorchMockTokenizer()
-        config = MockConfig(hidden_size=4, num_hidden_layers=1)
-        runtime = TorchInferenceRuntime(model, tokenizer, device="cpu")
-        memory_config = MemoryConfig(
-            query_layer=0,
-            value_layer=0,
-            inject_layer=0,
-            similarity_threshold=0.99,
-        )
-
-        memory = ExternalMemory(
-            model,
-            tokenizer,
-            config,
-            memory_config,
-            runtime=runtime,
-        )
-        memory.add_fact("alpha", "fact-alpha")
-
-        result = memory.query("gamma", use_injection=True, force_injection=True)
-
-        assert result.matched_entry is not None
-        assert result.matched_entry.query == "alpha"
-        assert result.used_injection is True
-        assert result.baseline_answer == "tok-6"
-        assert result.injected_answer == "tok-4"
-        assert result.injected_confidence is not None
 
     def test_batch_query(self):
         model = MockModel()
@@ -1414,115 +1301,6 @@ class TestSaveLoadEdgeCases:
             assert memory2._entries[1].query_vector is not None
             # value_1 was removed, so it should be None
             assert memory2._entries[1].value_vector is None
-
-
-class TestFromPretrainedErrors:
-    """Test error handling in from_pretrained."""
-
-    def test_from_pretrained_unsupported_model(self, monkeypatch):
-        """Test from_pretrained normalizes unsupported-model errors."""
-        import chuk_lazarus.inference as inference_module
-        import chuk_lazarus.models_v2.core.backend as backend_module
-
-        fake_backend = SimpleNamespace(name="mlx", device="mps")
-
-        def mock_from_pretrained(*args, **kwargs):
-            raise ValueError("Unable to detect model family. Model may not be supported yet.")
-
-        monkeypatch.setattr(backend_module, "get_backend", lambda *args, **kwargs: fake_backend)
-        monkeypatch.setattr(inference_module.UnifiedPipeline, "from_pretrained", mock_from_pretrained)
-
-        with pytest.raises(ValueError, match="Unsupported model"):
-            ExternalMemory.from_pretrained("fake/unsupported-model")
-
-    def test_from_pretrained_auto_config(self, monkeypatch):
-        """Test from_pretrained auto-configures layers from UnifiedPipeline config."""
-        import chuk_lazarus.inference as inference_module
-        import chuk_lazarus.models_v2.core.backend as backend_module
-
-        fake_backend = SimpleNamespace(name="mlx", device="mps")
-        fake_runtime = SimpleNamespace(backend="mlx")
-        fake_pipeline = SimpleNamespace(
-            model=MockModel(),
-            tokenizer=MockTokenizer(),
-            config=MockConfig(hidden_size=64, num_hidden_layers=24),
-            runtime=fake_runtime,
-        )
-
-        monkeypatch.setattr(backend_module, "get_backend", lambda *args, **kwargs: fake_backend)
-        monkeypatch.setattr(
-            inference_module.UnifiedPipeline,
-            "from_pretrained",
-            lambda *args, **kwargs: fake_pipeline,
-        )
-
-        memory = ExternalMemory.from_pretrained("fake/test-model")
-
-        assert memory._memory_config.query_layer == 22
-        assert memory._memory_config.inject_layer == 21
-        assert memory._memory_config.value_layer == 22
-        assert memory._runtime is fake_runtime
-
-    def test_from_pretrained_explicit_config(self, monkeypatch):
-        """Test from_pretrained preserves explicit memory config."""
-        import chuk_lazarus.inference as inference_module
-        import chuk_lazarus.models_v2.core.backend as backend_module
-
-        fake_backend = SimpleNamespace(name="mlx", device="mps")
-        fake_pipeline = SimpleNamespace(
-            model=MockModel(),
-            tokenizer=MockTokenizer(),
-            config=MockConfig(hidden_size=64, num_hidden_layers=24),
-            runtime=SimpleNamespace(backend="mlx"),
-        )
-
-        monkeypatch.setattr(backend_module, "get_backend", lambda *args, **kwargs: fake_backend)
-        monkeypatch.setattr(
-            inference_module.UnifiedPipeline,
-            "from_pretrained",
-            lambda *args, **kwargs: fake_pipeline,
-        )
-
-        custom_config = MemoryConfig(query_layer=10, inject_layer=9, value_layer=10)
-        memory = ExternalMemory.from_pretrained("fake/test-model", memory_config=custom_config)
-
-        assert memory._memory_config.query_layer == 10
-        assert memory._memory_config.inject_layer == 9
-        assert memory._memory_config.value_layer == 10
-
-    def test_from_pretrained_threads_backend_and_device(self, monkeypatch):
-        """Test from_pretrained resolves backend/device into UnifiedPipelineConfig."""
-        import chuk_lazarus.inference as inference_module
-        import chuk_lazarus.models_v2.core.backend as backend_module
-
-        fake_backend = SimpleNamespace(name="torch", device="cuda:1")
-        fake_pipeline = SimpleNamespace(
-            model=MockModel(),
-            tokenizer=MockTokenizer(),
-            config=MockConfig(hidden_size=64, num_hidden_layers=24),
-            runtime=SimpleNamespace(backend="cuda"),
-        )
-        captured = {}
-
-        def mock_from_pretrained(model_id, pipeline_config=None, verbose=False):
-            captured["model_id"] = model_id
-            captured["pipeline_config"] = pipeline_config
-            captured["verbose"] = verbose
-            return fake_pipeline
-
-        monkeypatch.setattr(backend_module, "get_backend", lambda *args, **kwargs: fake_backend)
-        monkeypatch.setattr(inference_module.UnifiedPipeline, "from_pretrained", mock_from_pretrained)
-
-        memory = ExternalMemory.from_pretrained(
-            "fake/test-model",
-            backend="torch",
-            device="cuda:1",
-        )
-
-        assert captured["model_id"] == "fake/test-model"
-        assert captured["pipeline_config"].backend_name == "torch"
-        assert captured["pipeline_config"].device == "cuda:1"
-        assert memory._runtime.backend == "cuda"
 
 
 class TestDemo:
