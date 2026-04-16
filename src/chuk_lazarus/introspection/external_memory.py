@@ -29,6 +29,7 @@ Usage:
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,10 +49,10 @@ class MemoryEntry:
     answer: str
     """The expected answer (e.g., '56')"""
 
-    query_vector: mx.array | None = None
+    query_vector: Any | None = None
     """Representation at query layer"""
 
-    value_vector: mx.array | None = None
+    value_vector: Any | None = None
     """Representation at value layer (for injection)"""
 
     metadata: dict = field(default_factory=dict)
@@ -122,15 +123,19 @@ class ExternalMemory:
 
     def __init__(
         self,
-        model: nn.Module,
+        model: Any,
         tokenizer: Any,
         config: Any,
         memory_config: MemoryConfig | None = None,
+        runtime: Any | None = None,
+        pipeline: Any | None = None,
     ):
         self._model = model
         self._tokenizer = tokenizer
         self._config = config
         self._memory_config = memory_config or MemoryConfig()
+        self._runtime = runtime
+        self._pipeline = pipeline
         self._entries: list[MemoryEntry] = []
 
     @classmethod
@@ -138,31 +143,46 @@ class ExternalMemory:
         cls,
         model_id: str,
         memory_config: MemoryConfig | None = None,
+        *,
+        backend: str | None = None,
+        device: str | None = None,
     ) -> ExternalMemory:
         """Load model and create external memory system."""
-        from ..inference.loader import DType, HFLoader
-        from ..models_v2.families.registry import detect_model_family, get_family_info
+        from ..inference import UnifiedPipeline, UnifiedPipelineConfig
+        from ..models_v2.core.backend import get_backend
 
         print(f"Loading model: {model_id}")
+        resolved_backend = get_backend(name=backend, device=device)
+        resolved_backend_name = str(resolved_backend.name).lower()
+        resolved_device = (
+            getattr(resolved_backend, "device", None) if resolved_backend_name == "torch" else None
+        )
 
-        result = HFLoader.download(model_id)
-        model_path = result.model_path
+        pipeline_config = UnifiedPipelineConfig(
+            backend_name=resolved_backend_name,
+            device=resolved_device,
+        )
 
-        config_path = model_path / "config.json"
-        with open(config_path) as f:
-            config_data = json.load(f)
+        try:
+            pipeline = UnifiedPipeline.from_pretrained(
+                model_id,
+                pipeline_config=pipeline_config,
+                verbose=False,
+            )
+        except ValueError as exc:
+            message = str(exc).lower()
+            if "detect model family" in message or "supported yet" in message:
+                raise ValueError(f"Unsupported model: {model_id}") from exc
+            raise
 
-        family_type = detect_model_family(config_data)
-        if family_type is None:
-            raise ValueError(f"Unsupported model: {model_id}")
+        config = pipeline.config
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
 
-        family_info = get_family_info(family_type)
-        config = family_info.config_class.from_hf_config(config_data)
-        model = family_info.model_class(config)
-
-        HFLoader.apply_weights_to_model(model, model_path, config, dtype=DType.BFLOAT16)
-        tokenizer = HFLoader.load_tokenizer(model_path)
-
+        print(
+            f"  Backend: {resolved_backend_name}"
+            f"{f' device={resolved_device}' if resolved_device else ''}"
+        )
         print(f"  Layers: {config.num_hidden_layers}")
         print(f"  Hidden size: {config.hidden_size}")
 
@@ -179,7 +199,14 @@ class ExternalMemory:
                 f"inject_layer={memory_config.inject_layer}"
             )
 
-        return cls(model, tokenizer, config, memory_config)
+        return cls(
+            model,
+            tokenizer,
+            config,
+            memory_config,
+            runtime=pipeline.runtime,
+            pipeline=pipeline,
+        )
 
     @property
     def num_entries(self) -> int:
@@ -214,8 +241,50 @@ class ExternalMemory:
     def _get_scale(self):
         return getattr(self._config, "embedding_scale", None)
 
-    def _extract_representation(self, prompt: str, layer: int) -> mx.array:
+    def _runtime_backend_name(self) -> str | None:
+        backend = getattr(self._runtime, "backend", None)
+        if backend is None:
+            return None
+        name = str(backend).lower()
+        if name == "cuda":
+            return "torch"
+        if name == "mlx":
+            return "mlx"
+        return name
+
+    def _vector_to_numpy(self, vector: Any) -> np.ndarray:
+        if isinstance(vector, np.ndarray):
+            return vector.astype(np.float32, copy=False).reshape(-1)
+
+        module_name = type(vector).__module__
+        if module_name.startswith("torch"):
+            return vector.detach().cpu().numpy().astype(np.float32, copy=False).reshape(-1)
+
+        return np.asarray(vector, dtype=np.float32).reshape(-1)
+
+    def _vector_to_mx(self, vector: Any):
+        if isinstance(vector, mx.array):
+            return vector
+        return mx.array(self._vector_to_numpy(vector))
+
+    def _vector_to_torch(self, vector: Any, *, device: Any, dtype: Any):
+        import torch
+
+        if isinstance(vector, torch.Tensor):
+            return vector.to(device=device, dtype=dtype, non_blocking=True)
+
+        array = self._vector_to_numpy(vector)
+        return torch.from_numpy(array).to(device=device, dtype=dtype, non_blocking=True)
+
+    def _extract_representation(self, prompt: str, layer: int) -> Any:
         """Extract hidden state at specified layer (last position)."""
+        if self._runtime is not None:
+            residual_state = self._runtime.extract_residual_state(prompt, layer_index=layer)
+            tensor = residual_state.tensor
+            if getattr(tensor, "ndim", 0) > 1:
+                return tensor[0]
+            return tensor
+
         input_ids = mx.array(self._tokenizer.encode(prompt))[None, :]
         layers = self._get_layers()
         embed = self._get_embed()
@@ -243,11 +312,98 @@ class ExternalMemory:
 
         return h[0, -1, :]
 
+    def _forward_with_injection_torch(
+        self,
+        prompt: str,
+        inject_layer: int | None = None,
+        inject_vector: Any | None = None,
+        blend: float = 1.0,
+    ) -> tuple[str, float, dict[int, tuple[str, float]]]:
+        import torch
+
+        runtime = self._runtime
+        if runtime is None:
+            raise RuntimeError("Torch forward path requires an attached runtime.")
+
+        layers = (
+            runtime._resolve_layers() if hasattr(runtime, "_resolve_layers") else self._get_layers()
+        )
+        tokenize_prompt = getattr(runtime, "_tokenize_prompt", None)
+        if callable(tokenize_prompt):
+            model_inputs = tokenize_prompt(prompt)
+        else:
+            batch = self._tokenizer(prompt, return_tensors="pt")
+            model_inputs = {
+                name: tensor.to(runtime._device, non_blocking=True) for name, tensor in batch.items()
+            }
+
+        def unwrap_hidden_states(output: Any):
+            if hasattr(output, "hidden_states"):
+                return output.hidden_states
+            if isinstance(output, tuple):
+                return output[0]
+            return output
+
+        def replace_hidden_states(output: Any, hidden_states: Any):
+            if hasattr(output, "hidden_states"):
+                try:
+                    output.hidden_states = hidden_states
+                    return output
+                except Exception:
+                    cloned = copy.copy(output)
+                    cloned.hidden_states = hidden_states
+                    return cloned
+            if isinstance(output, tuple):
+                return (hidden_states, *output[1:])
+            return hidden_states
+
+        handle = None
+        if inject_layer is not None and inject_vector is not None:
+            injected_once = False
+            inject_tensor = self._vector_to_torch(
+                inject_vector,
+                device=runtime._device,
+                dtype=getattr(self._model, "dtype", None) or torch.float32,
+            )
+            if inject_tensor.ndim == 1:
+                inject_tensor = inject_tensor.unsqueeze(0)
+
+            def inject_hook(_module, _args, output):
+                nonlocal injected_once
+                if injected_once:
+                    return output
+
+                hidden_states = unwrap_hidden_states(output)
+                updated = hidden_states.clone()
+                blended = (1 - blend) * updated[:, -1, :] + blend * inject_tensor.to(
+                    device=updated.device,
+                    dtype=updated.dtype,
+                    non_blocking=True,
+                )
+                updated[:, -1, :] = blended
+                injected_once = True
+                return replace_hidden_states(output, updated)
+
+            handle = layers[inject_layer].register_forward_hook(inject_hook)
+
+        try:
+            with torch.inference_mode():
+                outputs = self._model(**model_inputs, use_cache=False)
+        finally:
+            if handle is not None:
+                handle.remove()
+
+        logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
+        probs = torch.softmax(logits[0, -1, :], dim=-1)
+        top_prob, top_idx = torch.max(probs, dim=-1)
+        top_token = self._tokenizer.decode([int(top_idx.item())])
+        return top_token, float(top_prob.item()), {}
+
     def _forward_with_injection(
         self,
         prompt: str,
         inject_layer: int | None = None,
-        inject_vector: mx.array | None = None,
+        inject_vector: Any | None = None,
         blend: float = 1.0,
         capture_layers: list[int] | None = None,
     ) -> tuple[str, float, dict[int, tuple[str, float]]]:
@@ -256,6 +412,14 @@ class ExternalMemory:
 
         Returns: (top_token, probability, layer_predictions)
         """
+        if self._runtime_backend_name() == "torch":
+            return self._forward_with_injection_torch(
+                prompt,
+                inject_layer=inject_layer,
+                inject_vector=inject_vector,
+                blend=blend,
+            )
+
         input_ids = mx.array(self._tokenizer.encode(prompt))[None, :]
         layers = self._get_layers()
         embed = self._get_embed()
@@ -265,6 +429,10 @@ class ExternalMemory:
 
         if capture_layers is None:
             capture_layers = [18, 20, 22, 23]
+
+        inject_vector_mx = None
+        if inject_vector is not None:
+            inject_vector_mx = self._vector_to_mx(inject_vector)
 
         h = embed(input_ids)
         if scale:
@@ -287,9 +455,9 @@ class ExternalMemory:
             )
 
             # Inject at specified layer
-            if inject_layer is not None and idx == inject_layer and inject_vector is not None:
+            if inject_layer is not None and idx == inject_layer and inject_vector_mx is not None:
                 h_last = h[0, -1, :]
-                blended = (1 - blend) * h_last + blend * inject_vector
+                blended = (1 - blend) * h_last + blend * inject_vector_mx
                 h = mx.concatenate([h[:, :-1, :], blended[None, None, :]], axis=1)
 
             # Capture predictions at key layers
@@ -407,7 +575,7 @@ class ExternalMemory:
         print(f"Adding {len(facts)} multiplication facts...")
         return self.add_facts(facts)
 
-    def match(self, query_vec: mx.array, top_k: int = 3) -> list[tuple[MemoryEntry, float]]:
+    def match(self, query_vec: Any, top_k: int = 3) -> list[tuple[MemoryEntry, float]]:
         """
         Find closest matches in memory by cosine similarity.
 
@@ -421,13 +589,21 @@ class ExternalMemory:
         if not self._entries:
             return []
 
-        query_norm = query_vec / mx.linalg.norm(query_vec)
+        query_np = self._vector_to_numpy(query_vec)
+        query_norm_value = np.linalg.norm(query_np)
+        if query_norm_value == 0:
+            return []
+        query_norm = query_np / query_norm_value
 
         similarities = []
         for entry in self._entries:
             if entry.query_vector is not None:
-                entry_norm = entry.query_vector / mx.linalg.norm(entry.query_vector)
-                sim = float(mx.sum(query_norm * entry_norm))
+                entry_np = self._vector_to_numpy(entry.query_vector)
+                entry_norm_value = np.linalg.norm(entry_np)
+                if entry_norm_value == 0:
+                    continue
+                entry_norm = entry_np / entry_norm_value
+                sim = float(np.dot(query_norm, entry_norm))
                 similarities.append((entry, sim))
 
         similarities.sort(key=lambda x: -x[1])
@@ -504,6 +680,7 @@ class ExternalMemory:
         self,
         prompts: list[str],
         use_injection: bool = True,
+        force_injection: bool = False,
         verbose: bool = True,
     ) -> list[QueryResult]:
         """Query multiple prompts."""
@@ -511,8 +688,29 @@ class ExternalMemory:
         for i, prompt in enumerate(prompts):
             if verbose and (i + 1) % 10 == 0:
                 print(f"  Querying {i + 1}/{len(prompts)}...")
-            results.append(self.query(prompt, use_injection=use_injection))
+            results.append(
+                self.query(
+                    prompt,
+                    use_injection=use_injection,
+                    force_injection=force_injection,
+                )
+            )
         return results
+
+    def query_batch(
+        self,
+        prompts: list[str],
+        use_injection: bool = True,
+        force_injection: bool = False,
+        verbose: bool = True,
+    ) -> list[QueryResult]:
+        """Compatibility alias for older callers."""
+        return self.batch_query(
+            prompts,
+            use_injection=use_injection,
+            force_injection=force_injection,
+            verbose=verbose,
+        )
 
     def save(self, path: str | Path) -> None:
         """Save memory store to disk."""
@@ -520,13 +718,13 @@ class ExternalMemory:
 
         # Save vectors
         vectors = {
-            f"query_{i}": np.array(e.query_vector)
+            f"query_{i}": self._vector_to_numpy(e.query_vector)
             for i, e in enumerate(self._entries)
             if e.query_vector is not None
         }
         vectors.update(
             {
-                f"value_{i}": np.array(e.value_vector)
+                f"value_{i}": self._vector_to_numpy(e.value_vector)
                 for i, e in enumerate(self._entries)
                 if e.value_vector is not None
             }
@@ -589,9 +787,9 @@ class ExternalMemory:
             )
 
             if f"query_{i}" in vectors:
-                entry.query_vector = mx.array(vectors[f"query_{i}"])
+                entry.query_vector = np.asarray(vectors[f"query_{i}"], dtype=np.float32)
             if f"value_{i}" in vectors:
-                entry.value_vector = mx.array(vectors[f"value_{i}"])
+                entry.value_vector = np.asarray(vectors[f"value_{i}"], dtype=np.float32)
 
             self._entries.append(entry)
 

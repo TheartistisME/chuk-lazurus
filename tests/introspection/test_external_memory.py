@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -97,6 +98,86 @@ class MockTokenizer:
         if isinstance(ids, (list, tuple)) and len(ids) > 0:
             return str(ids[0])
         return str(ids)
+
+
+try:
+    import torch
+except Exception:  # pragma: no cover - optional dependency in some environments
+    torch = None
+
+
+if torch is not None:
+    class TorchIdentityLayer(torch.nn.Module):
+        """Identity layer used to exercise the torch runtime path."""
+
+        def forward(self, hidden_states):
+            return hidden_states
+
+
+    class TorchMockModel(torch.nn.Module):
+        """Tiny causal LM with predictable logits for residual injection tests."""
+
+        def __init__(self):
+            super().__init__()
+
+            class Inner(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.embed_tokens = torch.nn.Embedding(8, 4)
+                    self.layers = torch.nn.ModuleList([TorchIdentityLayer()])
+                    self.norm = torch.nn.Identity()
+
+                    with torch.no_grad():
+                        self.embed_tokens.weight.zero_()
+                        self.embed_tokens.weight[1] = torch.tensor([5.0, 0.0, 0.0, 0.0])
+                        self.embed_tokens.weight[2] = torch.tensor([0.0, 5.0, 0.0, 0.0])
+                        self.embed_tokens.weight[3] = torch.tensor([0.0, 0.0, 5.0, 0.0])
+
+            self.model = Inner()
+            self.lm_head = torch.nn.Linear(4, 8, bias=False)
+            self.config = SimpleNamespace(head_dim=4)
+
+            with torch.no_grad():
+                self.lm_head.weight.zero_()
+                self.lm_head.weight[4] = torch.tensor([1.0, 0.0, 0.0, 0.0])
+                self.lm_head.weight[5] = torch.tensor([0.0, 1.0, 0.0, 0.0])
+                self.lm_head.weight[6] = torch.tensor([0.0, 0.0, 1.0, 0.0])
+
+        def forward(self, input_ids=None, attention_mask=None, use_cache=False, **kwargs):
+            del attention_mask, use_cache, kwargs
+            hidden_states = self.model.embed_tokens(input_ids)
+            for layer in self.model.layers:
+                hidden_states = layer(hidden_states)
+            logits = self.lm_head(hidden_states)
+            return SimpleNamespace(logits=logits)
+
+
+    class TorchMockTokenizer:
+        """Tokenizer stub for the torch runtime ExternalMemory tests."""
+
+        eos_token_id = 99
+        pad_token_id = 0
+
+        def __call__(self, prompt, return_tensors="pt"):
+            del return_tensors
+            token_id = self.encode(prompt)[0]
+            return {
+                "input_ids": torch.tensor([[token_id]], dtype=torch.long),
+                "attention_mask": torch.ones((1, 1), dtype=torch.long),
+            }
+
+        def encode(self, text: str) -> list[int]:
+            mapping = {
+                "alpha": 1,
+                "beta": 2,
+                "gamma": 3,
+            }
+            return [mapping.get(text, 1)]
+
+        def decode(self, ids: list[int]) -> str:
+            if isinstance(ids, (list, tuple)) and len(ids) > 0:
+                return f"tok-{ids[0]}"
+            return str(ids)
 
 
 class TestMemoryEntry:
@@ -536,6 +617,39 @@ class TestExternalMemory:
 
         # Should still attempt injection even with low similarity
         assert result.matched_entry is not None
+
+    @pytest.mark.skipif(torch is None, reason="torch not importable")
+    def test_query_force_injection_uses_torch_runtime(self):
+        from chuk_lazarus.inference.backends import TorchInferenceRuntime
+
+        model = TorchMockModel().eval()
+        tokenizer = TorchMockTokenizer()
+        config = MockConfig(hidden_size=4, num_hidden_layers=1)
+        runtime = TorchInferenceRuntime(model, tokenizer, device="cpu")
+        memory_config = MemoryConfig(
+            query_layer=0,
+            value_layer=0,
+            inject_layer=0,
+            similarity_threshold=0.99,
+        )
+
+        memory = ExternalMemory(
+            model,
+            tokenizer,
+            config,
+            memory_config,
+            runtime=runtime,
+        )
+        memory.add_fact("alpha", "fact-alpha")
+
+        result = memory.query("gamma", use_injection=True, force_injection=True)
+
+        assert result.matched_entry is not None
+        assert result.matched_entry.query == "alpha"
+        assert result.used_injection is True
+        assert result.baseline_answer == "tok-6"
+        assert result.injected_answer == "tok-4"
+        assert result.injected_confidence is not None
 
     def test_batch_query(self):
         model = MockModel()
@@ -1306,187 +1420,109 @@ class TestFromPretrainedErrors:
     """Test error handling in from_pretrained."""
 
     def test_from_pretrained_unsupported_model(self, monkeypatch):
-        """Test from_pretrained with unsupported model family."""
-        import json
-        import tempfile
+        """Test from_pretrained normalizes unsupported-model errors."""
+        import chuk_lazarus.inference as inference_module
+        import chuk_lazarus.models_v2.core.backend as backend_module
 
-        # Create temp directory with unsupported config
-        tmpdir = Path(tempfile.mkdtemp())
-        config_path = tmpdir / "config.json"
-        with open(config_path, "w") as f:
-            json.dump({"model_type": "unsupported_model_type"}, f)
+        fake_backend = SimpleNamespace(name="mlx", device="mps")
 
-        # Mock the HFLoader.download to return our temp directory
-        class MockDownloadResult:
-            def __init__(self, path):
-                self.model_path = path
+        def mock_from_pretrained(*args, **kwargs):
+            raise ValueError("Unable to detect model family. Model may not be supported yet.")
 
-        def mock_download(model_id):
-            return MockDownloadResult(tmpdir)
+        monkeypatch.setattr(backend_module, "get_backend", lambda *args, **kwargs: fake_backend)
+        monkeypatch.setattr(inference_module.UnifiedPipeline, "from_pretrained", mock_from_pretrained)
 
-        # Mock detect_model_family to return None (unsupported)
-        def mock_detect(config_data):
-            return None
-
-        # Apply mocks
-        import chuk_lazarus.inference.loader as loader_module
-        import chuk_lazarus.models_v2.families.registry as registry_module
-
-        monkeypatch.setattr(loader_module.HFLoader, "download", mock_download)
-        monkeypatch.setattr(registry_module, "detect_model_family", mock_detect)
-
-        # Should raise ValueError for unsupported model
         with pytest.raises(ValueError, match="Unsupported model"):
             ExternalMemory.from_pretrained("fake/unsupported-model")
 
-        # Cleanup
-        import shutil
-
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
     def test_from_pretrained_auto_config(self, monkeypatch):
-        """Test from_pretrained with auto-configuration of memory layers."""
-        import json
-        import tempfile
+        """Test from_pretrained auto-configures layers from UnifiedPipeline config."""
+        import chuk_lazarus.inference as inference_module
+        import chuk_lazarus.models_v2.core.backend as backend_module
 
-        # Create temp directory with model config
-        tmpdir = Path(tempfile.mkdtemp())
-        config_path = tmpdir / "config.json"
-        with open(config_path, "w") as f:
-            json.dump(
-                {
-                    "model_type": "gpt2",
-                    "hidden_size": 64,
-                    "num_hidden_layers": 24,
-                },
-                f,
-            )
+        fake_backend = SimpleNamespace(name="mlx", device="mps")
+        fake_runtime = SimpleNamespace(backend="mlx")
+        fake_pipeline = SimpleNamespace(
+            model=MockModel(),
+            tokenizer=MockTokenizer(),
+            config=MockConfig(hidden_size=64, num_hidden_layers=24),
+            runtime=fake_runtime,
+        )
 
-        # Mock the HFLoader.download to return our temp directory
-        class MockDownloadResult:
-            def __init__(self, path):
-                self.model_path = path
+        monkeypatch.setattr(backend_module, "get_backend", lambda *args, **kwargs: fake_backend)
+        monkeypatch.setattr(
+            inference_module.UnifiedPipeline,
+            "from_pretrained",
+            lambda *args, **kwargs: fake_pipeline,
+        )
 
-        def mock_download(model_id):
-            return MockDownloadResult(tmpdir)
-
-        # Mock detect_model_family to return a valid family
-        from chuk_lazarus.models_v2.families.registry import ModelFamilyType
-
-        def mock_detect(config_data):
-            return ModelFamilyType.GPT2
-
-        # Mock get_family_info to return mock model classes
-        class MockFamilyInfo:
-            config_class = MockConfig
-            model_class = MockModel
-
-        def mock_get_family_info(family_type):
-            return MockFamilyInfo()
-
-        # Mock apply_weights and load_tokenizer
-        def mock_apply_weights(model, path, config, dtype):
-            pass
-
-        def mock_load_tokenizer(path):
-            return MockTokenizer()
-
-        # Apply mocks
-        import chuk_lazarus.inference.loader as loader_module
-        import chuk_lazarus.models_v2.families.registry as registry_module
-
-        monkeypatch.setattr(loader_module.HFLoader, "download", mock_download)
-        monkeypatch.setattr(registry_module, "detect_model_family", mock_detect)
-        monkeypatch.setattr(registry_module, "get_family_info", mock_get_family_info)
-        monkeypatch.setattr(loader_module.HFLoader, "apply_weights_to_model", mock_apply_weights)
-        monkeypatch.setattr(loader_module.HFLoader, "load_tokenizer", mock_load_tokenizer)
-
-        # Test with no memory_config (should auto-configure)
         memory = ExternalMemory.from_pretrained("fake/test-model")
 
-        # Should auto-configure based on 24 layers
-        # query_layer = int(24 * 0.92) = 22
-        # inject_layer = int(24 * 0.88) = 21
-        # value_layer = int(24 * 0.92) = 22
         assert memory._memory_config.query_layer == 22
         assert memory._memory_config.inject_layer == 21
         assert memory._memory_config.value_layer == 22
-
-        # Cleanup
-        import shutil
-
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        assert memory._runtime is fake_runtime
 
     def test_from_pretrained_explicit_config(self, monkeypatch):
-        """Test from_pretrained with explicit memory config."""
-        import json
-        import tempfile
+        """Test from_pretrained preserves explicit memory config."""
+        import chuk_lazarus.inference as inference_module
+        import chuk_lazarus.models_v2.core.backend as backend_module
 
-        # Create temp directory with model config
-        tmpdir = Path(tempfile.mkdtemp())
-        config_path = tmpdir / "config.json"
-        with open(config_path, "w") as f:
-            json.dump(
-                {
-                    "model_type": "gpt2",
-                    "hidden_size": 64,
-                    "num_hidden_layers": 24,
-                },
-                f,
-            )
+        fake_backend = SimpleNamespace(name="mlx", device="mps")
+        fake_pipeline = SimpleNamespace(
+            model=MockModel(),
+            tokenizer=MockTokenizer(),
+            config=MockConfig(hidden_size=64, num_hidden_layers=24),
+            runtime=SimpleNamespace(backend="mlx"),
+        )
 
-        # Mock the HFLoader.download to return our temp directory
-        class MockDownloadResult:
-            def __init__(self, path):
-                self.model_path = path
+        monkeypatch.setattr(backend_module, "get_backend", lambda *args, **kwargs: fake_backend)
+        monkeypatch.setattr(
+            inference_module.UnifiedPipeline,
+            "from_pretrained",
+            lambda *args, **kwargs: fake_pipeline,
+        )
 
-        def mock_download(model_id):
-            return MockDownloadResult(tmpdir)
-
-        # Mock detect_model_family to return a valid family
-        from chuk_lazarus.models_v2.families.registry import ModelFamilyType
-
-        def mock_detect(config_data):
-            return ModelFamilyType.GPT2
-
-        # Mock get_family_info to return mock model classes
-        class MockFamilyInfo:
-            config_class = MockConfig
-            model_class = MockModel
-
-        def mock_get_family_info(family_type):
-            return MockFamilyInfo()
-
-        # Mock apply_weights and load_tokenizer
-        def mock_apply_weights(model, path, config, dtype):
-            pass
-
-        def mock_load_tokenizer(path):
-            return MockTokenizer()
-
-        # Apply mocks
-        import chuk_lazarus.inference.loader as loader_module
-        import chuk_lazarus.models_v2.families.registry as registry_module
-
-        monkeypatch.setattr(loader_module.HFLoader, "download", mock_download)
-        monkeypatch.setattr(registry_module, "detect_model_family", mock_detect)
-        monkeypatch.setattr(registry_module, "get_family_info", mock_get_family_info)
-        monkeypatch.setattr(loader_module.HFLoader, "apply_weights_to_model", mock_apply_weights)
-        monkeypatch.setattr(loader_module.HFLoader, "load_tokenizer", mock_load_tokenizer)
-
-        # Test with explicit memory_config (should NOT auto-configure)
         custom_config = MemoryConfig(query_layer=10, inject_layer=9, value_layer=10)
         memory = ExternalMemory.from_pretrained("fake/test-model", memory_config=custom_config)
 
-        # Should use the explicit config
         assert memory._memory_config.query_layer == 10
         assert memory._memory_config.inject_layer == 9
         assert memory._memory_config.value_layer == 10
 
-        # Cleanup
-        import shutil
+    def test_from_pretrained_threads_backend_and_device(self, monkeypatch):
+        """Test from_pretrained resolves backend/device into UnifiedPipelineConfig."""
+        import chuk_lazarus.inference as inference_module
+        import chuk_lazarus.models_v2.core.backend as backend_module
 
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        fake_backend = SimpleNamespace(name="torch", device="cuda:1")
+        fake_pipeline = SimpleNamespace(
+            model=MockModel(),
+            tokenizer=MockTokenizer(),
+            config=MockConfig(hidden_size=64, num_hidden_layers=24),
+            runtime=SimpleNamespace(backend="cuda"),
+        )
+        captured = {}
+
+        def mock_from_pretrained(model_id, pipeline_config=None, verbose=False):
+            captured["model_id"] = model_id
+            captured["pipeline_config"] = pipeline_config
+            captured["verbose"] = verbose
+            return fake_pipeline
+
+        monkeypatch.setattr(backend_module, "get_backend", lambda *args, **kwargs: fake_backend)
+        monkeypatch.setattr(inference_module.UnifiedPipeline, "from_pretrained", mock_from_pretrained)
+
+        memory = ExternalMemory.from_pretrained(
+            "fake/test-model",
+            backend="torch",
+            device="cuda:1",
+        )
+
+        assert captured["model_id"] == "fake/test-model"
+        assert captured["pipeline_config"].backend_name == "torch"
+        assert captured["pipeline_config"].device == "cuda:1"
+        assert memory._runtime.backend == "cuda"
 
 
 class TestDemo:
@@ -1494,74 +1530,25 @@ class TestDemo:
 
     def test_demo_function(self, monkeypatch, capsys):
         """Test the demo function runs without errors."""
-        import json
-        import tempfile
-
         from chuk_lazarus.introspection import external_memory
 
-        # Create temp directory with model config
-        tmpdir = Path(tempfile.mkdtemp())
-        config_path = tmpdir / "config.json"
-        with open(config_path, "w") as f:
-            json.dump(
-                {
-                    "model_type": "gpt2",
-                    "hidden_size": 64,
-                    "num_hidden_layers": 24,
-                },
-                f,
-            )
+        demo_memory = ExternalMemory(
+            MockModel(),
+            MockTokenizer(),
+            MockConfig(hidden_size=64, num_hidden_layers=24),
+            MemoryConfig(query_layer=1, value_layer=1, inject_layer=0, similarity_threshold=0.0),
+        )
 
-        # Mock the HFLoader.download to return our temp directory
-        class MockDownloadResult:
-            def __init__(self, path):
-                self.model_path = path
+        monkeypatch.setattr(
+            external_memory.ExternalMemory,
+            "from_pretrained",
+            classmethod(lambda cls, model_id, **kwargs: demo_memory),
+        )
 
-        def mock_download(model_id):
-            return MockDownloadResult(tmpdir)
-
-        # Mock detect_model_family to return a valid family
-        from chuk_lazarus.models_v2.families.registry import ModelFamilyType
-
-        def mock_detect(config_data):
-            return ModelFamilyType.GPT2
-
-        # Mock get_family_info to return mock model classes
-        class MockFamilyInfo:
-            config_class = MockConfig
-            model_class = MockModel
-
-        def mock_get_family_info(family_type):
-            return MockFamilyInfo()
-
-        # Mock apply_weights and load_tokenizer
-        def mock_apply_weights(model, path, config, dtype):
-            pass
-
-        def mock_load_tokenizer(path):
-            return MockTokenizer()
-
-        # Apply mocks
-        import chuk_lazarus.inference.loader as loader_module
-        import chuk_lazarus.models_v2.families.registry as registry_module
-
-        monkeypatch.setattr(loader_module.HFLoader, "download", mock_download)
-        monkeypatch.setattr(registry_module, "detect_model_family", mock_detect)
-        monkeypatch.setattr(registry_module, "get_family_info", mock_get_family_info)
-        monkeypatch.setattr(loader_module.HFLoader, "apply_weights_to_model", mock_apply_weights)
-        monkeypatch.setattr(loader_module.HFLoader, "load_tokenizer", mock_load_tokenizer)
-
-        # Run the demo function
         external_memory.demo()
 
-        # Check that output was generated
         captured = capsys.readouterr()
         assert "External Memory Injection Demo" in captured.out
         assert "Testing Standard Queries" in captured.out
         assert "Testing Non-Standard Queries" in captured.out or "Rescue Test" in captured.out
         assert "Override Test" in captured.out
-
-        # Cleanup
-        import shutil
-
-        shutil.rmtree(tmpdir, ignore_errors=True)

@@ -114,7 +114,12 @@ async def introspect_memory_inject(args: Namespace) -> None:
     )
 
     # Create memory system
-    memory = ExternalMemory.from_pretrained(args.model, memory_config)
+    memory = ExternalMemory.from_pretrained(
+        args.model,
+        memory_config,
+        backend=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
+    )
 
     # Load facts from file or use framework datasets
     fact_type_str = extract_arg(args, "facts", "multiplication")
@@ -150,7 +155,11 @@ async def introspect_memory_inject(args: Namespace) -> None:
 
     # Run queries - all logic is in the memory system
     force = extract_arg(args, "force", False)
-    results = memory.query_batch(queries, use_injection=True, force_injection=force)
+    results = memory.batch_query(
+        queries,
+        use_injection=True,
+        force_injection=force,
+    )
 
     # Print formatted results
     print(OutputMixin.format_header("EXTERNAL MEMORY INJECTION", width=70))

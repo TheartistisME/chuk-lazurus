@@ -122,6 +122,8 @@ class TestIntrospectMemoryInject:
             load_store=None,
             force=False,
             evaluate=False,
+            backend=None,
+            device=None,
         )
 
     @pytest.fixture
@@ -133,7 +135,7 @@ class TestIntrospectMemoryInject:
             mock_memory = MagicMock()
             mock_memory.num_entries = 64
 
-            # Mock query_batch result
+            # Mock batch_query result
             mock_result = MagicMock()
             mock_result.baseline_answer = "56"
             mock_result.baseline_confidence = 0.85
@@ -143,7 +145,8 @@ class TestIntrospectMemoryInject:
             mock_result.injected_answer = "56"
             mock_result.injected_confidence = 0.95
 
-            mock_memory.query_batch.return_value = [mock_result]
+            mock_memory.batch_query.return_value = [mock_result]
+            mock_memory.query_batch = MagicMock()
             mock_memory.add_facts = MagicMock()
             mock_memory.save = MagicMock()
             mock_memory.load = MagicMock()
@@ -163,11 +166,33 @@ class TestIntrospectMemoryInject:
         """Test basic memory injection."""
         from chuk_lazarus.cli.commands.introspect.memory import introspect_memory_inject
 
+        mock_memory_cls, mock_memory = mock_external_memory
         asyncio.run(introspect_memory_inject(inject_args))
 
         captured = capsys.readouterr()
         assert "EXTERNAL MEMORY INJECTION" in captured.out
         assert "Query:" in captured.out
+        mock_memory.batch_query.assert_called_once_with(
+            ["7*8="],
+            use_injection=True,
+            force_injection=False,
+        )
+        assert mock_memory.query_batch.call_count == 0
+
+    def test_inject_threads_backend_and_device(self, inject_args, mock_external_memory):
+        """Test memory-inject forwards backend/device into ExternalMemory.from_pretrained."""
+        from chuk_lazarus.cli.commands.introspect.memory import introspect_memory_inject
+
+        mock_memory_cls, _mock_memory = mock_external_memory
+        inject_args.backend = "torch"
+        inject_args.device = "cuda:0"
+
+        asyncio.run(introspect_memory_inject(inject_args))
+
+        args, kwargs = mock_memory_cls.from_pretrained.call_args
+        assert args[0] == "test-model"
+        assert kwargs["backend"] == "torch"
+        assert kwargs["device"] == "cuda:0"
 
     def test_inject_no_queries(self, inject_args, mock_external_memory, capsys):
         """Test injection with no queries provided."""
@@ -194,7 +219,7 @@ class TestIntrospectMemoryInject:
         mock_result.used_injection = False
         mock_result.matched_entry = None
         mock_result.similarity = 0.0
-        mock_memory.query_batch.return_value = [mock_result, mock_result]
+        mock_memory.batch_query.return_value = [mock_result, mock_result]
 
         inject_args.query = None
         inject_args.queries = "7*8=|9*6="
@@ -232,7 +257,7 @@ class TestIntrospectMemoryInject:
         mock_result.matched_entry = MagicMock(query="7*8=", answer="56")
         mock_result.similarity = 0.99
 
-        mock_memory.query_batch.return_value = [mock_result]
+        mock_memory.batch_query.return_value = [mock_result]
 
         inject_args.force = True
 
@@ -254,7 +279,7 @@ class TestIntrospectMemoryInject:
         mock_result.matched_entry = MagicMock(query="7*8=", answer="56")
         mock_result.similarity = 0.5  # Below threshold
 
-        mock_memory.query_batch.return_value = [mock_result]
+        mock_memory.batch_query.return_value = [mock_result]
 
         asyncio.run(introspect_memory_inject(inject_args))
 
@@ -274,7 +299,7 @@ class TestIntrospectMemoryInject:
         mock_result.matched_entry = None
         mock_result.similarity = 0.0
 
-        mock_memory.query_batch.return_value = [mock_result]
+        mock_memory.batch_query.return_value = [mock_result]
 
         asyncio.run(introspect_memory_inject(inject_args))
 
