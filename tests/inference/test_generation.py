@@ -1,7 +1,11 @@
 """Tests for inference/generation.py module."""
 
-import mlx.core as mx
 import pytest
+
+try:
+    import mlx.core as mx
+except ImportError:
+    mx = None
 
 from chuk_lazarus.inference.generation import (
     GenerationConfig,
@@ -224,6 +228,7 @@ class MockModel:
         return logits, cache
 
 
+@pytest.mark.skipif(mx is None, reason="MLX is not available on this host")
 class TestGenerate:
     """Tests for generate function."""
 
@@ -285,6 +290,7 @@ class TestGenerate:
         assert result.stop_reason in ["max_tokens", "eos", "stop_token"]
 
 
+@pytest.mark.skipif(mx is None, reason="MLX is not available on this host")
 class TestGenerateStream:
     """Tests for generate_stream function."""
 

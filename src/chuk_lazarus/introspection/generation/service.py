@@ -30,6 +30,8 @@ class GenerationConfig(BaseModel):
     no_find_answer: bool = Field(default=False, description="Disable answer finding")
     compare_format: bool = Field(default=False, description="Compare with/without trailing space")
     show_tokens: bool = Field(default=False, description="Show token breakdown")
+    backend: str | None = Field(default=None, description="Optional runtime backend selector")
+    device: str | None = Field(default=None, description="Optional device override")
 
 
 class GenerationResult(BaseModel):
@@ -103,17 +105,85 @@ class GenerationResult(BaseModel):
 class GenerationService:
     """Service for generation with analysis."""
 
+    @staticmethod
+    def _load_pipeline(config: GenerationConfig):
+        """Load a backend-aware inference pipeline."""
+        from ...inference import UnifiedPipeline, UnifiedPipelineConfig
+        from ...models_v2.core.backend import get_backend
+
+        resolved_backend = get_backend(name=config.backend, device=config.device)
+        backend_name = str(resolved_backend.name).lower()
+        resolved_device = getattr(resolved_backend, "device", None) if backend_name == "torch" else None
+
+        return UnifiedPipeline.from_pretrained(
+            config.model,
+            pipeline_config=UnifiedPipelineConfig(
+                backend_name=backend_name,
+                device=resolved_device,
+            ),
+            verbose=False,
+        )
+
+    @staticmethod
+    def _flatten_token_ids(token_ids: Any) -> list[int]:
+        """Normalize token IDs into a flat Python list."""
+        if hasattr(token_ids, "detach"):
+            token_ids = token_ids.detach().cpu().tolist()
+        elif hasattr(token_ids, "tolist"):
+            token_ids = token_ids.tolist()
+
+        if isinstance(token_ids, list) and token_ids and isinstance(token_ids[0], list):
+            return [int(token_id) for token_id in token_ids[0]]
+        if isinstance(token_ids, tuple):
+            return [int(token_id) for token_id in token_ids]
+        if isinstance(token_ids, list):
+            return [int(token_id) for token_id in token_ids]
+        return [int(token_ids)]
+
+    @classmethod
+    def _tokenize_ids(cls, runtime: Any, tokenizer: Any, text: str) -> list[int]:
+        """Tokenize text using the runtime when available, else the tokenizer directly."""
+        tokenize_prompt = getattr(runtime, "_tokenize_prompt", None)
+        if callable(tokenize_prompt):
+            try:
+                model_inputs = tokenize_prompt(text)
+            except Exception:
+                model_inputs = None
+            if model_inputs and "input_ids" in model_inputs:
+                return cls._flatten_token_ids(model_inputs["input_ids"])
+
+        return cls._flatten_token_ids(tokenizer.encode(text))
+
+    @classmethod
+    def _extract_generated_tokens(
+        cls,
+        runtime: Any,
+        tokenizer: Any,
+        prompt: str,
+        output: str,
+    ) -> list[str]:
+        """Extract generated token texts from a prompt/output pair."""
+        prompt_ids = cls._tokenize_ids(runtime, tokenizer, prompt)
+        full_ids = cls._tokenize_ids(runtime, tokenizer, prompt + output)
+
+        if full_ids[: len(prompt_ids)] == prompt_ids:
+            generated_ids = full_ids[len(prompt_ids) :]
+        else:
+            generated_ids = cls._tokenize_ids(runtime, tokenizer, output)
+
+        return [tokenizer.decode([token_id]) for token_id in generated_ids]
+
     @classmethod
     async def generate(cls, config: GenerationConfig) -> GenerationResult:
         """Generate with logit lens analysis.
 
         Tests format issues and answer onset timing.
         """
-        from mlx_lm import generate, load
-
         from ..utils import apply_chat_template, extract_expected_answer
 
-        model, tokenizer = load(config.model)
+        pipeline = cls._load_pipeline(config)
+        tokenizer = pipeline.tokenizer
+        runtime = pipeline.runtime
 
         # Check chat template
         use_raw = config.use_raw
@@ -132,23 +202,11 @@ class GenerationService:
                 if not use_raw and has_chat_template:
                     formatted_prompt = apply_chat_template(tokenizer, prompt)
 
-                if config.temperature == 0:
-                    output = generate(
-                        model,
-                        tokenizer,
-                        prompt=formatted_prompt,
-                        max_tokens=config.max_tokens,
-                        verbose=False,
-                    )
-                else:
-                    output = generate(
-                        model,
-                        tokenizer,
-                        prompt=formatted_prompt,
-                        max_tokens=config.max_tokens,
-                        temp=config.temperature,
-                        verbose=False,
-                    )
+                output = pipeline.generate(
+                    formatted_prompt,
+                    max_new_tokens=config.max_tokens,
+                    temperature=config.temperature,
+                ).text
 
                 expected = config.expected_answer or extract_expected_answer(prompt)
                 onset_info = cls._find_answer_onset(output, expected, tokenizer)
@@ -174,29 +232,14 @@ class GenerationService:
         if not use_raw and has_chat_template:
             formatted_prompt = apply_chat_template(tokenizer, config.prompt)
 
-        if config.temperature == 0:
-            output = generate(
-                model,
-                tokenizer,
-                prompt=formatted_prompt,
-                max_tokens=config.max_tokens,
-                verbose=False,
-            )
-        else:
-            output = generate(
-                model,
-                tokenizer,
-                prompt=formatted_prompt,
-                max_tokens=config.max_tokens,
-                temp=config.temperature,
-                verbose=False,
-            )
+        output = pipeline.generate(
+            formatted_prompt,
+            max_new_tokens=config.max_tokens,
+            temperature=config.temperature,
+        ).text
 
         # Get tokens
-        prompt_ids = tokenizer.encode(formatted_prompt)
-        output_ids = tokenizer.encode(formatted_prompt + output)
-        gen_ids = output_ids[len(prompt_ids) :]
-        tokens = [tokenizer.decode([tid]) for tid in gen_ids]
+        tokens = cls._extract_generated_tokens(runtime, tokenizer, formatted_prompt, output)
 
         # Find answer onset
         expected = config.expected_answer or extract_expected_answer(config.prompt)

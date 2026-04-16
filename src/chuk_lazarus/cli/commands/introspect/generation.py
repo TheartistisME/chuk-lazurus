@@ -43,6 +43,10 @@ async def introspect_generate(args: Namespace) -> None:
         expected_answer=getattr(args, "expected", None),
         find_answer=getattr(args, "find_answer", None),
         no_find_answer=getattr(args, "no_find_answer", False),
+        compare_format=getattr(args, "compare_format", False),
+        show_tokens=getattr(args, "show_tokens", False),
+        backend=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
     )
 
     # Run generation - all logic is in the service

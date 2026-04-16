@@ -1,10 +1,26 @@
 """Tests for introspect generation CLI commands."""
 
 import asyncio
+import sys
 from argparse import Namespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_backend_dispatch_module():
+    """Keep the introspection package mock importable as a package."""
+    introspection_module = sys.modules.get("chuk_lazarus.introspection")
+    if introspection_module is not None:
+        introspection_module.__path__ = []  # type: ignore[attr-defined]
+
+    mock_dispatch = MagicMock()
+    with patch.dict(
+        sys.modules,
+        {"chuk_lazarus.introspection._backend_dispatch": mock_dispatch},
+    ):
+        yield
 
 
 class TestIntrospectGenerate:
@@ -26,6 +42,10 @@ class TestIntrospectGenerate:
             expected=None,
             find_answer=None,
             no_find_answer=False,
+            compare_format=False,
+            show_tokens=False,
+            backend=None,
+            device=None,
             output=None,
         )
 
@@ -118,6 +138,33 @@ class TestIntrospectGenerate:
 
         captured = capsys.readouterr()
         assert captured.out != "" or captured.err != ""
+
+    def test_generate_threads_backend_device_and_compare_flags(
+        self,
+        generate_args,
+        mock_generation_service,
+        capsys,
+    ):
+        """Test backend/device and comparison flags are threaded into GenerationConfig."""
+        from chuk_lazarus.cli.commands.introspect.generation import introspect_generate
+
+        mock_service, _ = mock_generation_service
+        generate_args.compare_format = True
+        generate_args.show_tokens = True
+        generate_args.backend = "torch"
+        generate_args.device = "cuda:0"
+
+        asyncio.run(introspect_generate(generate_args))
+
+        captured = capsys.readouterr()
+        assert captured.out != ""
+
+        config_kwargs = sys.modules["chuk_lazarus.introspection.generation"].GenerationConfig.call_args.kwargs
+        assert config_kwargs["compare_format"] is True
+        assert config_kwargs["show_tokens"] is True
+        assert config_kwargs["backend"] == "torch"
+        assert config_kwargs["device"] == "cuda:0"
+        assert mock_service.generate.await_count == 1
 
 
 class TestIntrospectLogitEvolution:
