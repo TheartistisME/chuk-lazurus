@@ -67,6 +67,14 @@ class InferenceConfig(CommandConfig):
         default="standard",
         description="Inference engine: 'standard' or 'kv_direct'",
     )
+    backend: str | None = Field(
+        default=None,
+        description="Runtime backend override ('mlx' or 'torch')",
+    )
+    device: str | None = Field(
+        default=None,
+        description="Runtime device override (for example: cuda:0, mps, cpu)",
+    )
 
     @classmethod
     def from_args(cls, args: Namespace) -> InferenceConfig:
@@ -81,6 +89,8 @@ class InferenceConfig(CommandConfig):
             chat=getattr(args, "chat", False),
             system=getattr(args, "system", None),
             engine=getattr(args, "engine", "standard"),
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
     @property

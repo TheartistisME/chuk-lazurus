@@ -29,7 +29,11 @@ async def run_inference_cmd(args: Namespace) -> None:
     config = InferenceConfig.from_args(args)
 
     # Build pipeline config
-    pipeline_config = UnifiedPipelineConfig(engine=EngineMode(config.engine))
+    pipeline_config = UnifiedPipelineConfig(
+        engine=EngineMode(config.engine),
+        backend_name=config.backend,
+        device=config.device,
+    )
 
     # Load the model (quiet by default for CLI)
     pipeline = UnifiedPipeline.from_pretrained(

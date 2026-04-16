@@ -8,6 +8,7 @@ import pytest
 
 from chuk_lazarus.cli.commands.infer._types import InferenceConfig
 from chuk_lazarus.cli.commands.infer.run import run_inference_cmd
+from chuk_lazarus.inference.unified import EngineMode
 
 
 class TestRunInferenceCmd:
@@ -85,6 +86,32 @@ class TestRunInferenceCmd:
         assert "Line 1" in captured.out
         assert "Line 2" in captured.out
         assert "Line 3" in captured.out
+
+    def test_run_inference_cmd_threads_backend_device_and_engine(self):
+        """Test infer.run forwards backend/device/engine into UnifiedPipelineConfig."""
+        args = Namespace(
+            model="test-model",
+            adapter=None,
+            prompt="Test prompt",
+            prompt_file=None,
+            max_tokens=64,
+            temperature=0.3,
+            backend="torch",
+            device="cuda:0",
+            engine="kv_direct",
+        )
+        _mock_module, mock_pipeline = self._make_mock_pipeline("Response")
+
+        with patch(
+            "chuk_lazarus.inference.UnifiedPipeline.from_pretrained",
+            return_value=mock_pipeline,
+        ) as mock_from_pretrained:
+            asyncio.run(run_inference_cmd(args))
+
+        pipeline_config = mock_from_pretrained.call_args.kwargs["pipeline_config"]
+        assert pipeline_config.backend_name == "torch"
+        assert pipeline_config.device == "cuda:0"
+        assert pipeline_config.engine == EngineMode.KV_DIRECT
 
 
 class TestInferenceConfig:
