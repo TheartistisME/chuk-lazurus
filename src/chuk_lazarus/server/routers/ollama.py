@@ -14,13 +14,18 @@ Reference: https://github.com/ollama/ollama/blob/main/docs/api.md
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from .._compat import MissingOptionalDependencyProxy
 
-router = APIRouter(tags=["Ollama"])
+try:
+    from fastapi import APIRouter
+except ImportError:
+    router = MissingOptionalDependencyProxy(f"{__name__}.router")
+else:
+    router = APIRouter(tags=["Ollama"])
 
 
 # Placeholder so the router can be imported and mounted without error.
 # Remove this block when implementing Ollama support.
-@router.get("/api/tags")
-async def ollama_tags_not_implemented():
-    return {"error": "Ollama protocol not yet implemented", "models": []}
+    @router.get("/api/tags")
+    async def ollama_tags_not_implemented():
+        return {"error": "Ollama protocol not yet implemented", "models": []}

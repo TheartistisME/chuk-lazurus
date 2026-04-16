@@ -12,13 +12,18 @@ Reference: https://docs.anthropic.com/en/api/messages
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from .._compat import MissingOptionalDependencyProxy
 
-router = APIRouter(tags=["Anthropic"])
+try:
+    from fastapi import APIRouter
+except ImportError:
+    router = MissingOptionalDependencyProxy(f"{__name__}.router")
+else:
+    router = APIRouter(tags=["Anthropic"])
 
 
 # Placeholder so the router can be imported and mounted without error.
 # Remove this block when implementing Anthropic support.
-@router.post("/messages")
-async def anthropic_messages_not_implemented():
-    return {"error": "Anthropic protocol not yet implemented"}
+    @router.post("/messages")
+    async def anthropic_messages_not_implemented():
+        return {"error": "Anthropic protocol not yet implemented"}

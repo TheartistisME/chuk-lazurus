@@ -1,10 +1,7 @@
 """Ablation, weight-diff, activation-diff introspect parsers."""
 
-from ...commands.introspect import (
-    introspect_ablate,
-    introspect_activation_diff,
-    introspect_weight_diff,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_command
 
 
 def register_ablation_parsers(introspect_subparsers):
@@ -72,7 +69,8 @@ def register_ablation_parsers(introspect_subparsers):
         "--prompts",
         help="Multiple prompts to test (pipe-separated, e.g., '10*10=|45*45=|47*47=')",
     )
-    ablation_parser.set_defaults(func=introspect_ablate)
+    add_backend_flags(ablation_parser)
+    ablation_parser.set_defaults(func=run_command("introspect_ablate"))
 
     # Weight divergence command - compare weights between two models
     weight_div_parser = introspect_subparsers.add_parser(
@@ -97,7 +95,8 @@ def register_ablation_parsers(introspect_subparsers):
         "-o",
         help="Save results to JSON file",
     )
-    weight_div_parser.set_defaults(func=introspect_weight_diff)
+    add_backend_flags(weight_div_parser)
+    weight_div_parser.set_defaults(func=run_command("introspect_weight_diff"))
 
     # Activation divergence command - compare activations on same prompt
     activation_div_parser = introspect_subparsers.add_parser(
@@ -128,4 +127,5 @@ def register_ablation_parsers(introspect_subparsers):
         "-o",
         help="Save results to JSON file",
     )
-    activation_div_parser.set_defaults(func=introspect_activation_diff)
+    add_backend_flags(activation_div_parser)
+    activation_div_parser.set_defaults(func=run_command("introspect_activation_diff"))

@@ -7,6 +7,7 @@ The CLI command is a thin wrapper that delegates to DPOTrainer.run().
 from __future__ import annotations
 
 import logging
+import os
 from argparse import Namespace
 
 from ._types import DPOConfig, TrainMode, TrainResult
@@ -25,6 +26,13 @@ async def train_dpo_cmd(args: Namespace) -> None:
     Args:
         args: Parsed command-line arguments
     """
+    backend = getattr(args, "backend", None)
+    if backend:
+        os.environ["CHUK_BACKEND"] = backend
+    device = getattr(args, "device", None)
+    if device:
+        os.environ["CHUK_DEVICE"] = device
+
     from ....training.trainers.dpo_trainer import DPOTrainer, DPOTrainingConfig
 
     # Parse CLI args using shared config

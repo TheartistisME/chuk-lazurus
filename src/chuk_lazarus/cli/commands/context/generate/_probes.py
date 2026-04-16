@@ -22,8 +22,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
+from chuk_lazarus.inference._lazy_mlx import mx
 
 # ── Data structures ──────────────────────────────────────────────────
 

@@ -1,119 +1,109 @@
 """
 Data handling for training.
 
-This module provides:
-- Canonical sample schema (Pydantic-native, no magic strings)
-- Async-native batching infrastructure (buckets, token-budget sampling)
-- Base dataset class for inheritance
-- Dataset classes for different training paradigms (SFT, DPO, RL)
-- Batch dataset for pre-tokenized NPZ data
-- Data generators for synthetic data
-- Batch I/O for writing/reading NPZ batch files
-- Tokenizer utilities
+The package root resolves its public surface lazily so importing
+``chuk_lazarus.data`` or any submodule like ``chuk_lazarus.data.base_dataset``
+does not immediately pull MLX-only dataset implementations on torch hosts.
 """
 
-# Base class and protocols
-from .base_dataset import BaseDataset
+from __future__ import annotations
 
-# Batch datasets (for pre-tokenized NPZ data)
-from .batch_dataset_base import BatchDatasetBase
+_MODULE_EXPORTS: dict[str, list[str]] = {
+    ".base_dataset": ["BaseDataset"],
+    ".batch_dataset_base": ["BatchDatasetBase"],
+    ".batching": [
+        "BatchFingerprint",
+        "BatchingConfig",
+        "BatchingMode",
+        "BatchMetrics",
+        "BatchPlan",
+        "BatchPlanBuilder",
+        "BatchPlanMeta",
+        "BatchReader",
+        "BatchShapeHistogram",
+        "BatchSpec",
+        "BatchWriter",
+        "BucketId",
+        "BucketSpec",
+        "BucketStats",
+        "CollatedBatch",
+        "EpochPlan",
+        "LengthCache",
+        "LengthEntry",
+        "MicrobatchSpec",
+        "PackedSequence",
+        "PackingConfig",
+        "PackingMetrics",
+        "PackingMode",
+        "PadPolicy",
+        "SequenceToPack",
+        "TokenBudgetBatchSampler",
+        "compute_batch_fingerprint",
+        "compute_packing_metrics",
+        "create_segment_attention_mask",
+        "default_collate",
+        "load_batch_plan",
+        "pack_sequences",
+        "pad_sequences",
+        "save_batch_plan",
+        "verify_batch_fingerprint",
+    ],
+    ".classification_dataset": [
+        "ClassificationDataset",
+        "ClassificationSample",
+        "load_classification_data",
+    ],
+    ".generators": [
+        "MathProblem",
+        "MathProblemGenerator",
+        "ProblemType",
+        "ToolCallTrace",
+        "TrainingSample",
+        "generate_lazarus_dataset",
+    ],
+    ".preference_dataset": [
+        "PreferenceDataset",
+        "PreferencePair",
+        "load_preference_data",
+    ],
+    ".protocols": [
+        "BatchableDataset",
+        "ClassificationDatasetProtocol",
+        "Dataset",
+        "PreferenceDatasetProtocol",
+        "SFTDatasetProtocol",
+        "TokenizerProtocol",
+    ],
+    ".rollout_buffer": ["Episode", "RolloutBuffer", "Transition"],
+    ".samples": [
+        "DatasetFingerprint",
+        "DatasetSource",
+        "PreferenceSample",
+        "Sample",
+        "SampleMeta",
+        "SampleType",
+        "SampleValidationError",
+        "compute_dataset_fingerprint",
+    ],
+    ".sft_dataset": ["SFTDataset", "SFTSample"],
+    ".tokenizers": [
+        "BoWCharacterTokenizer",
+        "BoWTokenizerConfig",
+        "CharacterTokenizer",
+        "CharacterTokenizerConfig",
+        "load_vocabulary",
+        "save_vocabulary",
+    ],
+    ".train_batch_dataset": ["TrainBatchDataset"],
+}
 
-# Async-native batching (unified pipeline)
-from .batching import (
-    BatchFingerprint,
-    BatchingConfig,
-    BatchingMode,
-    BatchMetrics,
-    BatchPlan,
-    BatchPlanBuilder,
-    BatchPlanMeta,
-    BatchReader,
-    BatchShapeHistogram,
-    BatchSpec,
-    BatchWriter,
-    BucketId,
-    BucketSpec,
-    BucketStats,
-    CollatedBatch,
-    EpochPlan,
-    LengthCache,
-    LengthEntry,
-    MicrobatchSpec,
-    PackedSequence,
-    PackingConfig,
-    PackingMetrics,
-    PackingMode,
-    PadPolicy,
-    SequenceToPack,
-    TokenBudgetBatchSampler,
-    compute_batch_fingerprint,
-    compute_packing_metrics,
-    create_segment_attention_mask,
-    default_collate,
-    load_batch_plan,
-    pack_sequences,
-    pad_sequences,
-    save_batch_plan,
-    verify_batch_fingerprint,
-)
-
-# Classification dataset
-from .classification_dataset import (
-    ClassificationDataset,
-    ClassificationSample,
-    load_classification_data,
-)
-
-# Data generators
-from .generators import (
-    MathProblem,
-    MathProblemGenerator,
-    ProblemType,
-    ToolCallTrace,
-    TrainingSample,
-    generate_lazarus_dataset,
-)
-from .preference_dataset import PreferenceDataset, PreferencePair, load_preference_data
-from .protocols import (
-    BatchableDataset,
-    ClassificationDatasetProtocol,
-    Dataset,
-    PreferenceDatasetProtocol,
-    SFTDatasetProtocol,
-    TokenizerProtocol,
-)
-from .rollout_buffer import Episode, RolloutBuffer, Transition
-
-# Canonical sample schema (Phase 0 - Pydantic-native)
-from .samples import (
-    DatasetFingerprint,
-    DatasetSource,
-    PreferenceSample,
-    Sample,
-    SampleMeta,
-    SampleType,
-    SampleValidationError,
-    compute_dataset_fingerprint,
-)
-
-# RL/SFT datasets
-from .sft_dataset import SFTDataset, SFTSample
-
-# Tokenizer utilities
-from .tokenizers import (
-    BoWCharacterTokenizer,
-    BoWTokenizerConfig,
-    CharacterTokenizer,
-    CharacterTokenizerConfig,
-    load_vocabulary,
-    save_vocabulary,
-)
-
-# CustomTokenizer is available via lazy import: from chuk_lazarus.data.tokenizers import CustomTokenizer
-from .train_batch_dataset import TrainBatchDataset
+_LAZY: dict[str, tuple[str, str]] = {
+    export: (module_name, export)
+    for module_name, exports in _MODULE_EXPORTS.items()
+    for export in exports
+}
 
 __all__ = [
-    # Base and Protocols
     "BaseDataset",
     "Dataset",
     "BatchableDataset",
@@ -121,14 +111,11 @@ __all__ = [
     "PreferenceDatasetProtocol",
     "ClassificationDatasetProtocol",
     "TokenizerProtocol",
-    # Batch datasets
     "BatchDatasetBase",
     "TrainBatchDataset",
-    # Classification
     "ClassificationDataset",
     "ClassificationSample",
     "load_classification_data",
-    # Async-native batching (unified pipeline)
     "BucketSpec",
     "BucketId",
     "BucketStats",
@@ -138,14 +125,12 @@ __all__ = [
     "BatchSpec",
     "BatchMetrics",
     "BatchShapeHistogram",
-    # Predictability mode
     "PadPolicy",
     "BatchingMode",
     "BatchingConfig",
     "BatchFingerprint",
     "compute_batch_fingerprint",
     "verify_batch_fingerprint",
-    # Packing
     "PackingMode",
     "PackingConfig",
     "PackedSequence",
@@ -154,7 +139,6 @@ __all__ = [
     "create_segment_attention_mask",
     "PackingMetrics",
     "compute_packing_metrics",
-    # BatchPlan
     "BatchPlan",
     "BatchPlanMeta",
     "BatchPlanBuilder",
@@ -162,13 +146,11 @@ __all__ = [
     "MicrobatchSpec",
     "save_batch_plan",
     "load_batch_plan",
-    # Batch I/O (unified pipeline)
     "BatchWriter",
     "BatchReader",
     "CollatedBatch",
     "default_collate",
     "pad_sequences",
-    # Canonical sample schema
     "Sample",
     "SampleMeta",
     "SampleType",
@@ -177,25 +159,20 @@ __all__ = [
     "SampleValidationError",
     "DatasetFingerprint",
     "compute_dataset_fingerprint",
-    # Generators
     "MathProblem",
     "MathProblemGenerator",
     "ProblemType",
     "ToolCallTrace",
     "TrainingSample",
     "generate_lazarus_dataset",
-    # Preference
     "PreferenceDataset",
     "PreferencePair",
     "load_preference_data",
-    # Rollout
     "Episode",
     "RolloutBuffer",
     "Transition",
-    # SFT
     "SFTDataset",
     "SFTSample",
-    # Tokenizers
     "BoWCharacterTokenizer",
     "BoWTokenizerConfig",
     "CharacterTokenizer",
@@ -203,3 +180,19 @@ __all__ = [
     "load_vocabulary",
     "save_vocabulary",
 ]
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        import importlib
+
+        mod_name, attr = _LAZY[name]
+        mod = importlib.import_module(mod_name, __name__)
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + __all__)

@@ -13,8 +13,9 @@ import time
 from enum import Enum
 from typing import TYPE_CHECKING
 
-import mlx.core as mx
 from pydantic import BaseModel, ConfigDict, Field
+
+from ._lazy_mlx import mx
 
 
 class StopReason(str, Enum):

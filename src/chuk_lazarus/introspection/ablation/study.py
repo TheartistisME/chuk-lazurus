@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import mlx.core as mx
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx  # EWS-6 lazy
 
 from .adapter import ModelAdapter
 from .config import AblationConfig, ComponentType

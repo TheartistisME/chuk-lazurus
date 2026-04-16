@@ -1,215 +1,125 @@
 """
 Inference and text generation utilities.
 
-Provides a high-level API for loading and running inference
-with any supported model family.
-
-Recommended: Use UnifiedPipeline which auto-detects model family:
-
-    from chuk_lazarus.inference import UnifiedPipeline
-
-    # One-liner for any supported model - auto-detects family!
-    pipeline = UnifiedPipeline.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-
-    # Chat
-    response = pipeline.chat("What is the capital of France?")
-    print(response.text)
-
-    # Generation with custom settings
-    response = pipeline.generate(
-        "Write a poem about AI",
-        max_new_tokens=200,
-        temperature=0.9,
-    )
+The public surface is resolved lazily so ``import chuk_lazarus.inference`` stays
+backend-neutral on torch/CUDA hosts.
 """
 
-# Chat utilities
-from .chat import (
-    ASSISTANT_SUFFIX,
-    ChatHistory,
-    ChatMessage,
-    FallbackTemplate,
-    Role,
-    format_chat_prompt,
-    format_history,
-)
+from __future__ import annotations
 
-# Context management — stateful inference engines and checkpoint libraries
-from .context import (
-    BoundedKVEngine,
-    Checkpoint,
-    CheckpointLibrary,
-    CheckpointMeta,
-    CheckpointStore,
-    CompiledRSGenerator,
-    ContextCheckpointFile,
-    ContextCheckpointStatus,
-    ConversationState,
-    EngineStats,
-    GemmaBackboneAdapter,
-    GemmaLayerAdapter,
-    # Mode 3: bounded engine
-    GenerationMode,
-    # KV checkpoint
-    KVCheckpoint,
-    # Generators
-    KVDirectGenerator,
-    KVGeneratorProtocol,
-    # Mode 4: unlimited context engine
-    KVStore,
-    # Checkpoint library format
-    LibraryFile,
-    LibraryFormatVersion,
-    LibraryManifest,
-    LibrarySource,
-    LlamaBackboneAdapter,
-    LlamaLayerAdapter,
-    MemoryReport,
-    # Protocols and adapters
-    ModelBackboneProtocol,
-    PathLabel,
-    TokenArchive,
-    TransformerLayerProtocol,
-    TurnStats,
-    UnlimitedContextEngine,
-    WindowMeta,
-    make_kv_generator,
-)
+_LAZY: dict[str, tuple[str, str]] = {
+    "ASSISTANT_SUFFIX": (".chat", "ASSISTANT_SUFFIX"),
+    "ChatHistory": (".chat", "ChatHistory"),
+    "ChatMessage": (".chat", "ChatMessage"),
+    "FallbackTemplate": (".chat", "FallbackTemplate"),
+    "Role": (".chat", "Role"),
+    "format_chat_prompt": (".chat", "format_chat_prompt"),
+    "format_history": (".chat", "format_history"),
+    "BoundedKVEngine": (".context", "BoundedKVEngine"),
+    "Checkpoint": (".context", "Checkpoint"),
+    "CheckpointLibrary": (".context", "CheckpointLibrary"),
+    "CheckpointMeta": (".context", "CheckpointMeta"),
+    "CheckpointStore": (".context", "CheckpointStore"),
+    "CompiledRSGenerator": (".context", "CompiledRSGenerator"),
+    "ContextCheckpointFile": (".context", "ContextCheckpointFile"),
+    "ContextCheckpointStatus": (".context", "ContextCheckpointStatus"),
+    "ConversationState": (".context", "ConversationState"),
+    "EngineStats": (".context", "EngineStats"),
+    "GemmaBackboneAdapter": (".context", "GemmaBackboneAdapter"),
+    "GemmaLayerAdapter": (".context", "GemmaLayerAdapter"),
+    "GenerationMode": (".context", "GenerationMode"),
+    "KVCheckpoint": (".context", "KVCheckpoint"),
+    "KVDirectGenerator": (".context", "KVDirectGenerator"),
+    "KVGeneratorProtocol": (".context", "KVGeneratorProtocol"),
+    "KVStore": (".context", "KVStore"),
+    "LibraryFile": (".context", "LibraryFile"),
+    "LibraryFormatVersion": (".context", "LibraryFormatVersion"),
+    "LibraryManifest": (".context", "LibraryManifest"),
+    "LibrarySource": (".context", "LibrarySource"),
+    "LlamaBackboneAdapter": (".context", "LlamaBackboneAdapter"),
+    "LlamaLayerAdapter": (".context", "LlamaLayerAdapter"),
+    "MemoryReport": (".context", "MemoryReport"),
+    "ModelBackboneProtocol": (".context", "ModelBackboneProtocol"),
+    "PathLabel": (".context", "PathLabel"),
+    "TokenArchive": (".context", "TokenArchive"),
+    "TransformerLayerProtocol": (".context", "TransformerLayerProtocol"),
+    "TurnStats": (".context", "TurnStats"),
+    "UnlimitedContextEngine": (".context", "UnlimitedContextEngine"),
+    "WindowMeta": (".context", "WindowMeta"),
+    "make_kv_generator": (".context", "make_kv_generator"),
+    "GenerationConfig": (".generation", "GenerationConfig"),
+    "GenerationResult": (".generation", "GenerationResult"),
+    "GenerationStats": (".generation", "GenerationStats"),
+    "StopReason": (".generation", "StopReason"),
+    "generate": (".generation", "generate"),
+    "generate_stream": (".generation", "generate_stream"),
+    "get_stop_tokens": (".generation", "get_stop_tokens"),
+    "DownloadConfig": (".loader", "DownloadConfig"),
+    "DownloadResult": (".loader", "DownloadResult"),
+    "DType": (".loader", "DType"),
+    "HFLoader": (".loader", "HFLoader"),
+    "LoadedWeights": (".loader", "LoadedWeights"),
+    "StandardWeightConverter": (".loader", "StandardWeightConverter"),
+    "WeightConverter": (".loader", "WeightConverter"),
+    "IntrospectionResult": (".unified", "IntrospectionResult"),
+    "UnifiedPipeline": (".unified", "UnifiedPipeline"),
+    "UnifiedPipelineConfig": (".unified", "UnifiedPipelineConfig"),
+    "UnifiedPipelineState": (".unified", "UnifiedPipelineState"),
+    "MathExpertPlugin": (".virtual_expert", "MathExpertPlugin"),
+    "SafeMathEvaluator": (".virtual_expert", "SafeMathEvaluator"),
+    "VirtualDenseRouter": (".virtual_expert", "VirtualDenseRouter"),
+    "VirtualDenseWrapper": (".virtual_expert", "VirtualDenseWrapper"),
+    "VirtualExpertAnalysis": (".virtual_expert", "VirtualExpertAnalysis"),
+    "VirtualExpertApproach": (".virtual_expert", "VirtualExpertApproach"),
+    "VirtualExpertPlugin": (".virtual_expert", "VirtualExpertPlugin"),
+    "VirtualExpertRegistry": (".virtual_expert", "VirtualExpertRegistry"),
+    "VirtualExpertResult": (".virtual_expert", "VirtualExpertResult"),
+    "VirtualMoEWrapper": (".virtual_expert", "VirtualMoEWrapper"),
+    "VirtualRouter": (".virtual_expert", "VirtualRouter"),
+    "create_virtual_dense_wrapper": (".virtual_expert", "create_virtual_dense_wrapper"),
+    "create_virtual_expert_wrapper": (".virtual_expert", "create_virtual_expert_wrapper"),
+    "get_default_registry": (".virtual_expert", "get_default_registry"),
+}
 
-# Generation utilities
-from .generation import (
-    GenerationConfig,
-    GenerationResult,
-    GenerationStats,
-    StopReason,
-    generate,
-    generate_stream,
-    get_stop_tokens,
-)
-
-# Loader utilities
-from .loader import (
-    DownloadConfig,
-    DownloadResult,
-    DType,
-    HFLoader,
-    LoadedWeights,
-    StandardWeightConverter,
-    WeightConverter,
-)
-
-# Unified pipeline (recommended)
-from .unified import (
-    IntrospectionResult,
-    UnifiedPipeline,
-    UnifiedPipelineConfig,
-    UnifiedPipelineState,
-)
-
-# Virtual expert system for MoE and dense models (optional dependency)
-try:
-    from .virtual_expert import (
-        MathExpertPlugin,
-        SafeMathEvaluator,
-        VirtualDenseRouter,
-        VirtualDenseWrapper,
-        VirtualExpertAnalysis,
-        VirtualExpertApproach,
-        VirtualExpertPlugin,
-        VirtualExpertRegistry,
-        VirtualExpertResult,
-        VirtualMoEWrapper,
-        VirtualRouter,
-        create_virtual_dense_wrapper,
-        create_virtual_expert_wrapper,
-        get_default_registry,
-    )
-except ImportError:
-    pass
-
-__all__ = [
-    # Loader
-    "DownloadConfig",
-    "DownloadResult",
-    "DType",
-    "HFLoader",
-    "LoadedWeights",
-    "StandardWeightConverter",
-    "WeightConverter",
-    # Chat
-    "ASSISTANT_SUFFIX",
-    "ChatHistory",
-    "ChatMessage",
-    "FallbackTemplate",
-    "Role",
-    "format_chat_prompt",
-    "format_history",
-    # Generation
-    "GenerationConfig",
-    "GenerationResult",
-    "GenerationStats",
-    "StopReason",
-    "generate",
-    "generate_stream",
-    "get_stop_tokens",
-    # Unified Pipeline (recommended)
-    "UnifiedPipeline",
-    "UnifiedPipelineConfig",
-    "UnifiedPipelineState",
-    "IntrospectionResult",
-    # Context — protocols and adapters
-    "ModelBackboneProtocol",
-    "TransformerLayerProtocol",
-    "GemmaBackboneAdapter",
-    "GemmaLayerAdapter",
-    "LlamaBackboneAdapter",
-    "LlamaLayerAdapter",
-    # Context — generators
-    "KVDirectGenerator",
-    "make_kv_generator",
-    "CompiledRSGenerator",
-    # Context — bounded engine (Mode 3)
-    "GenerationMode",
-    "PathLabel",
-    "MemoryReport",
-    "TurnStats",
-    "Checkpoint",
-    "ConversationState",
-    "BoundedKVEngine",
-    # Context — unlimited engine (Mode 4)
-    "KVStore",
-    "KVGeneratorProtocol",
-    "LibrarySource",
-    "EngineStats",
-    "CheckpointStore",
-    "TokenArchive",
-    "UnlimitedContextEngine",
-    # Context — checkpoint library
-    "LibraryFile",
-    "LibraryFormatVersion",
-    "WindowMeta",
-    "LibraryManifest",
-    "CheckpointLibrary",
-    # Context — KV checkpoint
-    "CheckpointMeta",
-    "ContextCheckpointFile",
-    "ContextCheckpointStatus",
-    "KVCheckpoint",
-    # Virtual Expert System (MoE)
+_OPTIONAL = {
+    "MathExpertPlugin",
+    "SafeMathEvaluator",
+    "VirtualDenseRouter",
+    "VirtualDenseWrapper",
+    "VirtualExpertAnalysis",
+    "VirtualExpertApproach",
     "VirtualExpertPlugin",
     "VirtualExpertRegistry",
     "VirtualExpertResult",
-    "VirtualExpertAnalysis",
-    "VirtualExpertApproach",
     "VirtualMoEWrapper",
     "VirtualRouter",
-    "create_virtual_expert_wrapper",
-    # Virtual Expert System (Dense)
-    "VirtualDenseWrapper",
-    "VirtualDenseRouter",
     "create_virtual_dense_wrapper",
-    # Built-in plugins
-    "MathExpertPlugin",
-    "SafeMathEvaluator",
+    "create_virtual_expert_wrapper",
     "get_default_registry",
-]
+}
+
+__all__ = sorted(_LAZY.keys())
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        import importlib
+
+        mod_name, attr = _LAZY[name]
+        try:
+            mod = importlib.import_module(mod_name, __name__)
+        except ImportError:
+            if name in _OPTIONAL:
+                raise AttributeError(
+                    f"module {__name__!r} has no attribute {name!r} "
+                    f"(optional dependency not installed)"
+                ) from None
+            raise
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + __all__)

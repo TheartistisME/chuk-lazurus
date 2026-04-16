@@ -23,14 +23,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx  # EWS-6 lazy
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from .dataset import CircuitDataset, LabeledPrompt
+
+if TYPE_CHECKING:  # pragma: no cover
+    import mlx.core as _mx
+    import mlx.nn as _nn
+
+    MlxArray = _mx.array
+    NNModule = _nn.Module
+else:
+    MlxArray = Any
+    NNModule = Any
 
 
 class CollectorConfig(BaseModel):
@@ -71,17 +80,17 @@ class CollectedActivations(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_default=True)
 
     # Activations: shape [num_samples, hidden_size] per layer
-    hidden_states: dict[int, mx.array] = Field(
+    hidden_states: dict[int, MlxArray] = Field(
         default_factory=dict, description="Hidden states per layer"
     )
 
     # Optional: attention weights per layer
-    attention_weights: dict[int, mx.array] = Field(
+    attention_weights: dict[int, MlxArray] = Field(
         default_factory=dict, description="Attention weights per layer"
     )
 
     # Optional: MLP intermediate activations
-    mlp_intermediates: dict[int, mx.array] = Field(
+    mlp_intermediates: dict[int, MlxArray] = Field(
         default_factory=dict, description="MLP intermediates per layer"
     )
 
@@ -126,7 +135,7 @@ class CollectedActivations(BaseModel):
         """Get sorted list of captured layer indices."""
         return sorted(self.hidden_states.keys())
 
-    def get_layer_activations(self, layer: int) -> mx.array | None:
+    def get_layer_activations(self, layer: int) -> MlxArray | None:
         """Get hidden states for a specific layer."""
         return self.hidden_states.get(layer)
 
@@ -148,7 +157,7 @@ class CollectedActivations(BaseModel):
         """Get boolean mask for samples with a specific label."""
         return np.array(self.labels) == label
 
-    def split_by_label(self, layer: int) -> dict[int, mx.array]:
+    def split_by_label(self, layer: int) -> dict[int, MlxArray]:
         """Split activations by label."""
         acts = self.hidden_states[layer]
         result = {}
@@ -157,7 +166,7 @@ class CollectedActivations(BaseModel):
             result[label] = acts[mask]
         return result
 
-    def get_positive_negative(self, layer: int) -> tuple[mx.array, mx.array]:
+    def get_positive_negative(self, layer: int) -> tuple[MlxArray, MlxArray]:
         """Get activations split into positive (label=1) and negative (label=0)."""
         acts = self.hidden_states[layer]
         pos_mask = mx.array(self.labels) == 1
@@ -198,7 +207,7 @@ class CollectedActivations(BaseModel):
         # Prepare tensors for safetensors
         tensors = {}
 
-        def to_numpy_float32(arr: mx.array) -> np.ndarray:
+        def to_numpy_float32(arr: MlxArray) -> np.ndarray:
             """Convert MLX array to numpy float32, handling bfloat16."""
             arr_f32 = arr.astype(mx.float32)
             return np.array(arr_f32, copy=False)
@@ -341,7 +350,7 @@ class ActivationCollector:
 
     def __init__(
         self,
-        model: nn.Module,
+        model: NNModule,
         tokenizer: Any,
         config: Any,
         model_id: str = "unknown",
@@ -414,7 +423,7 @@ class ActivationCollector:
         self,
         prompt: str,
         config: CollectorConfig | None = None,
-    ) -> dict[int, mx.array]:
+    ) -> dict[int, MlxArray]:
         """
         Collect activations for a single prompt.
 
@@ -490,7 +499,7 @@ class ActivationCollector:
         layers = self._get_layers_to_capture(config)
 
         # Initialize storage
-        hidden_by_layer: dict[int, list[mx.array]] = {layer: [] for layer in layers}
+        hidden_by_layer: dict[int, list[MlxArray]] = {layer: [] for layer in layers}
         labels = []
         label_names = []
         categories = []

@@ -18,6 +18,15 @@ from typing import Any, TypeVar
 
 from .._constants import Delimiters, LayerDepthRatio
 
+# EWS-7: import-only reference to the shared backend-dispatch helpers
+# (owned by EWS-5). The symbol is re-exported so introspect CLI wrappers can
+# route tensors through ``Backend.array`` without reimporting the framework
+# module at every call site. Import-only; do not edit ``_backend_dispatch``.
+from chuk_lazarus.introspection._backend_dispatch import (  # noqa: F401,E402
+    from_backend_tensor,
+    to_backend_tensor,
+)
+
 T = TypeVar("T")
 
 

@@ -1,11 +1,7 @@
 """Classifier and logit-lens introspect parsers."""
 
-import asyncio
-
-from ...commands.introspect import (
-    introspect_classifier,
-    introspect_logit_lens,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_async_command
 
 
 def register_classifier_parsers(introspect_subparsers):
@@ -49,7 +45,8 @@ Example:
         "-o",
         help="Save results to JSON file",
     )
-    classifier_parser.set_defaults(func=lambda args: asyncio.run(introspect_classifier(args)))
+    add_backend_flags(classifier_parser)
+    classifier_parser.set_defaults(func=run_async_command("introspect_classifier"))
 
     # Logit lens analysis
     logit_lens_parser = introspect_subparsers.add_parser(
@@ -100,4 +97,5 @@ Example:
         "-o",
         help="Save results to JSON file",
     )
-    logit_lens_parser.set_defaults(func=lambda args: asyncio.run(introspect_logit_lens(args)))
+    add_backend_flags(logit_lens_parser)
+    logit_lens_parser.set_defaults(func=run_async_command("introspect_logit_lens"))

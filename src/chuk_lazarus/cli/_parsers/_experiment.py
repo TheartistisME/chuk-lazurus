@@ -1,5 +1,6 @@
 """Experiment command parsers."""
 
+from ..commands._base import add_backend_flags
 from ..commands.experiment import (
     experiment_info,
     experiment_list,
@@ -30,6 +31,7 @@ def register_experiment_parsers(subparsers):
         action="store_true",
         help="Output as JSON",
     )
+    add_backend_flags(exp_list_parser)
     exp_list_parser.set_defaults(
         func=lambda args: experiment_list(
             experiments_dir=args.dir,
@@ -51,6 +53,7 @@ def register_experiment_parsers(subparsers):
         action="store_true",
         help="Output as JSON",
     )
+    add_backend_flags(exp_info_parser)
     exp_info_parser.set_defaults(
         func=lambda args: experiment_info(
             name=args.name,
@@ -84,6 +87,7 @@ def register_experiment_parsers(subparsers):
         action="store_true",
         help="Validate without running",
     )
+    add_backend_flags(exp_run_parser)
     exp_run_parser.set_defaults(
         func=lambda args: experiment_run(
             name=args.name,
@@ -91,6 +95,8 @@ def register_experiment_parsers(subparsers):
             config_file=args.config,
             params=args.params,
             dry_run=args.dry_run,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
     )
 
@@ -117,6 +123,7 @@ def register_experiment_parsers(subparsers):
         action="store_true",
         help="Output as JSON",
     )
+    add_backend_flags(exp_status_parser)
     exp_status_parser.set_defaults(
         func=lambda args: experiment_status(
             name=args.name,

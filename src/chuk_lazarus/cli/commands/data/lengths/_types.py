@@ -16,6 +16,14 @@ class LengthBuildConfig(CommandConfig):
     tokenizer: str = Field(..., description="Tokenizer to use")
     dataset: Path = Field(..., description="Path to dataset file")
     output: Path = Field(..., description="Output path for length cache")
+    backend: str | None = Field(
+        default=None,
+        description="Runtime backend override (CHUK_BACKEND): 'mlx' or 'torch'",
+    )
+    device: str | None = Field(
+        default=None,
+        description="Device override (e.g. 'cuda:0', 'mps', 'cpu')",
+    )
 
     @classmethod
     def from_args(cls, args: Namespace) -> LengthBuildConfig:
@@ -24,6 +32,8 @@ class LengthBuildConfig(CommandConfig):
             tokenizer=args.tokenizer,
             dataset=Path(args.dataset),
             output=Path(args.output),
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
 
@@ -56,11 +66,17 @@ class LengthStatsConfig(CommandConfig):
     """Configuration for showing length cache statistics."""
 
     cache: Path = Field(..., description="Path to length cache file")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Device override")
 
     @classmethod
     def from_args(cls, args: Namespace) -> LengthStatsConfig:
         """Create config from argparse namespace."""
-        return cls(cache=Path(args.cache))
+        return cls(
+            cache=Path(args.cache),
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
+        )
 
 
 class LengthStatsResult(CommandResult):

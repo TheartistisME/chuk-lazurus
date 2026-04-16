@@ -1,11 +1,34 @@
 """Tests for main CLI entry point."""
 
 import argparse
+import importlib
+import sys
 from unittest.mock import Mock, patch
 
 import pytest
 
 from chuk_lazarus.cli.main import app, main
+
+
+def test_cli_package_main_resolution_is_lazy_and_non_recursive(monkeypatch):
+    """Package-level main/app resolution should return the real callables."""
+    package = importlib.import_module("chuk_lazarus.cli")
+
+    monkeypatch.delitem(sys.modules, "chuk_lazarus.cli.main", raising=False)
+    monkeypatch.delitem(package.__dict__, "app", raising=False)
+    monkeypatch.delitem(package.__dict__, "main", raising=False)
+
+    package = importlib.reload(package)
+
+    namespace: dict[str, object] = {}
+    exec("from chuk_lazarus.cli import app, main", namespace)
+
+    cli_main = importlib.import_module("chuk_lazarus.cli.main")
+
+    assert namespace["app"] is cli_main.app
+    assert namespace["main"] is cli_main.main
+    assert getattr(package, "app") is cli_main.app
+    assert getattr(package, "main") is cli_main.main
 
 
 class TestAppParser:

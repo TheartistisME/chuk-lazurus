@@ -1,5 +1,6 @@
 """Gym command parsers."""
 
+from ..commands._base import add_backend_flags
 from ..commands.gym import gym_info, gym_run
 
 
@@ -12,6 +13,7 @@ def register_gym_parsers(subparsers):
     gym_run_parser = gym_subparsers.add_parser(
         "run", help="Run gym episode streaming and collect samples"
     )
+    add_backend_flags(gym_run_parser)
     gym_run_parser.add_argument("--tokenizer", "-t", required=True, help="Tokenizer name or path")
     gym_run_parser.add_argument("--host", default="localhost", help="Gym server host")
     gym_run_parser.add_argument("--port", type=int, default=8023, help="Gym server port")
@@ -84,4 +86,5 @@ def register_gym_parsers(subparsers):
     gym_info_parser = gym_subparsers.add_parser(
         "info", help="Display gym stream configuration info"
     )
+    add_backend_flags(gym_info_parser)
     gym_info_parser.set_defaults(func=gym_info)

@@ -6,6 +6,7 @@ ensuring consistent patterns across all CLI modules.
 
 from __future__ import annotations
 
+import argparse
 import logging
 from abc import ABC, abstractmethod
 from argparse import Namespace
@@ -13,6 +14,45 @@ from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
+
+BACKEND_CHOICES: tuple[str, ...] = ("mlx", "torch")
+
+
+def add_backend_flags(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Register the shared ``--backend`` / ``--device`` flags on *parser*.
+
+    This is the single source of truth for backend-selection flags across
+    every CLI bucket (Epic 2 EWS-0).  Consumers should call this helper from
+    their parser registration to keep flag names, choices, and help text in
+    lock-step with the root parser semantics.
+
+    The call is idempotent: if the flags are already registered on *parser*
+    (for example by an earlier bucket that wired them first) the helper
+    silently returns the same parser instead of raising
+    ``argparse.ArgumentError``.
+    """
+
+    existing = {action.dest for action in parser._actions}
+    if "backend" not in existing:
+        parser.add_argument(
+            "--backend",
+            choices=list(BACKEND_CHOICES),
+            default=None,
+            help=(
+                "Runtime backend override (defaults to CHUK_BACKEND env or "
+                "platform auto-detection)."
+            ),
+        )
+    if "device" not in existing:
+        parser.add_argument(
+            "--device",
+            default=None,
+            help=(
+                "Device override (e.g. 'cuda:0', 'mps', 'cpu'); defaults to "
+                "backend auto-selection."
+            ),
+        )
+    return parser
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +246,7 @@ class CommonFields:
 
 
 __all__ = [
+    "BACKEND_CHOICES",
     "CommandConfig",
     "CommandResult",
     "CommonFields",
@@ -213,5 +254,6 @@ __all__ = [
     "OutputMixin",
     "PathMixin",
     "ResultT",
+    "add_backend_flags",
     "logger",
 ]

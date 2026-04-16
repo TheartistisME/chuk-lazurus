@@ -15,11 +15,30 @@ async def knowledge_query_cmd(args: Namespace) -> None:
     document state. Combined with the window's tokens, one forward pass
     reconstructs the full context. KL=0.0 vs full-document prefill.
     """
-    import mlx.core as mx
+    from ._backend import load_store_backend, resolve_backend_selection
 
-    from ._common import generate_plain, load_model, prepare_prompt, stop_token_ids
+    selection = resolve_backend_selection(args)
+    if selection.effective == "torch":
+        from ....inference.context.knowledge.torch_query import run_torch_query_command
 
-    _, kv_gen, tokenizer = load_model(args.model)
+        run_torch_query_command(
+            model_id=args.model,
+            prompt=args.prompt,
+            max_new_tokens=args.max_tokens,
+            temperature=args.temperature,
+            top_k=args.top_k,
+            device=selection.device,
+            store_path=args.store,
+        )
+        return
+
+    from ._common import _mlx_core, generate_plain, load_model, prepare_prompt, stop_token_ids
+
+    _, kv_gen, tokenizer = load_model(
+        args.model,
+        backend=selection.requested,
+        device=selection.device,
+    )
 
     # No store → plain inference
     if not args.store:
@@ -32,15 +51,14 @@ async def knowledge_query_cmd(args: Namespace) -> None:
         sys.stdout.flush()
         return
 
-    from ....inference.context.knowledge import KnowledgeStore
-
     store_path = Path(args.store)
     if not store_path.exists():
         print(f"Error: knowledge store not found: {store_path}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Loading knowledge store: {store_path}", file=sys.stderr)
-    store = KnowledgeStore.load(store_path)
+    store_cls = load_store_backend(selection.effective)
+    store = store_cls.load(store_path)
     store.log_stats()
 
     prompt_ids = prepare_prompt(tokenizer, args.prompt)
@@ -49,7 +67,7 @@ async def knowledge_query_cmd(args: Namespace) -> None:
     t0 = time.monotonic()
 
     # Query-side expansion: model generates discriminative keywords
-    expansion_ids = KnowledgeStore._expand_query(args.prompt, tokenizer, kv_gen)
+    expansion_ids = store_cls._expand_query(args.prompt, tokenizer, kv_gen)
     expansion_words = sorted(
         {
             tokenizer.decode([t]).strip().lower()
@@ -76,6 +94,7 @@ async def knowledge_query_cmd(args: Namespace) -> None:
     else:
         route_ms = (time.monotonic() - t0) * 1000
         print(f"  Routed to windows {window_ids} ({route_ms:.1f} ms)", file=sys.stderr)
+        mx = _mlx_core()
 
         # Reconstruct: decode window tokens, chat-template with query,
         # prefill with boundary as initial_residual

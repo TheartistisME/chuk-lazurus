@@ -1,9 +1,7 @@
 """Layer and format-sensitivity introspect parsers."""
 
-from ...commands.introspect import (
-    introspect_format_sensitivity,
-    introspect_layer,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_command
 
 
 def register_layer_parsers(introspect_subparsers):
@@ -46,7 +44,8 @@ def register_layer_parsers(introspect_subparsers):
         "-o",
         help="Save results to JSON file",
     )
-    layer_parser.set_defaults(func=introspect_layer)
+    add_backend_flags(layer_parser)
+    layer_parser.set_defaults(func=run_command("introspect_layer"))
 
     # Format sensitivity command - quick test for trailing space effects
     format_parser = introspect_subparsers.add_parser(
@@ -76,4 +75,5 @@ def register_layer_parsers(introspect_subparsers):
         action="store_true",
         help="Only show summary (skip detailed output)",
     )
-    format_parser.set_defaults(func=introspect_format_sensitivity)
+    add_backend_flags(format_parser)
+    format_parser.set_defaults(func=run_command("introspect_format_sensitivity"))

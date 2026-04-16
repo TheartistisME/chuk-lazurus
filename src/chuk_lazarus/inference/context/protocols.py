@@ -15,12 +15,13 @@ Tensor shape conventions (all APIs assume batch_size=1):
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-import mlx.core as mx
+if TYPE_CHECKING:
+    import mlx.core as mx
 
 # Per-layer (K, V) pair list — the format used by KVDirectGenerator
-KVStore = list[tuple[mx.array, mx.array]]
+KVStore = list[tuple[Any, Any]]
 
 
 @runtime_checkable

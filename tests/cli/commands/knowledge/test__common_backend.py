@@ -20,6 +20,12 @@ from unittest.mock import MagicMock, patch
 from chuk_lazarus.cli.commands.knowledge import _common
 
 
+def _fake_mlx_core() -> MagicMock:
+    fake_mx = MagicMock()
+    fake_mx.array.return_value = MagicMock()
+    return fake_mx
+
+
 def test_resolve_backend_device_pulls_from_namespace() -> None:
     ns = argparse.Namespace(backend="torch", device="cuda:0")
     assert _common._resolve_backend_device(ns) == ("torch", "cuda:0")
@@ -36,6 +42,7 @@ def test_load_model_forwards_backend_and_device_into_pipeline_config() -> None:
     fake_pipeline.tokenizer = MagicMock()
     fake_kv_gen = MagicMock()
     fake_kv_gen.prefill = MagicMock(return_value=(MagicMock(), MagicMock()))
+    fake_mx = _fake_mlx_core()
 
     with (
         patch("chuk_lazarus.inference.UnifiedPipeline.from_pretrained", return_value=fake_pipeline)
@@ -44,10 +51,13 @@ def test_load_model_forwards_backend_and_device_into_pipeline_config() -> None:
             "chuk_lazarus.inference.context.kv_generator.make_kv_generator",
             return_value=fake_kv_gen,
         ),
-        patch("mlx.core.array", return_value=MagicMock()),
+        patch("chuk_lazarus.cli.commands.knowledge._common._mlx_core", return_value=fake_mx)
+        as mocked_mlx_core,
     ):
         _common.load_model("model-id", backend="torch", device="cuda:0")
 
+    mocked_mlx_core.assert_called_once_with()
+    fake_mx.array.assert_called_once_with([[1, 2, 3]])
     args, kwargs = mocked_from_pretrained.call_args
     assert args[0] == "model-id"
     assert kwargs.get("verbose") is False
@@ -64,6 +74,7 @@ def test_load_model_uses_default_config_when_flags_absent() -> None:
     fake_pipeline.tokenizer = MagicMock()
     fake_kv_gen = MagicMock()
     fake_kv_gen.prefill = MagicMock(return_value=(MagicMock(), MagicMock()))
+    fake_mx = _fake_mlx_core()
 
     with (
         patch("chuk_lazarus.inference.UnifiedPipeline.from_pretrained", return_value=fake_pipeline)
@@ -72,12 +83,13 @@ def test_load_model_uses_default_config_when_flags_absent() -> None:
             "chuk_lazarus.inference.context.kv_generator.make_kv_generator",
             return_value=fake_kv_gen,
         ),
-        patch("mlx.core.array", return_value=MagicMock()),
+        patch("chuk_lazarus.cli.commands.knowledge._common._mlx_core", return_value=fake_mx),
     ):
         _common.load_model("model-id")
 
+    fake_mx.array.assert_called_once_with([[1, 2, 3]])
     _args, kwargs = mocked_from_pretrained.call_args
-    assert kwargs["pipeline_config"] is None
+    assert "pipeline_config" not in kwargs
 
 
 def test_knowledge_modules_lazy_import_mlx_under_torch_backend() -> None:

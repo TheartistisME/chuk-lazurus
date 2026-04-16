@@ -19,10 +19,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 BACKEND_IN_SCOPE: list[str] = [
+    "src/chuk_lazarus/inference/_lazy_mlx.py",
     "src/chuk_lazarus/inference/loader.py",
     "src/chuk_lazarus/inference/unified.py",
     "src/chuk_lazarus/inference/__init__.py",
     "src/chuk_lazarus/inference/generator.py",
+    "src/chuk_lazarus/inference/context/__init__.py",
+    "src/chuk_lazarus/inference/context/knowledge/__init__.py",
     "src/chuk_lazarus/inference/context/kv_generator.py",
     # EWS-0.3a — inference/context/adapters lazy-mlx sweep.
     "src/chuk_lazarus/inference/context/adapters/__init__.py",
@@ -192,6 +195,11 @@ BACKEND_IN_SCOPE: list[str] = [
     "src/chuk_lazarus/models_v2/families/__init__.py",
     "src/chuk_lazarus/models_v2/families/llama/__init__.py",
     "src/chuk_lazarus/models_v2/families/llama/model.py",
+    # EWS-0.3d — final lazy-mlx sweep (shadowed ~61 CI-gate failures).
+    # Note: ``cli/commands/context/generate/_mode7.py`` already listed above
+    # under EWS-3; EWS-0.3d only appends the two new entries.
+    "src/chuk_lazarus/data/base_dataset.py",
+    "src/chuk_lazarus/models_v2/loader.py",
 ]
 
 # Backwards-compatible alias.  Epic 2 workstreams append to

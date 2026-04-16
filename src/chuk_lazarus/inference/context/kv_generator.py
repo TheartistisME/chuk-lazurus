@@ -38,12 +38,18 @@ Lifecycle
 
 from __future__ import annotations
 
-import mlx.core as mx
+from chuk_lazarus.inference._lazy_mlx import mx
 
 from .protocols import KVStore, ModelBackboneProtocol
 
-# Dtype for attention masks — bfloat16 matches weight precision.
-_MASK_DTYPE = mx.bfloat16
+
+def _mx():
+    return mx
+
+
+def _mask_dtype():
+    """Resolve the attention-mask dtype lazily."""
+    return _mx().bfloat16
 
 
 def _run_layer(
@@ -649,12 +655,12 @@ class KVDirectGenerator:
         h = backbone.embed(new_token_ids)
 
         # Causal mask among new tokens — same for all layers
-        causal_new = mx.triu(mx.full((N, N), -1e9, dtype=_MASK_DTYPE), k=1)  # (N, N)
+        causal_new = mx.triu(mx.full((N, N), -1e9, dtype=_mask_dtype()), k=1)  # (N, N)
 
         sw = backbone.sliding_window
 
         # Global mask: all S stored positions visible
-        global_mask = mx.concatenate([mx.zeros((N, S), dtype=_MASK_DTYPE), causal_new], axis=-1)[
+        global_mask = mx.concatenate([mx.zeros((N, S), dtype=_mask_dtype()), causal_new], axis=-1)[
             None, None
         ]  # (1, 1, N, S+N)
 
@@ -662,13 +668,13 @@ class KVDirectGenerator:
         if sw is not None and S > sw:
             sw_stored = mx.concatenate(
                 [
-                    mx.full((N, S - sw), -1e9, dtype=_MASK_DTYPE),
-                    mx.zeros((N, sw), dtype=_MASK_DTYPE),
+                    mx.full((N, S - sw), -1e9, dtype=_mask_dtype()),
+                    mx.zeros((N, sw), dtype=_mask_dtype()),
                 ],
                 axis=-1,
             )
         else:
-            sw_stored = mx.zeros((N, S), dtype=_MASK_DTYPE)
+            sw_stored = mx.zeros((N, S), dtype=_mask_dtype())
         sw_mask = mx.concatenate([sw_stored, causal_new], axis=-1)[None, None]
 
         new_kv_store: KVStore = []
@@ -743,12 +749,12 @@ class KVDirectGenerator:
         h = backbone.embed(new_token_ids)
 
         # Causal mask among new tokens
-        causal_new = mx.triu(mx.full((N, N), -1e9, dtype=_MASK_DTYPE), k=1)
+        causal_new = mx.triu(mx.full((N, N), -1e9, dtype=_mask_dtype()), k=1)
 
         sw = backbone.sliding_window
 
         # Global mask: all S stored positions visible
-        global_mask = mx.concatenate([mx.zeros((N, S), dtype=_MASK_DTYPE), causal_new], axis=-1)[
+        global_mask = mx.concatenate([mx.zeros((N, S), dtype=_mask_dtype()), causal_new], axis=-1)[
             None, None
         ]
 
@@ -756,13 +762,13 @@ class KVDirectGenerator:
         if sw is not None and S > sw:
             sw_stored = mx.concatenate(
                 [
-                    mx.full((N, S - sw), -1e9, dtype=_MASK_DTYPE),
-                    mx.zeros((N, sw), dtype=_MASK_DTYPE),
+                    mx.full((N, S - sw), -1e9, dtype=_mask_dtype()),
+                    mx.zeros((N, sw), dtype=_mask_dtype()),
                 ],
                 axis=-1,
             )
         else:
-            sw_stored = mx.zeros((N, S), dtype=_MASK_DTYPE)
+            sw_stored = mx.zeros((N, S), dtype=_mask_dtype())
         sw_mask = mx.concatenate([sw_stored, causal_new], axis=-1)[None, None]
 
         # Default: capture all global layers
@@ -923,8 +929,8 @@ class KVDirectGenerator:
             if (not is_global) and sw is not None and total > sw:
                 step_mask = mx.concatenate(
                     [
-                        mx.full((1, 1, 1, total - sw), -1e9, dtype=_MASK_DTYPE),
-                        mx.zeros((1, 1, 1, sw), dtype=_MASK_DTYPE),
+                        mx.full((1, 1, 1, total - sw), -1e9, dtype=_mask_dtype()),
+                        mx.zeros((1, 1, 1, sw), dtype=_mask_dtype()),
                     ],
                     axis=-1,
                 )

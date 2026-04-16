@@ -39,7 +39,11 @@ async def bench_pipeline(config: BenchmarkConfig) -> BenchmarkResult:
         create_efficiency_report,
         pack_sequences,
     )
+    from ....models_v2.core.backend import get_backend
     from ....utils.tokenizer_loader import load_tokenizer
+
+    backend = get_backend(config.backend, config.device)
+    logger.info(f"Using backend: {backend.name} device={getattr(backend, 'device', None)}")
 
     print(f"\n{'=' * 70}")
     print("LAZARUS PIPELINE BENCHMARK")

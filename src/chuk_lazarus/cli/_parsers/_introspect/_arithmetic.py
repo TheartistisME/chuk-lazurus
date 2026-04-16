@@ -1,11 +1,7 @@
 """Arithmetic and uncertainty introspect parsers."""
 
-import asyncio
-
-from ...commands.introspect import (
-    introspect_arithmetic,
-    introspect_uncertainty,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_async_command, run_command
 
 
 def register_arithmetic_parsers(introspect_subparsers):
@@ -55,7 +51,8 @@ This reveals where computation happens in the model:
         "-o",
         help="Save results to JSON file",
     )
-    arithmetic_parser.set_defaults(func=introspect_arithmetic)
+    add_backend_flags(arithmetic_parser)
+    arithmetic_parser.set_defaults(func=run_command("introspect_arithmetic"))
 
     # Uncertainty command - detect model confidence before generation
     uncertainty_parser = introspect_subparsers.add_parser(
@@ -105,4 +102,5 @@ predicts output behavior.
         "-o",
         help="Save results to JSON file",
     )
-    uncertainty_parser.set_defaults(func=lambda args: asyncio.run(introspect_uncertainty(args)))
+    add_backend_flags(uncertainty_parser)
+    uncertainty_parser.set_defaults(func=run_async_command("introspect_uncertainty"))

@@ -1,6 +1,7 @@
 """Steer introspect parser."""
 
-from ...commands.introspect import introspect_steer
+from ...commands._base import add_backend_flags
+from ._dispatch import run_command
 
 
 def register_steering_parsers(introspect_subparsers):
@@ -98,4 +99,5 @@ Three modes of operation:
         "-o",
         help="Save results/direction to file",
     )
-    steer_parser.set_defaults(func=introspect_steer)
+    add_backend_flags(steer_parser)
+    steer_parser.set_defaults(func=run_command("introspect_steer"))

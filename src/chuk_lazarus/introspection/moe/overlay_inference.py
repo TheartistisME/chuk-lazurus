@@ -9,8 +9,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import mlx.core as mx
-import mlx.nn as nn
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx, lazy_nn as nn  # EWS-6 lazy
 
 from .moe_compression import OverlayExperts
 

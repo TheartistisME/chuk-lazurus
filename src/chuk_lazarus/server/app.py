@@ -21,15 +21,34 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, Request, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from ._compat import raise_server_dependency_error
+
 if TYPE_CHECKING:
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
     from .engine import ModelEngine
+else:
+    FastAPI = Any
+    Request = Any
+    JSONResponse = Any
+
+try:
+    from fastapi import FastAPI as _FastAPI, Request as _Request, status as _status
+    from fastapi.middleware.cors import CORSMiddleware as _CORSMiddleware
+    from fastapi.responses import JSONResponse as _JSONResponse
+except ImportError as exc:
+    _FASTAPI_IMPORT_ERROR = exc
+    _FastAPI = None
+    _Request = None
+    _status = None
+    _CORSMiddleware = None
+    _JSONResponse = None
+else:
+    _FASTAPI_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +94,10 @@ class HealthResponse(BaseModel):
 
 
 def _error_response(message: str, detail: ErrorDetail, http_status: int) -> JSONResponse:
+    if _FASTAPI_IMPORT_ERROR is not None:
+        raise_server_dependency_error(_FASTAPI_IMPORT_ERROR)
     body = ErrorResponse(error=ErrorBody(message=message, type=detail))
-    return JSONResponse(status_code=http_status, content=body.model_dump())
+    return _JSONResponse(status_code=http_status, content=body.model_dump())
 
 
 # ── Auth middleware ────────────────────────────────────────────────────────────
@@ -94,14 +115,14 @@ def _make_auth_middleware(api_key: str):
             return _error_response(
                 "Missing or malformed Authorization header",
                 ErrorDetail.UNAUTHORIZED,
-                status.HTTP_401_UNAUTHORIZED,
+                _status.HTTP_401_UNAUTHORIZED,
             )
         token = auth_header.removeprefix(_BEARER_PREFIX).strip()
         if token != api_key:
             return _error_response(
                 "Invalid API key",
                 ErrorDetail.UNAUTHORIZED,
-                status.HTTP_401_UNAUTHORIZED,
+                _status.HTTP_401_UNAUTHORIZED,
             )
         return await call_next(request)
 
@@ -132,9 +153,12 @@ def create_app(
     default_max_tokens:
         Fallback ``max_tokens`` when the caller does not specify one.
     """
+    if _FASTAPI_IMPORT_ERROR is not None:
+        raise_server_dependency_error(_FASTAPI_IMPORT_ERROR)
+
     protocols = protocols or [Protocol.OPENAI]
 
-    app = FastAPI(
+    app = _FastAPI(
         title="Lazarus Inference Server",
         description="OpenAI-compatible (and more) local inference server powered by chuk-lazarus.",
         version="1.0.0",
@@ -148,7 +172,7 @@ def create_app(
 
     # ── CORS ───────────────────────────────────────────────────────────────
     app.add_middleware(
-        CORSMiddleware,
+        _CORSMiddleware,
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],

@@ -1,9 +1,7 @@
 """Directions and operand-directions introspect parsers."""
 
-from ...commands.introspect import (
-    introspect_directions,
-    introspect_operand_directions,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_command
 
 
 def register_directions_parsers(introspect_subparsers):
@@ -38,7 +36,8 @@ Example:
         "-o",
         help="Save similarity matrix to JSON file",
     )
-    directions_parser.set_defaults(func=introspect_directions)
+    add_backend_flags(directions_parser)
+    directions_parser.set_defaults(func=run_command("introspect_directions"))
 
     # Operand-directions command - analyze how operands are encoded
     operand_directions_parser = introspect_subparsers.add_parser(
@@ -84,4 +83,5 @@ Examples:
         "-o",
         help="Save results to file (.json or .npz)",
     )
-    operand_directions_parser.set_defaults(func=introspect_operand_directions)
+    add_backend_flags(operand_directions_parser)
+    operand_directions_parser.set_defaults(func=run_command("introspect_operand_directions"))

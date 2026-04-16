@@ -1,43 +1,49 @@
 """
 Steering subpackage for activation steering.
 
-This package provides the ActivationSteering class and related utilities
-for manipulating model behavior by adding learned directions to activations.
+The public API is resolved lazily so torch hosts can import
+``chuk_lazarus.introspection.steering`` without constructing MLX-only
+symbols such as ``SteeredGemmaMLP``.
 """
 
-from .config import LegacySteeringConfig, SteeringConfig, SteeringMode
-from .core import ActivationSteering
-from .hook import SteeringHook
-from .legacy import SteeredGemmaMLP, ToolCallingSteering
-from .service import (
-    DirectionExtractionResult,
-    SteeringComparisonResult,
-    SteeringGenerationResult,
-    SteeringService,
-    SteeringServiceConfig,
-)
-from .utils import compare_steering_effects, format_functiongemma_prompt, steer_model
+from __future__ import annotations
 
-__all__ = [
-    # Config
-    "SteeringConfig",
-    "SteeringMode",
-    "LegacySteeringConfig",
-    # Core
-    "ActivationSteering",
-    # Hook
-    "SteeringHook",
-    # Legacy
-    "SteeredGemmaMLP",
-    "ToolCallingSteering",
-    # Service
-    "SteeringService",
-    "SteeringServiceConfig",
-    "DirectionExtractionResult",
-    "SteeringGenerationResult",
-    "SteeringComparisonResult",
-    # Utils
-    "steer_model",
-    "compare_steering_effects",
-    "format_functiongemma_prompt",
-]
+import importlib
+
+
+_LAZY_GROUPS: dict[str, list[str]] = {
+    ".config": ["LegacySteeringConfig", "SteeringConfig", "SteeringMode"],
+    ".core": ["ActivationSteering"],
+    ".hook": ["SteeringHook"],
+    ".legacy": ["SteeredGemmaMLP", "ToolCallingSteering"],
+    ".service": [
+        "DirectionExtractionResult",
+        "SteeringComparisonResult",
+        "SteeringGenerationResult",
+        "SteeringService",
+        "SteeringServiceConfig",
+    ],
+    ".utils": ["compare_steering_effects", "format_functiongemma_prompt", "steer_model"],
+}
+
+_LAZY: dict[str, tuple[str, str]] = {
+    name: (module, name)
+    for module, names in _LAZY_GROUPS.items()
+    for name in names
+}
+
+__all__ = sorted(_LAZY)
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        module_name, attr = _LAZY[name]
+        module = importlib.import_module(module_name, __name__)
+        value = getattr(module, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

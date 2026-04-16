@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import mlx.core as mx
-import mlx.nn as nn
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx, lazy_nn as nn  # EWS-6 lazy
 
 from ..hooks import CaptureConfig, CapturedState, ModelHooks
 from .config import MoECaptureConfig

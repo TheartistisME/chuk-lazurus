@@ -1,6 +1,7 @@
 """Patch introspect parser."""
 
-from ...commands.introspect import introspect_patch
+from ...commands._base import add_backend_flags
+from ._dispatch import run_command
 
 
 def register_patch_parsers(introspect_subparsers):
@@ -76,4 +77,5 @@ Examples:
         "-o",
         help="Save results to JSON file",
     )
-    patch_parser.set_defaults(func=introspect_patch)
+    add_backend_flags(patch_parser)
+    patch_parser.set_defaults(func=run_command("introspect_patch"))

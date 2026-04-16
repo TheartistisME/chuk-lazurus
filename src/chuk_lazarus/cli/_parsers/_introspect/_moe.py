@@ -1,12 +1,9 @@
 """Virtual-expert and moe-expert introspect parsers."""
 
 import argparse
-import asyncio
 
-from ...commands.introspect import (
-    introspect_moe_expert,
-    introspect_virtual_expert,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_async_command, run_command
 
 
 def register_moe_parsers(introspect_subparsers):
@@ -90,9 +87,8 @@ Examples:
         dest="use_few_shot_rewriter",
         help="Use FewShotCoTRewriter to normalize queries (for non-CoT-trained models)",
     )
-    virtual_expert_parser.set_defaults(
-        func=lambda args: asyncio.run(introspect_virtual_expert(args))
-    )
+    add_backend_flags(virtual_expert_parser)
+    virtual_expert_parser.set_defaults(func=run_async_command("introspect_virtual_expert"))
 
     # MoE Expert command - direct expert manipulation
     moe_expert_parser = introspect_subparsers.add_parser(
@@ -329,4 +325,5 @@ MoE Compression Examples:
         default=True,
         help="Start fresh instead of resuming from checkpoint (for moe-overlay-compress)",
     )
-    moe_expert_parser.set_defaults(func=introspect_moe_expert)
+    add_backend_flags(moe_expert_parser)
+    moe_expert_parser.set_defaults(func=run_command("introspect_moe_expert"))

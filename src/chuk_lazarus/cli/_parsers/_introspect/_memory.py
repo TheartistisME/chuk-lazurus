@@ -1,11 +1,7 @@
 """Memory and memory-inject introspect parsers."""
 
-import asyncio
-
-from ...commands.introspect import (
-    introspect_memory,
-    introspect_memory_inject,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_async_command
 
 
 def register_memory_parsers(introspect_subparsers):
@@ -80,7 +76,8 @@ Examples:
         action="store_true",
         help="Show memorization classification (memorized/partial/weak/not memorized)",
     )
-    memory_parser.set_defaults(func=lambda args: asyncio.run(introspect_memory(args)))
+    add_backend_flags(memory_parser)
+    memory_parser.set_defaults(func=run_async_command("introspect_memory"))
 
     # Memory-inject command - external memory injection
     memory_inject_parser = introspect_subparsers.add_parser(
@@ -177,4 +174,5 @@ Examples:
         action="store_true",
         help="Evaluate baseline vs injected accuracy on all facts",
     )
-    memory_inject_parser.set_defaults(func=lambda args: asyncio.run(introspect_memory_inject(args)))
+    add_backend_flags(memory_inject_parser)
+    memory_inject_parser.set_defaults(func=run_async_command("introspect_memory_inject"))

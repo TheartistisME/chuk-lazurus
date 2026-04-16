@@ -26,6 +26,8 @@ class AnalyzeConfig(CommandConfig):
     bucket_edges: str = Field(..., description="Comma-separated bucket edges")
     overflow_max: int = Field(..., gt=0, description="Maximum overflow length")
     output: Path | None = Field(default=None, description="Output path for JSON report")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Device override")
 
     @classmethod
     def from_args(cls, args: Namespace) -> AnalyzeConfig:
@@ -35,6 +37,8 @@ class AnalyzeConfig(CommandConfig):
             bucket_edges=args.bucket_edges,
             overflow_max=args.overflow_max,
             output=Path(args.output) if args.output else None,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
     def get_bucket_edges(self) -> tuple[int, ...]:
@@ -62,6 +66,8 @@ class HistogramConfig(CommandConfig):
     cache: Path = Field(..., description="Path to length cache")
     bins: int = Field(default=20, gt=0, description="Number of histogram bins")
     width: int = Field(default=80, gt=0, description="Display width")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Device override")
 
     @classmethod
     def from_args(cls, args: Namespace) -> HistogramConfig:
@@ -70,6 +76,8 @@ class HistogramConfig(CommandConfig):
             cache=Path(args.cache),
             bins=args.bins,
             width=args.width,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
 
@@ -109,6 +117,8 @@ class SuggestConfig(CommandConfig):
         default=OptimizationGoalType.WASTE, description="Optimization goal"
     )
     max_length: int = Field(default=2048, gt=0, description="Maximum sequence length")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Device override")
 
     @classmethod
     def from_args(cls, args: Namespace) -> SuggestConfig:
@@ -123,6 +133,8 @@ class SuggestConfig(CommandConfig):
             num_buckets=args.num_buckets,
             goal=goal_map.get(args.goal, OptimizationGoalType.WASTE),
             max_length=args.max_length,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
 

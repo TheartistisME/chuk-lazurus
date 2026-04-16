@@ -142,6 +142,19 @@ PROBE_CATEGORIES: dict[str, list[int]] = {
 
 async def context_calibrate_frames_cmd(args: Namespace) -> None:
     """CLI entry point: discover dark space coordinate frames for a model."""
+    from ....models_v2.core.backend import get_backend
+
+    backend = get_backend(
+        name=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
+    )
+    if str(backend.name).lower() == "torch":
+        raise NotImplementedError(
+            "context calibrate-frames is MLX-only in Epic 2 (emits .mlxckpt "
+            "frame bank via mx.savez). Tracked for Epic 3: "
+            "docs/refactor/dual-backend-cuda-epic3/00-scope.md#context-calibrate-frames"
+        )
+
     import mlx.core as mx
     import numpy as np
 

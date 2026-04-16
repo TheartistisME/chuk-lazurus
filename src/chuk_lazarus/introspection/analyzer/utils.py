@@ -7,9 +7,19 @@ divergence, and other mathematical operations used in analysis.
 
 from __future__ import annotations
 
-import mlx.core as mx
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - type-checker only
+    import mlx.core as mx  # noqa: F401
 
 from .config import LayerStrategy
+
+
+def _mx():
+    """Lazy accessor for ``mlx.core``."""
+    import mlx.core as mx  # noqa: PLC0415
+
+    return mx
 
 
 def compute_entropy(probs: mx.array) -> float:
@@ -22,6 +32,7 @@ def compute_entropy(probs: mx.array) -> float:
     Returns:
         Shannon entropy value
     """
+    mx = _mx()
     # Avoid log(0) by clipping
     probs_clipped = mx.clip(probs, 1e-10, 1.0)
     entropy = -mx.sum(probs_clipped * mx.log(probs_clipped))
@@ -39,6 +50,7 @@ def compute_kl_divergence(p: mx.array, q: mx.array) -> float:
     Returns:
         KL divergence value (always >= 0)
     """
+    mx = _mx()
     # Clip to avoid log(0) and division by zero
     p_clipped = mx.clip(p, 1e-10, 1.0)
     q_clipped = mx.clip(q, 1e-10, 1.0)

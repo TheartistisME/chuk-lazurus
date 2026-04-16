@@ -9,13 +9,22 @@ from pathlib import Path
 
 async def knowledge_chat_cmd(args: Namespace) -> None:
     """Interactive chat loop with persistent 1D injection from a knowledge store."""
-    import mlx.core as mx
+    from ._backend import load_store_backend, resolve_backend_selection
 
-    from ....inference.context.knowledge import (
-        KnowledgeStore,
-        generate_with_injection,
-    )
-    from ._common import generate_plain, load_model, prepare_prompt, stop_token_ids
+    selection = resolve_backend_selection(args)
+    if selection.effective == "torch":
+        from ....inference.context.knowledge.torch_query import run_torch_chat_command
+
+        run_torch_chat_command(
+            model_id=args.model,
+            store_path=args.store,
+            max_new_tokens=args.max_tokens,
+            temperature=args.temperature,
+            device=selection.device,
+        )
+        return
+
+    from ._common import _mlx_core, generate_plain, load_model, prepare_prompt, stop_token_ids
 
     store_path = Path(args.store)
     if not store_path.exists():
@@ -23,9 +32,14 @@ async def knowledge_chat_cmd(args: Namespace) -> None:
         sys.exit(1)
 
     # ── Load model + store ────────────────────────────────────────────
-    _, kv_gen, tokenizer = load_model(args.model)
+    _, kv_gen, tokenizer = load_model(
+        args.model,
+        backend=selection.requested,
+        device=selection.device,
+    )
     print(f"Loading knowledge store: {store_path}", file=sys.stderr)
-    store = KnowledgeStore.load(store_path)
+    store_cls = load_store_backend(selection.effective)
+    store = store_cls.load(store_path)
     store.log_stats()
     print(file=sys.stderr)
 
@@ -57,6 +71,9 @@ async def knowledge_chat_cmd(args: Namespace) -> None:
                 tokenizer=tokenizer,
             )
         else:
+            from ....inference.context.knowledge import generate_with_injection
+
+            mx = _mlx_core()
             entries = store.get_entries_for_query(window_id, prompt_text, tokenizer)
             generated = generate_with_injection(
                 kv_gen=kv_gen,

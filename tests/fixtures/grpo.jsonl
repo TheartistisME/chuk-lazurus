@@ -1,0 +1,16 @@
+{"prompt": "Solve problem 0.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 1.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 2.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 3.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 4.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 5.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 6.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 7.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 8.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 9.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 10.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 11.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 12.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 13.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 14.", "reward_fn": "noop_reward"}
+{"prompt": "Solve problem 15.", "reward_fn": "noop_reward"}

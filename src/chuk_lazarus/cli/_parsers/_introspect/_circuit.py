@@ -1,17 +1,9 @@
 """Circuit introspect parsers."""
 
 import argparse
-import asyncio
 
-from ...commands.introspect import (
-    introspect_circuit_capture,
-    introspect_circuit_compare,
-    introspect_circuit_decode,
-    introspect_circuit_export,
-    introspect_circuit_invoke,
-    introspect_circuit_test,
-    introspect_circuit_view,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_async_command
 
 
 def register_circuit_parsers(introspect_subparsers):
@@ -88,7 +80,8 @@ Examples:
         default="last",
         help="Position to capture: last token, answer position, or operator position",
     )
-    capture_parser.set_defaults(func=lambda args: asyncio.run(introspect_circuit_capture(args)))
+    add_backend_flags(capture_parser)
+    capture_parser.set_defaults(func=run_async_command("introspect_circuit_capture"))
 
     # Circuit invoke
     invoke_parser = circuit_subparsers.add_parser(
@@ -133,7 +126,8 @@ Examples:
         "-o",
         help="Save result to file",
     )
-    invoke_parser.set_defaults(func=lambda args: asyncio.run(introspect_circuit_invoke(args)))
+    add_backend_flags(invoke_parser)
+    invoke_parser.set_defaults(func=run_async_command("introspect_circuit_invoke"))
 
     # Circuit decode
     decode_parser = circuit_subparsers.add_parser(
@@ -183,7 +177,8 @@ Examples:
         default=20,
         help="Max tokens to generate",
     )
-    decode_parser.set_defaults(func=lambda args: asyncio.run(introspect_circuit_decode(args)))
+    add_backend_flags(decode_parser)
+    decode_parser.set_defaults(func=run_async_command("introspect_circuit_decode"))
 
     # Circuit test - apply trained direction to new activations (proper OOD testing)
     test_parser = circuit_subparsers.add_parser(
@@ -223,7 +218,8 @@ Examples:
         "-o",
         help="Save results to JSON file",
     )
-    test_parser.set_defaults(func=lambda args: asyncio.run(introspect_circuit_test(args)))
+    add_backend_flags(test_parser)
+    test_parser.set_defaults(func=run_async_command("introspect_circuit_test"))
 
     # Circuit compare - compare multiple circuits (directions)
     compare_circuit_parser = circuit_subparsers.add_parser(
@@ -259,6 +255,7 @@ Example:
         "-o",
         help="Save comparison results to JSON file",
     )
+    add_backend_flags(compare_circuit_parser)
     compare_circuit_parser.set_defaults(
         func=lambda args: asyncio.run(introspect_circuit_compare(args))
     )
@@ -314,7 +311,8 @@ Examples:
         default=10,
         help="Number of top neurons to show with --stats (default: 10)",
     )
-    view_parser.set_defaults(func=lambda args: asyncio.run(introspect_circuit_view(args)))
+    add_backend_flags(view_parser)
+    view_parser.set_defaults(func=run_async_command("introspect_circuit_view"))
 
     # Circuit export - export circuit to various formats
     export_parser = circuit_subparsers.add_parser(
@@ -381,4 +379,5 @@ Examples:
         default="TB",
         help="Graph direction: TB (top-bottom), LR (left-right), etc. (default: TB)",
     )
-    export_parser.set_defaults(func=lambda args: asyncio.run(introspect_circuit_export(args)))
+    add_backend_flags(export_parser)
+    export_parser.set_defaults(func=run_async_command("introspect_circuit_export"))

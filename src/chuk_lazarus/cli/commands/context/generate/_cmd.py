@@ -13,12 +13,6 @@ import sys
 from argparse import Namespace
 
 from .._types import GenerateConfig, GenerateResult
-from ..compass_routing import RoutingStrategy, compass_route, two_pass_generate
-from ._iterative import _iterative_generate
-from ._mode7 import _mode7_generate
-from ._probe_driven import _probe_driven_generate
-from ._resolve import _resolve_replay
-from ._unified import _unified_generate
 
 
 def _arch_config_for(lib, pipeline):
@@ -84,11 +78,30 @@ def _decode_loop(logits, gen_kv, kv_gen, tokenizer, config, seq_len, mx):
 
 async def context_generate_cmd(args: Namespace) -> None:
     """CLI entry point: load a checkpoint library, replay windows, generate."""
+    from .....models_v2.core.backend import get_backend
+
+    backend = get_backend(
+        name=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
+    )
+    if str(backend.name).lower() == "torch":
+        raise NotImplementedError(
+            "context generate (mode7/probes/unified/.mlxckpt replay) is MLX-only "
+            "in Epic 2. Tracked for Epic 3: "
+            "docs/refactor/dual-backend-cuda-epic3/00-scope.md#context-generate"
+        )
+
     import mlx.core as mx
 
+    from ..compass_routing import RoutingStrategy, compass_route, two_pass_generate
     from .....inference import UnifiedPipeline
     from .....inference.context import CheckpointLibrary
     from .....inference.context.unlimited_engine import UnlimitedContextEngine
+    from ._iterative import _iterative_generate
+    from ._mode7 import _mode7_generate
+    from ._probe_driven import _probe_driven_generate
+    from ._resolve import _resolve_replay
+    from ._unified import _unified_generate
 
     config = GenerateConfig.from_args(args)
 

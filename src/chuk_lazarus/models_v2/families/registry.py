@@ -13,8 +13,13 @@ and provides a unified interface for loading any supported model.
 
 from __future__ import annotations
 
+import importlib
+import importlib.machinery
+import importlib.util
 import json
 import logging
+import sys
+import types
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -28,6 +33,88 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+class _LazyModuleAttr:
+    """Resolve a family class only when the caller first uses it."""
+
+    _families_root = Path(__file__).resolve().parent
+    _package_name = __package__ or "chuk_lazarus.models_v2.families"
+
+    def __init__(self, module_name: str, attr_name: str) -> None:
+        self._module_name = module_name
+        self._attr_name = attr_name
+        self._value: Any | None = None
+
+    @classmethod
+    def _ensure_namespace_package(cls, package_name: str, package_path: Path) -> bool:
+        if package_name in sys.modules:
+            return False
+
+        module = types.ModuleType(package_name)
+        module.__package__ = package_name
+        module.__path__ = [str(package_path)]
+
+        spec = importlib.machinery.ModuleSpec(package_name, loader=None, is_package=True)
+        spec.submodule_search_locations = [str(package_path)]
+        module.__spec__ = spec
+
+        sys.modules[package_name] = module
+        return True
+
+    def _import_without_package_init(self):
+        full_name = importlib.util.resolve_name(self._module_name, self._package_name)
+        if full_name in sys.modules:
+            return sys.modules[full_name]
+
+        if not full_name.startswith(f"{self._package_name}."):
+            return importlib.import_module(full_name)
+
+        relative_parts = full_name.removeprefix(f"{self._package_name}.").split(".")
+        if len(relative_parts) < 2:
+            return importlib.import_module(full_name)
+
+        family_dir = self._families_root / relative_parts[0]
+        module_path = family_dir.joinpath(*relative_parts[1:]).with_suffix(".py")
+        if not module_path.exists():
+            return importlib.import_module(full_name)
+
+        family_package = f"{self._package_name}.{relative_parts[0]}"
+        created_package = self._ensure_namespace_package(family_package, family_dir)
+
+        spec = importlib.util.spec_from_file_location(full_name, module_path)
+        if spec is None or spec.loader is None:
+            if created_package:
+                sys.modules.pop(family_package, None)
+            return importlib.import_module(full_name)
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[full_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(full_name, None)
+            raise
+        finally:
+            if created_package:
+                sys.modules.pop(family_package, None)
+
+        return module
+
+    def _resolve(self) -> Any:
+        if self._value is None:
+            module = self._import_without_package_init()
+            self._value = getattr(module, self._attr_name)
+        return self._value
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._resolve()(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
+    def __repr__(self) -> str:
+        return f"<lazy {self._module_name}:{self._attr_name}>"
 
 
 class ModelFamilyType(str, Enum):
@@ -210,28 +297,15 @@ class ModelFamilyRegistry:
 
     def _register_builtin_families(self) -> None:
         """Register all built-in model families."""
-        # Import families lazily to avoid circular imports
-        from . import (
-            gemma,
-            gpt2,
-            gpt_oss,
-            gpt_oss_lite,
-            granite,
-            jamba,
-            llama,
-            llama4,
-            mamba,
-            olmoe,
-            qwen3,
-            starcoder2,
-        )
+        def lazy(module_name: str, attr_name: str) -> _LazyModuleAttr:
+            return _LazyModuleAttr(module_name, attr_name)
 
         # Llama family
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.LLAMA,
-                config_class=llama.LlamaConfig,
-                model_class=llama.LlamaForCausalLM,
+                config_class=lazy(".llama.config", "LlamaConfig"),
+                model_class=lazy(".llama.model", "LlamaForCausalLM"),
                 model_types=[
                     HFModelType.LLAMA.value,
                     HFModelType.MISTRAL.value,
@@ -246,8 +320,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.LLAMA4,
-                config_class=llama4.Llama4Config,
-                model_class=llama4.Llama4ForCausalLM,
+                config_class=lazy(".llama4.config", "Llama4Config"),
+                model_class=lazy(".llama4.model", "Llama4ForCausalLM"),
                 model_types=[HFModelType.LLAMA4.value],
                 architectures=["Llama4ForCausalLM"],
             )
@@ -257,8 +331,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.GEMMA,
-                config_class=gemma.GemmaConfig,
-                model_class=gemma.GemmaForCausalLM,
+                config_class=lazy(".gemma.config", "GemmaConfig"),
+                model_class=lazy(".gemma.model", "GemmaForCausalLM"),
                 model_types=[
                     HFModelType.GEMMA.value,
                     HFModelType.GEMMA2.value,
@@ -278,8 +352,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.GRANITE,
-                config_class=granite.GraniteConfig,
-                model_class=granite.GraniteForCausalLM,
+                config_class=lazy(".granite.config", "GraniteConfig"),
+                model_class=lazy(".granite.model", "GraniteForCausalLM"),
                 model_types=[HFModelType.GRANITE.value],
                 architectures=["GraniteForCausalLM"],
             )
@@ -289,8 +363,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.GRANITE_HYBRID,
-                config_class=granite.GraniteHybridConfig,
-                model_class=granite.GraniteHybridForCausalLM,
+                config_class=lazy(".granite.config", "GraniteHybridConfig"),
+                model_class=lazy(".granite.hybrid", "GraniteHybridForCausalLM"),
                 model_types=[HFModelType.GRANITE_MOE_HYBRID.value],
                 architectures=["GraniteMoeHybridForCausalLM"],
             )
@@ -300,8 +374,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.JAMBA,
-                config_class=jamba.JambaConfig,
-                model_class=jamba.JambaForCausalLM,
+                config_class=lazy(".jamba.config", "JambaConfig"),
+                model_class=lazy(".jamba.model", "JambaForCausalLM"),
                 model_types=[HFModelType.JAMBA.value],
                 architectures=["JambaForCausalLM"],
             )
@@ -311,8 +385,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.MAMBA,
-                config_class=mamba.MambaConfig,
-                model_class=mamba.MambaForCausalLM,
+                config_class=lazy(".mamba.config", "MambaConfig"),
+                model_class=lazy(".mamba.model", "MambaForCausalLM"),
                 model_types=[HFModelType.MAMBA.value],
                 architectures=["MambaForCausalLM"],
             )
@@ -322,8 +396,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.STARCODER2,
-                config_class=starcoder2.StarCoder2Config,
-                model_class=starcoder2.StarCoder2ForCausalLM,
+                config_class=lazy(".starcoder2.config", "StarCoder2Config"),
+                model_class=lazy(".starcoder2.model", "StarCoder2ForCausalLM"),
                 model_types=[HFModelType.STARCODER2.value],
                 architectures=["Starcoder2ForCausalLM"],
             )
@@ -333,8 +407,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.QWEN3,
-                config_class=qwen3.Qwen3Config,
-                model_class=qwen3.Qwen3ForCausalLM,
+                config_class=lazy(".qwen3.config", "Qwen3Config"),
+                model_class=lazy(".qwen3.model", "Qwen3ForCausalLM"),
                 model_types=[HFModelType.QWEN2.value, HFModelType.QWEN3.value],
                 architectures=["Qwen2ForCausalLM", "Qwen3ForCausalLM"],
             )
@@ -344,8 +418,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.GPT2,
-                config_class=gpt2.GPT2Config,
-                model_class=gpt2.GPT2ForCausalLM,
+                config_class=lazy(".gpt2.config", "GPT2Config"),
+                model_class=lazy(".gpt2.model", "GPT2ForCausalLM"),
                 model_types=[HFModelType.GPT2.value],
                 architectures=["GPT2LMHeadModel"],
             )
@@ -355,8 +429,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.GPT_OSS,
-                config_class=gpt_oss.GptOssConfig,
-                model_class=gpt_oss.GptOssForCausalLM,
+                config_class=lazy(".gpt_oss.config", "GptOssConfig"),
+                model_class=lazy(".gpt_oss.model", "GptOssForCausalLM"),
                 model_types=[HFModelType.GPT_OSS.value],
                 architectures=["GptOssForCausalLM"],
             )
@@ -366,8 +440,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.GPT_OSS_LITE,
-                config_class=gpt_oss_lite.GptOssLiteConfig,
-                model_class=gpt_oss_lite.GptOssLiteForCausalLM,
+                config_class=lazy(".gpt_oss_lite.config", "GptOssLiteConfig"),
+                model_class=lazy(".gpt_oss_lite.model", "GptOssLiteForCausalLM"),
                 model_types=["gpt_oss_lite", "gpt_oss_lite_minimal"],
                 architectures=["GptOssLiteForCausalLM", "GPTOSSLiteForCausalLM"],
             )
@@ -377,8 +451,8 @@ class ModelFamilyRegistry:
         self.register(
             FamilyInfo(
                 family_type=ModelFamilyType.OLMOE,
-                config_class=olmoe.OLMoEConfig,
-                model_class=olmoe.OLMoEForCausalLM,
+                config_class=lazy(".olmoe.config", "OLMoEConfig"),
+                model_class=lazy(".olmoe.model", "OLMoEForCausalLM"),
                 model_types=["olmoe"],
                 architectures=["OlmoeForCausalLM"],
             )

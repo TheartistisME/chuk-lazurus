@@ -5,11 +5,14 @@ This module provides a unified interface for datasets, reducing code duplication
 and ensuring consistent behavior across SFTDataset, PreferenceDataset, etc.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
+if TYPE_CHECKING:  # pragma: no cover
+    import mlx.core as mx  # noqa: F401
 
 
 class BaseDataset(ABC):

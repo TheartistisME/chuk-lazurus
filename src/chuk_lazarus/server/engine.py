@@ -48,6 +48,35 @@ logger = logging.getLogger(__name__)
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
 
+def _build_pipeline_config(backend: str | None, device: str | None):
+    """Build an optional UnifiedPipelineConfig from server overrides."""
+    if backend is None and device is None:
+        return None
+
+    from chuk_lazarus.inference import UnifiedPipelineConfig
+    from chuk_lazarus.inference.backends.types import LazarusBackend
+
+    kwargs: dict[str, str | LazarusBackend] = {}
+
+    if backend is not None:
+        normalized_backend = backend.strip().lower()
+        backend_map = {
+            "mlx": LazarusBackend.MLX,
+            "torch": LazarusBackend.CUDA,
+        }
+        if normalized_backend not in backend_map:
+            raise ValueError(
+                f"Unsupported backend override {backend!r}. Expected one of: mlx, torch."
+            )
+        kwargs["backend"] = backend_map[normalized_backend]
+        kwargs["backend_name"] = normalized_backend
+
+    if device is not None:
+        kwargs["device"] = device
+
+    return UnifiedPipelineConfig(**kwargs)
+
+
 # ── Streaming token generator ─────────────────────────────────────────────────
 
 
@@ -230,16 +259,41 @@ class ModelEngine:
     # ── Factory ───────────────────────────────────────────────────────────────
 
     @classmethod
-    async def load(cls, model_id: str, verbose: bool = True) -> ModelEngine:
+    async def load(
+        cls,
+        model_id: str,
+        verbose: bool = True,
+        backend: str | None = None,
+        device: str | None = None,
+    ) -> ModelEngine:
         """Async factory — loads the model in a thread pool."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: cls._load_sync(model_id, verbose))
+        return await loop.run_in_executor(
+            None,
+            lambda: cls._load_sync(
+                model_id,
+                verbose,
+                backend=backend,
+                device=device,
+            ),
+        )
 
     @classmethod
-    def _load_sync(cls, model_id: str, verbose: bool) -> ModelEngine:
+    def _load_sync(
+        cls,
+        model_id: str,
+        verbose: bool,
+        backend: str | None = None,
+        device: str | None = None,
+    ) -> ModelEngine:
         from chuk_lazarus.inference import UnifiedPipeline
 
-        pipeline = UnifiedPipeline.from_pretrained(model_id, verbose=verbose)
+        pipeline_config = _build_pipeline_config(backend, device)
+        pipeline = UnifiedPipeline.from_pretrained(
+            model_id,
+            pipeline_config=pipeline_config,
+            verbose=verbose,
+        )
         return cls(pipeline, model_id)
 
     # ── Private sync generation ───────────────────────────────────────────────

@@ -29,8 +29,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx, lazy_nn as nn  # EWS-6 lazy
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:

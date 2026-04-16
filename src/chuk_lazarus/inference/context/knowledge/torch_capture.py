@@ -1,0 +1,196 @@
+"""Torch-native residual capture helpers for Apollo knowledge builds."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
+
+try:  # Torch is required for the build path, but keep the module import-safe.
+    import torch
+except Exception:  # pragma: no cover - exercised only on hosts without torch
+    torch = None
+
+
+def _require_torch():
+    if torch is None:  # pragma: no cover - local safety net
+        raise RuntimeError("Torch is required for torch-native knowledge capture")
+    return torch
+
+
+def _infer_model_device(model: Any):
+    torch_mod = _require_torch()
+    for container in (getattr(model, "parameters", None), getattr(model, "buffers", None)):
+        if callable(container):
+            try:
+                item = next(container())
+            except StopIteration:
+                continue
+            except TypeError:
+                continue
+            return item.device
+    return torch_mod.device("cpu")
+
+
+def _resolve_transformer_layers(model: Any) -> list[Any]:
+    candidates = [
+        ("model", "layers"),
+        ("transformer", "h"),
+        ("gpt_neox", "layers"),
+        (None, "layers"),
+    ]
+
+    for outer_name, inner_name in candidates:
+        target = model
+        if outer_name is not None:
+            target = getattr(target, outer_name, None)
+        if target is None:
+            continue
+
+        layers = getattr(target, inner_name, None)
+        if layers is not None:
+            return list(layers)
+
+    raise ValueError(
+        "Cannot resolve transformer layers for residual capture. "
+        "Expected model.model.layers, model.transformer.h, gpt_neox.layers, or model.layers."
+    )
+
+
+def _extract_boundary_tensor(output: Any):
+    torch_mod = _require_torch()
+
+    hidden = output[0] if isinstance(output, tuple) else output
+    if not torch_mod.is_tensor(hidden):
+        hidden = torch_mod.as_tensor(hidden)
+
+    if hidden.ndim == 3:
+        boundary = hidden[0, -1, :]
+    elif hidden.ndim == 2:
+        boundary = hidden[-1, :]
+    elif hidden.ndim == 1:
+        boundary = hidden
+    else:  # pragma: no cover - defensive
+        raise RuntimeError(f"Unsupported residual tensor rank: {hidden.ndim}")
+
+    return boundary.detach().to("cpu", dtype=torch_mod.float32).contiguous()
+
+
+def _coerce_boundary_residual(initial_residual: Any, *, hidden_size: int):
+    torch_mod = _require_torch()
+    boundary = torch_mod.as_tensor(initial_residual, dtype=torch_mod.float32)
+    if boundary.ndim == 3:
+        boundary = boundary[:, -1, :]
+    elif boundary.ndim == 2:
+        boundary = boundary[-1:, :]
+    elif boundary.ndim == 1:
+        boundary = boundary.unsqueeze(0)
+    else:  # pragma: no cover - defensive
+        raise RuntimeError(f"Unsupported boundary residual rank: {boundary.ndim}")
+
+    if int(boundary.shape[-1]) != hidden_size:
+        raise ValueError(
+            f"Boundary residual hidden size {int(boundary.shape[-1])} "
+            f"does not match model hidden size {hidden_size}"
+        )
+
+    return boundary
+
+
+def capture_post_crystal_boundary(
+    model: Any,
+    token_ids: Sequence[int],
+    *,
+    crystal_layer: int,
+    device: str | Any | None = None,
+    initial_residual: Any | None = None,
+):
+    """Capture the post-crystal-layer boundary vector for one token window."""
+
+    torch_mod = _require_torch()
+    layers = _resolve_transformer_layers(model)
+    if crystal_layer < 0 or crystal_layer >= len(layers):
+        raise ValueError(
+            f"crystal_layer={crystal_layer} is outside the model's layer range (0..{len(layers) - 1})"
+        )
+
+    model_device = torch_mod.device(device) if device is not None else _infer_model_device(model)
+    input_ids = torch_mod.as_tensor(list(token_ids), dtype=torch_mod.long, device=model_device)
+    if input_ids.ndim == 1:
+        input_ids = input_ids.unsqueeze(0)
+    attention_mask = torch_mod.ones_like(input_ids, dtype=torch_mod.long)
+
+    captured: dict[str, Any] = {}
+
+    def _hook(_module, _args, output):
+        captured["tensor"] = _extract_boundary_tensor(output)
+
+    handle = layers[crystal_layer].register_forward_hook(_hook)
+    inject_handle = None
+    if initial_residual is not None:
+        boundary = _coerce_boundary_residual(
+            initial_residual,
+            hidden_size=int(model.get_input_embeddings().embedding_dim),
+        )
+
+        def _inject_hook(_module, inputs):
+            if not inputs:
+                return inputs
+
+            hidden_states = inputs[0]
+            adjusted = hidden_states.clone()
+            boundary_hidden = boundary.to(device=hidden_states.device, dtype=hidden_states.dtype)
+            adjusted[:, -1, :] = adjusted[:, -1, :] + boundary_hidden
+            return (adjusted, *inputs[1:])
+
+        inject_handle = layers[crystal_layer].register_forward_pre_hook(_inject_hook)
+    try:
+        model.eval()
+        with torch_mod.inference_mode():
+            try:
+                model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                )
+            except TypeError:
+                model(input_ids=input_ids, attention_mask=attention_mask)
+    finally:
+        if inject_handle is not None:
+            inject_handle.remove()
+        handle.remove()
+
+    boundary = captured.get("tensor")
+    if boundary is None:  # pragma: no cover - defensive
+        raise RuntimeError(f"Failed to capture boundary for layer {crystal_layer}")
+    return boundary
+
+
+def capture_window_boundaries(
+    model: Any,
+    windows: Sequence[Sequence[int]],
+    *,
+    crystal_layer: int,
+    device: str | Any | None = None,
+) -> tuple[dict[int, Any], Any | None]:
+    """Capture one post-crystal boundary per window."""
+
+    boundaries: dict[int, Any] = {}
+    final_boundary = None
+    running_boundary = None
+
+    for wid, token_ids in enumerate(windows):
+        boundary = capture_post_crystal_boundary(
+            model,
+            token_ids,
+            crystal_layer=crystal_layer,
+            device=device,
+            initial_residual=running_boundary,
+        )
+        boundaries[wid] = boundary
+        final_boundary = boundary
+        running_boundary = boundary
+
+    return boundaries, final_boundary
+
+
+__all__ = ["capture_post_crystal_boundary", "capture_window_boundaries"]

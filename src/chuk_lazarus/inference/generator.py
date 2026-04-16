@@ -1,13 +1,19 @@
-from collections.abc import Generator
+from __future__ import annotations
 
-import mlx.core as mx
-import mlx.nn as nn
+from collections.abc import Generator
+from typing import TYPE_CHECKING
+
+from ._lazy_mlx import mx, nn
+
+if TYPE_CHECKING:
+    import mlx.core as mlx_core
+    import mlx.nn as mlx_nn
 
 
 def generate_sequence(
-    prompt: mx.array, model: nn.Module, temperature: float = 0
-) -> Generator[mx.array, None, None]:
-    def sample(logits: mx.array) -> mx.array:
+    prompt: mlx_core.array, model: mlx_nn.Module, temperature: float = 0
+) -> Generator[mlx_core.array, None, None]:
+    def sample(logits: mlx_core.array) -> mlx_core.array:
         return (
             mx.argmax(logits, axis=-1)
             if temperature == 0

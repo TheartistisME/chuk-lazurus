@@ -1,19 +1,30 @@
 """Introspect command parsers."""
 
-from ._ablation import register_ablation_parsers
-from ._analyze import register_analyze_parsers
-from ._arithmetic import register_arithmetic_parsers
-from ._circuit import register_circuit_parsers
-from ._classifier import register_classifier_parsers
-from ._directions import register_directions_parsers
-from ._embedding import register_embedding_parsers
-from ._generation import register_generation_parsers
-from ._layer import register_layer_parsers
-from ._memory import register_memory_parsers
-from ._moe import register_moe_parsers
-from ._patch import register_patch_parsers
-from ._probing import register_probing_parsers
-from ._steering import register_steering_parsers
+from __future__ import annotations
+
+from importlib import import_module
+
+_REGISTRARS: tuple[tuple[str, str], ...] = (
+    ("_analyze", "register_analyze_parsers"),
+    ("_ablation", "register_ablation_parsers"),
+    ("_layer", "register_layer_parsers"),
+    ("_generation", "register_generation_parsers"),
+    ("_steering", "register_steering_parsers"),
+    ("_arithmetic", "register_arithmetic_parsers"),
+    ("_probing", "register_probing_parsers"),
+    ("_memory", "register_memory_parsers"),
+    ("_directions", "register_directions_parsers"),
+    ("_embedding", "register_embedding_parsers"),
+    ("_patch", "register_patch_parsers"),
+    ("_circuit", "register_circuit_parsers"),
+    ("_moe", "register_moe_parsers"),
+    ("_classifier", "register_classifier_parsers"),
+)
+
+
+def _load(module_name: str, attr_name: str):
+    module = import_module(f"{__name__}.{module_name}")
+    return getattr(module, attr_name)
 
 
 def register_introspect_parsers(subparsers):
@@ -27,17 +38,8 @@ def register_introspect_parsers(subparsers):
         dest="introspect_command", help="Introspection commands"
     )
 
-    register_analyze_parsers(introspect_subparsers)
-    register_ablation_parsers(introspect_subparsers)
-    register_layer_parsers(introspect_subparsers)
-    register_generation_parsers(introspect_subparsers)
-    register_steering_parsers(introspect_subparsers)
-    register_arithmetic_parsers(introspect_subparsers)
-    register_probing_parsers(introspect_subparsers)
-    register_memory_parsers(introspect_subparsers)
-    register_directions_parsers(introspect_subparsers)
-    register_embedding_parsers(introspect_subparsers)
-    register_patch_parsers(introspect_subparsers)
-    register_circuit_parsers(introspect_subparsers)
-    register_moe_parsers(introspect_subparsers)
-    register_classifier_parsers(introspect_subparsers)
+    for module_name, attr_name in _REGISTRARS:
+        _load(module_name, attr_name)(introspect_subparsers)
+
+
+__all__ = ["register_introspect_parsers"]

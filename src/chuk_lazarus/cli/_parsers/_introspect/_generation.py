@@ -1,11 +1,7 @@
 """Generate and metacognitive introspect parsers."""
 
-import asyncio
-
-from ...commands.introspect import (
-    introspect_generate,
-    introspect_metacognitive,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_async_command
 
 
 def register_generation_parsers(introspect_subparsers):
@@ -63,7 +59,8 @@ def register_generation_parsers(introspect_subparsers):
         action="store_true",
         help="Use raw prompt without chat template (for non-chat models or direct testing)",
     )
-    generate_parser.set_defaults(func=lambda args: asyncio.run(introspect_generate(args)))
+    add_backend_flags(generate_parser)
+    generate_parser.set_defaults(func=run_async_command("introspect_generate"))
 
     # Metacognitive command - detect strategy switch
     metacog_parser = introspect_subparsers.add_parser(
@@ -125,4 +122,5 @@ This is the "metacognitive switch" - the model deciding HOW to solve, not WHAT t
         "-o",
         help="Save results to JSON file",
     )
-    metacog_parser.set_defaults(func=lambda args: asyncio.run(introspect_metacognitive(args)))
+    add_backend_flags(metacog_parser)
+    metacog_parser.set_defaults(func=run_async_command("introspect_metacognitive"))

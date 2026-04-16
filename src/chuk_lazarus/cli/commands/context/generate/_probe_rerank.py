@@ -17,8 +17,18 @@ from __future__ import annotations
 
 import sys
 import time
+from typing import TYPE_CHECKING
 
-import mlx.core as mx
+if TYPE_CHECKING:
+    import mlx.core as mx
+
+
+def __getattr__(name):
+    if name == "mx":
+        import mlx.core as _mx
+        globals()["mx"] = _mx
+        return _mx
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Max tokens to replay per window for assessment
 _REPLAY_TOKENS = 256
@@ -40,8 +50,8 @@ def _probe_rerank_windows(
     kv_gen,
     tokenizer,
     candidate_wids: list[int],
-    probe_direction: mx.array,
-    probe_mean: mx.array,
+    probe_direction: "mx.array",
+    probe_mean: "mx.array",
     compass_layer: int,
     probe_type: str = "engagement",
     top_k: int = 5,

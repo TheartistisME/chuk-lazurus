@@ -69,6 +69,8 @@ def run_experiment(
     experiments_dir: Path | None = None,
     config_overrides: dict[str, Any] | None = None,
     dry_run: bool = False,
+    backend: str | None = None,
+    device: str | None = None,
 ) -> ExperimentResult:
     """Run an experiment by name.
 
@@ -90,6 +92,18 @@ def run_experiment(
     # Load config
     config = load_config(exp_path, config_overrides)
     logger.info(f"Loaded config: {config.name}")
+
+    # Apply CLI backend/device overrides (EWS-15). Precedence: flag > config
+    # yaml > env / platform default. We resolve via ``get_backend`` lazily so
+    # MLX is not imported at module load time.
+    if backend is not None:
+        config.backend = backend
+    if device is not None:
+        config.device = device
+    if config.backend is not None:
+        from chuk_lazarus.models_v2.core.backend import get_backend
+
+        get_backend(config.backend, device=config.device)
 
     if dry_run:
         logger.info("Dry run - skipping execution")

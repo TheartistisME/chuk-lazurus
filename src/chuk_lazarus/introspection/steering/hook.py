@@ -7,7 +7,7 @@ vectors to model activations during inference.
 
 from __future__ import annotations
 
-import mlx.core as mx
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx  # EWS-6 lazy
 
 
 class SteeringHook:

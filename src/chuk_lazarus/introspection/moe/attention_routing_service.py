@@ -9,11 +9,16 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx  # EWS-6 lazy
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 if TYPE_CHECKING:
+    import mlx.core as _mx
+
+    MlxArray = _mx.array
     from .expert_router import ExpertRouter
+else:
+    MlxArray = Any
 
 
 class AttentionCaptureResult(BaseModel):
@@ -22,7 +27,7 @@ class AttentionCaptureResult(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     tokens: list[str] = Field(..., description="Token strings")
-    attention_weights: mx.array | None = Field(
+    attention_weights: MlxArray | None = Field(
         default=None, description="Attention weights (num_heads, seq_len, seq_len)"
     )
     layer: int = Field(..., description="Layer index")
@@ -150,7 +155,7 @@ class AttentionRoutingService:
         tokens = [router.tokenizer.decode([t]) for t in input_ids[0].tolist()]
 
         # Storage for captured Q, K
-        captured_qk: dict[int, tuple[mx.array, mx.array]] = {}
+        captured_qk: dict[int, tuple[MlxArray, MlxArray]] = {}
 
         # Get the attention layer for the target block
         target_block = router._model.model.layers[target_layer]
@@ -159,7 +164,7 @@ class AttentionRoutingService:
         original_call = attn_class.__call__
 
         def patched_attn_call(
-            attn_self: Any, x: mx.array, mask: Any = None, cache: Any = None
+            attn_self: Any, x: MlxArray, mask: Any = None, cache: Any = None
         ) -> Any:
             """Patch to capture Q and K."""
             batch, seq_len, _ = x.shape
@@ -229,7 +234,7 @@ class AttentionRoutingService:
 
     @staticmethod
     def compute_attention_summary(
-        attn_weights: mx.array,
+        attn_weights: MlxArray,
         tokens: list[str],
         position: int,
         top_k: int = 3,

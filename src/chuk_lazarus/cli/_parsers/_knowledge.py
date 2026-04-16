@@ -2,6 +2,8 @@
 
 import asyncio
 
+from ..commands._base import add_backend_flags
+
 
 def register_knowledge_parsers(subparsers):
     """Register the knowledge subcommand and its sub-subcommands."""
@@ -40,6 +42,7 @@ def register_knowledge_parsers(subparsers):
         dest="max_tokens",
         help="Truncate input to at most N tokens",
     )
+    add_backend_flags(kn_build)
     kn_build.set_defaults(func=lambda args: asyncio.run(_run_build(args)))
 
     # knowledge query
@@ -72,6 +75,7 @@ def register_knowledge_parsers(subparsers):
         dest="top_k",
         help="Number of windows for context (default: 3, adaptive)",
     )
+    add_backend_flags(kn_query)
     kn_query.set_defaults(func=lambda args: asyncio.run(_run_query(args)))
 
     # knowledge chat
@@ -94,6 +98,7 @@ def register_knowledge_parsers(subparsers):
         default=0.0,
         help="Sampling temperature (default: 0.0 = greedy)",
     )
+    add_backend_flags(kn_chat)
     kn_chat.set_defaults(func=lambda args: asyncio.run(_run_chat(args)))
 
 

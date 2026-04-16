@@ -1,166 +1,83 @@
 """
 Context management for stateful inference.
 
-Five generation strategies:
-
-  KVDirectGenerator        — model-agnostic KV-direct step generator (Mode 2)
-  CompiledRSGenerator      — compiled residual-stream generator (Mode 1b, Gemma-only)
-  BoundedKVEngine (Mode 3) — three-tier bounded memory (HOT/WARM/COLD, Gemma-only)
-  UnlimitedContextEngine   — checkpoint-chained window replay (Mode 4)
-  KV Injection (Mode 6)    — prefix caching with pre-saved full KV per window
-
-Protocols and adapters for any transformer architecture:
-  ModelBackboneProtocol    — interface that any backbone adapter must satisfy
-  TransformerLayerProtocol — per-layer interface
-  GemmaBackboneAdapter     — wraps GemmaResidualStreamForCausalLM
-  LlamaBackboneAdapter     — wraps LlamaForCausalLM / Mistral
-
-Factory:
-  make_kv_generator(model) — auto-detects family, returns KVDirectGenerator
-
-Checkpoint library format for pre-filled knowledge bases:
-  CheckpointLibrary, LibraryManifest, WindowMeta, etc.
-
-Usage
------
-    from chuk_lazarus.inference.context import (
-        KVDirectGenerator,
-        make_kv_generator,
-        GemmaBackboneAdapter,
-        LlamaBackboneAdapter,
-        UnlimitedContextEngine,
-        CheckpointLibrary,
-        LibrarySource,
-    )
+The concrete engines and knowledge paths remain MLX-backed in many cases, so
+the package root resolves its public surface lazily via PEP 562 to stay
+import-clean under ``CHUK_BACKEND=torch``.
 """
 
-from .adapters import (
-    GemmaBackboneAdapter,
-    GemmaLayerAdapter,
-    LlamaBackboneAdapter,
-    LlamaLayerAdapter,
-)
-from .arch_config import ArchitectureConfig, ArchitectureNotCalibrated
-from .bounded_engine import (
-    BoundedKVEngine,
-    Checkpoint,
-    ConversationState,
-    GenerationMode,
-    MemoryReport,
-    PathLabel,
-    TurnStats,
-)
-from .checkpoint_library import (
-    CheckpointLibrary,
-    LibraryFile,
-    LibraryFormatVersion,
-    LibraryManifest,
-    WindowMeta,
-)
-from .kv_checkpoint import (
-    CheckpointMeta,
-    ContextCheckpointFile,
-    ContextCheckpointStatus,
-    KVCheckpoint,
-)
-from .kv_generator import KVDirectGenerator, make_kv_generator
-from .protocols import ModelBackboneProtocol, TransformerLayerProtocol
-from .rs_generator import CompiledRSGenerator
-from .sparse_engine import SparseIndexEngine
-from .sparse_index import (
-    EntityExtractor,
-    FactSpan,
-    SparseEntry,
-    SparseSemanticIndex,
-    SurpriseClassifier,
-    extract_content_words,
-)
-from .unlimited_engine import (
-    CheckpointStore,
-    EngineStats,
-    KVGeneratorProtocol,
-    KVStore,
-    LibrarySource,
-    ResidualStore,
-    TokenArchive,
-    UnlimitedContextEngine,
-)
-from .vec_inject import (
-    KV_ROUTE_FILE,
-    VEC_INJECT_FILE,
-    LocalVecInjectProvider,
-    VecInjectMatch,
-    VecInjectMeta,
-    VecInjectMetaKey,
-    VecInjectProvider,
-    VecInjectResult,
-    VecInjectWindowKey,
-    vec_inject,
-    vec_inject_all,
-)
+from __future__ import annotations
 
-__all__ = [
-    # Architecture config
-    "ArchitectureConfig",
-    "ArchitectureNotCalibrated",
-    # Protocols
-    "ModelBackboneProtocol",
-    "TransformerLayerProtocol",
-    # Adapters
-    "GemmaBackboneAdapter",
-    "GemmaLayerAdapter",
-    "LlamaBackboneAdapter",
-    "LlamaLayerAdapter",
-    # Generators
-    "KVDirectGenerator",
-    "make_kv_generator",
-    "CompiledRSGenerator",
-    # Mode 3 — bounded engine (Gemma-only)
-    "GenerationMode",
-    "PathLabel",
-    "MemoryReport",
-    "TurnStats",
-    "Checkpoint",
-    "ConversationState",
-    "BoundedKVEngine",
-    # Mode 4 — unlimited context engine
-    "KVStore",
-    "KVGeneratorProtocol",
-    "LibrarySource",
-    "EngineStats",
-    "CheckpointStore",
-    "ResidualStore",
-    "TokenArchive",
-    "UnlimitedContextEngine",
-    # Checkpoint library format
-    "LibraryFile",
-    "LibraryFormatVersion",
-    "WindowMeta",
-    "LibraryManifest",
-    "CheckpointLibrary",
-    # KV checkpoint
-    "CheckpointMeta",
-    "ContextCheckpointFile",
-    "ContextCheckpointStatus",
-    "KVCheckpoint",
-    # Mode 5 — sparse semantic index
-    "EntityExtractor",
-    "FactSpan",
-    "SparseEntry",
-    "SparseSemanticIndex",
-    "SurpriseClassifier",
-    "extract_content_words",
-    "SparseIndexEngine",
-    # Vec injection (Experiment 2bd41b18)
-    "VecInjectMatch",
-    "VecInjectResult",
-    "VecInjectMeta",
-    "VecInjectProvider",
-    "vec_inject",
-    "vec_inject_all",
-    "LocalVecInjectProvider",
-    "VecInjectMetaKey",
-    "VecInjectWindowKey",
-    "VEC_INJECT_FILE",
-    "KV_ROUTE_FILE",
-]
+_LAZY: dict[str, tuple[str, str]] = {
+    "GemmaBackboneAdapter": (".adapters", "GemmaBackboneAdapter"),
+    "GemmaLayerAdapter": (".adapters", "GemmaLayerAdapter"),
+    "LlamaBackboneAdapter": (".adapters", "LlamaBackboneAdapter"),
+    "LlamaLayerAdapter": (".adapters", "LlamaLayerAdapter"),
+    "ArchitectureConfig": (".arch_config", "ArchitectureConfig"),
+    "ArchitectureNotCalibrated": (".arch_config", "ArchitectureNotCalibrated"),
+    "BoundedKVEngine": (".bounded_engine", "BoundedKVEngine"),
+    "Checkpoint": (".bounded_engine", "Checkpoint"),
+    "ConversationState": (".bounded_engine", "ConversationState"),
+    "GenerationMode": (".bounded_engine", "GenerationMode"),
+    "MemoryReport": (".bounded_engine", "MemoryReport"),
+    "PathLabel": (".bounded_engine", "PathLabel"),
+    "TurnStats": (".bounded_engine", "TurnStats"),
+    "CheckpointLibrary": (".checkpoint_library", "CheckpointLibrary"),
+    "LibraryFile": (".checkpoint_library", "LibraryFile"),
+    "LibraryFormatVersion": (".checkpoint_library", "LibraryFormatVersion"),
+    "LibraryManifest": (".checkpoint_library", "LibraryManifest"),
+    "WindowMeta": (".checkpoint_library", "WindowMeta"),
+    "CheckpointMeta": (".kv_checkpoint", "CheckpointMeta"),
+    "ContextCheckpointFile": (".kv_checkpoint", "ContextCheckpointFile"),
+    "ContextCheckpointStatus": (".kv_checkpoint", "ContextCheckpointStatus"),
+    "KVCheckpoint": (".kv_checkpoint", "KVCheckpoint"),
+    "KVDirectGenerator": (".kv_generator", "KVDirectGenerator"),
+    "make_kv_generator": (".kv_generator", "make_kv_generator"),
+    "ModelBackboneProtocol": (".protocols", "ModelBackboneProtocol"),
+    "TransformerLayerProtocol": (".protocols", "TransformerLayerProtocol"),
+    "CompiledRSGenerator": (".rs_generator", "CompiledRSGenerator"),
+    "SparseIndexEngine": (".sparse_engine", "SparseIndexEngine"),
+    "EntityExtractor": (".sparse_index", "EntityExtractor"),
+    "FactSpan": (".sparse_index", "FactSpan"),
+    "SparseEntry": (".sparse_index", "SparseEntry"),
+    "SparseSemanticIndex": (".sparse_index", "SparseSemanticIndex"),
+    "SurpriseClassifier": (".sparse_index", "SurpriseClassifier"),
+    "extract_content_words": (".sparse_index", "extract_content_words"),
+    "CheckpointStore": (".unlimited_engine", "CheckpointStore"),
+    "EngineStats": (".unlimited_engine", "EngineStats"),
+    "KVGeneratorProtocol": (".unlimited_engine", "KVGeneratorProtocol"),
+    "KVStore": (".unlimited_engine", "KVStore"),
+    "LibrarySource": (".unlimited_engine", "LibrarySource"),
+    "ResidualStore": (".unlimited_engine", "ResidualStore"),
+    "TokenArchive": (".unlimited_engine", "TokenArchive"),
+    "UnlimitedContextEngine": (".unlimited_engine", "UnlimitedContextEngine"),
+    "KV_ROUTE_FILE": (".vec_inject", "KV_ROUTE_FILE"),
+    "VEC_INJECT_FILE": (".vec_inject", "VEC_INJECT_FILE"),
+    "LocalVecInjectProvider": (".vec_inject", "LocalVecInjectProvider"),
+    "VecInjectMatch": (".vec_inject", "VecInjectMatch"),
+    "VecInjectMeta": (".vec_inject", "VecInjectMeta"),
+    "VecInjectMetaKey": (".vec_inject", "VecInjectMetaKey"),
+    "VecInjectProvider": (".vec_inject", "VecInjectProvider"),
+    "VecInjectResult": (".vec_inject", "VecInjectResult"),
+    "VecInjectWindowKey": (".vec_inject", "VecInjectWindowKey"),
+    "vec_inject": (".vec_inject", "vec_inject"),
+    "vec_inject_all": (".vec_inject", "vec_inject_all"),
+}
+
+__all__ = sorted(_LAZY.keys())
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        import importlib
+
+        mod_name, attr = _LAZY[name]
+        mod = importlib.import_module(mod_name, __name__)
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + __all__)

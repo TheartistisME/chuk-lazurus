@@ -1,12 +1,7 @@
 """Analyze, compare, hooks introspect parsers."""
 
-import asyncio
-
-from ...commands.introspect import (
-    introspect_analyze,
-    introspect_compare,
-    introspect_hooks,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_async_command
 
 
 def register_analyze_parsers(introspect_subparsers):
@@ -154,7 +149,8 @@ def register_analyze_parsers(introspect_subparsers):
         type=int,
         help="Layer at which to inject computed answer (default: 80%% of model depth)",
     )
-    analyze_parser.set_defaults(func=lambda args: asyncio.run(introspect_analyze(args)))
+    add_backend_flags(analyze_parser)
+    analyze_parser.set_defaults(func=run_async_command("introspect_analyze"))
 
     # Compare command - compare two models
     compare_introspect_parser = introspect_subparsers.add_parser(
@@ -190,7 +186,8 @@ def register_analyze_parsers(introspect_subparsers):
         "--track",
         help="Tokens to track evolution (comma-separated)",
     )
-    compare_introspect_parser.set_defaults(func=lambda args: asyncio.run(introspect_compare(args)))
+    add_backend_flags(compare_introspect_parser)
+    compare_introspect_parser.set_defaults(func=run_async_command("introspect_compare"))
 
     # Hooks command - low-level hook demonstration
     hooks_parser = introspect_subparsers.add_parser(
@@ -229,4 +226,5 @@ def register_analyze_parsers(introspect_subparsers):
         action="store_true",
         help="Skip logit lens analysis",
     )
-    hooks_parser.set_defaults(func=lambda args: asyncio.run(introspect_hooks(args)))
+    add_backend_flags(hooks_parser)
+    hooks_parser.set_defaults(func=run_async_command("introspect_hooks"))

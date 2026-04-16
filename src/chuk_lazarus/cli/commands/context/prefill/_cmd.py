@@ -21,6 +21,23 @@ from ._save import SavePhases, save_library
 
 async def context_prefill_cmd(args: Namespace) -> None:
     """CLI entry point: prefill a text file into a windowed checkpoint library."""
+    from .....models_v2.core.backend import get_backend
+
+    backend_name = getattr(args, "backend", None)
+    device_name = getattr(args, "device", None)
+    if backend_name:
+        os.environ["CHUK_BACKEND"] = backend_name
+    if device_name:
+        os.environ["CHUK_DEVICE"] = device_name
+
+    backend = get_backend()
+    if str(backend.name).lower() == "torch":
+        print(
+            "context prefill is MLX backend only in Epic 2; torch prefill is not wired yet.",
+            file=sys.stderr,
+        )
+        return
+
     import mlx.core as mx
 
     from .....inference import UnifiedPipeline

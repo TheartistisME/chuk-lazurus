@@ -13,7 +13,7 @@ e = embed(token_id).  This achieves KL = 0.000031 vs. full KV replay.
 
 from __future__ import annotations
 
-import mlx.core as mx
+from chuk_lazarus.inference._lazy_mlx import mx
 
 from ._types import VecInjectMatch
 

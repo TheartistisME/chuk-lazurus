@@ -9,10 +9,12 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
 import numpy as np
+
+if TYPE_CHECKING:
+    import mlx.core as mx
 
 # Mapping from HuggingFace weight names to our weight names
 # Gemma 3 has similar structure to Llama but with additional norm layers
@@ -226,6 +228,11 @@ def load_weights(model_path: str | Path) -> dict[str, mx.array]:
         >>> weights = load_weights("/path/to/gemma-3-270m")
         >>> model.update(tree_unflatten(list(weights.items())))
     """
+    try:
+        import mlx.core as mx
+    except Exception as exc:  # pragma: no cover - depends on host runtime
+        raise ImportError("Gemma weight loading requires MLX to be installed.") from exc
+
     model_path = Path(model_path)
     raw_weights: dict[str, mx.array] = {}
 

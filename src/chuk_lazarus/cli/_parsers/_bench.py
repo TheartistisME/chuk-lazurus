@@ -1,5 +1,12 @@
-"""Bench command parser."""
+"""Bench command parser.
 
+EWS-15 owns only the parser registration here; the handler
+``bench_pipeline`` is owned by EWS-14 in ``cli/commands/gym/benchmark.py``.
+The shared ``--backend``/``--device`` flags are registered via
+``add_backend_flags`` (EWS-0).
+"""
+
+from ..commands._base import add_backend_flags
 from ..commands.gym import bench_pipeline
 
 
@@ -10,6 +17,7 @@ def register_bench_parser(subparsers):
         help="Benchmark the batching pipeline",
         description="Run comprehensive benchmarks on tokenization, batching, packing, and efficiency.",
     )
+    add_backend_flags(bench_parser)
     bench_parser.add_argument(
         "-d",
         "--dataset",

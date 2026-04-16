@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import mlx.core as mx
-import mlx.nn as nn
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx, lazy_nn as nn  # EWS-6 lazy
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models import CompressionPlan

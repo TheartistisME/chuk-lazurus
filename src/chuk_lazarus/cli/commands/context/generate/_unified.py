@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 import time
 
-import mlx.core as mx
+from chuk_lazarus.inference._lazy_mlx import mx
 
 from .._types import GenerateResult
 from ..compass_routing import RoutingStrategy, compass_route

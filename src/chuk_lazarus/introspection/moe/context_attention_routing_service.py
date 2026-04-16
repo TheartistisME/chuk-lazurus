@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import mlx.core as mx
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx  # EWS-6 lazy
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 if TYPE_CHECKING:

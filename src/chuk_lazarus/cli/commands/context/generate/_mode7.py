@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import sys
 import time
+from typing import TYPE_CHECKING
 
-import mlx.core as mx
+if TYPE_CHECKING:  # pragma: no cover
+    import mlx.core as mx  # noqa: F401
 
 from .._types import GenerateConfig, GenerateResult
 from ..compass_routing import RoutingStrategy, compass_route
@@ -415,6 +417,8 @@ def _replay_and_generate(
     query_type=None,
 ):
     """Common replay path: preamble → windows → postamble → decode."""
+    import mlx.core as mx  # noqa: PLC0415
+
     from ._probes import QueryType
 
     # For global/timeline queries, use a template scaffold that forces

@@ -26,289 +26,295 @@ Backbones: Stack of blocks with embeddings
 Heads: LM, Classifier, Regression
 Models: Complete end-to-end models
 Families: Architecture-specific implementations (Llama, Mamba, etc.)
+
+Top-level mlx imports are intentionally absent.  Every re-exported
+symbol is resolved lazily via PEP 562 module ``__getattr__`` so that
+``import chuk_lazarus.models_v2`` succeeds under ``CHUK_BACKEND=torch``
+without pulling ``libmlx.so`` until a symbol is actually accessed.
 """
 
-# Core abstractions
-# Backbones
-# Adapters (LoRA, etc.)
-from .adapters import (
-    LoRAConfig,
-    LoRALinear,
-    apply_lora,
-    count_lora_parameters,
-    merge_lora_weights,
-)
-from .backbones import (
-    Backbone,
-    BackboneOutput,
-    HybridBackbone,
-    MambaBackbone,
-    RecurrentBackbone,
-    TransformerBackbone,
-)
+from __future__ import annotations
 
-# Blocks
-from .blocks import (
-    Block,
-    BlockOutput,
-    HybridBlock,
-    MambaBlockWrapper,
-    RecurrentBlockWrapper,
-    TransformerBlock,
-)
-from .components.attention import (
-    GroupedQueryAttention,
-    MultiHeadAttention,
-    SlidingWindowAttention,
-)
+from typing import TYPE_CHECKING
 
-# Components
-from .components.embeddings import (
-    ALiBi,
-    LearnedPositionEmbedding,
-    RoPE,
-    SinusoidalPositionEmbedding,
-    TokenEmbedding,
-)
-from .components.ffn import GEGLU, MLP, MoE, SwiGLU
-from .components.normalization import GemmaNorm, LayerNorm, RMSNorm
-from .components.recurrent import GRU, LSTM, MinGRU
-from .components.ssm import Mamba, MambaBlock, SelectiveSSM
-from .core import (
-    # Enums
-    ActivationType,
-    AttentionConfig,
-    AttentionType,
-    BackboneType,
-    BackendType,
-    BlockType,
-    FFNConfig,
-    FFNType,
-    HeadType,
-    # Registry
-    ModelCapability,
-    # Config
-    ModelConfig,
-    ModelMode,
-    NormConfig,
-    NormType,
-    PositionEmbeddingType,
-    SSMConfig,
-    find_models_by_capability,
-    # Backend
-    get_backend,
-    get_factory,
-    get_model_capabilities,
-    list_models,
-    register_model,
-    set_backend,
-)
+if TYPE_CHECKING:  # pragma: no cover
+    # Re-exports (import paths) — here only for IDE/type-checker support.
+    from .adapters import (  # noqa: F401
+        LoRAConfig,
+        LoRALinear,
+        apply_lora,
+        count_lora_parameters,
+        merge_lora_weights,
+    )
+    from .backbones import (  # noqa: F401
+        Backbone,
+        BackboneOutput,
+        HybridBackbone,
+        MambaBackbone,
+        RecurrentBackbone,
+        TransformerBackbone,
+    )
+    from .blocks import (  # noqa: F401
+        Block,
+        BlockOutput,
+        HybridBlock,
+        MambaBlockWrapper,
+        RecurrentBlockWrapper,
+        TransformerBlock,
+    )
+    from .components.attention import (  # noqa: F401
+        GroupedQueryAttention,
+        MultiHeadAttention,
+        SlidingWindowAttention,
+    )
+    from .components.embeddings import (  # noqa: F401
+        ALiBi,
+        LearnedPositionEmbedding,
+        RoPE,
+        SinusoidalPositionEmbedding,
+        TokenEmbedding,
+    )
+    from .components.ffn import GEGLU, MLP, MoE, SwiGLU  # noqa: F401
+    from .components.normalization import GemmaNorm, LayerNorm, RMSNorm  # noqa: F401
+    from .components.recurrent import GRU, LSTM, MinGRU  # noqa: F401
+    from .components.ssm import Mamba, MambaBlock, SelectiveSSM  # noqa: F401
+    from .core import (  # noqa: F401
+        ActivationType,
+        AttentionConfig,
+        AttentionType,
+        BackboneType,
+        BackendType,
+        BlockType,
+        FFNConfig,
+        FFNType,
+        HeadType,
+        ModelCapability,
+        ModelConfig,
+        ModelMode,
+        NormConfig,
+        NormType,
+        PositionEmbeddingType,
+        SSMConfig,
+        find_models_by_capability,
+        get_backend,
+        get_factory,
+        get_model_capabilities,
+        list_models,
+        register_model,
+        set_backend,
+    )
+    from .families import granite, llama, llama4, mamba, qwen3  # noqa: F401
+    from .families.granite import (  # noqa: F401
+        GraniteConfig,
+        GraniteForCausalLM,
+        GraniteHybridConfig,
+        GraniteHybridForCausalLM,
+    )
+    from .families.llama import LlamaConfig, LlamaForCausalLM  # noqa: F401
+    from .families.llama4 import (  # noqa: F401
+        Llama4Config,
+        Llama4ForCausalLM,
+        Llama4TextConfig,
+    )
+    from .families.mamba import MambaConfig, MambaForCausalLM  # noqa: F401
+    from .families.qwen3 import Qwen3Config, Qwen3ForCausalLM  # noqa: F401
+    from .heads import (  # noqa: F401
+        ClassifierHead,
+        Head,
+        HeadOutput,
+        LMHead,
+        RegressionHead,
+    )
+    from .introspection import (  # noqa: F401
+        FLOPsEstimate,
+        MemoryEstimate,
+        ModelCapabilities,
+        ModelInfo,
+        ParameterStats,
+        count_parameters,
+        detect_model_capabilities,
+        estimate_flops,
+        estimate_memory,
+        get_model_info,
+        introspect,
+        print_introspection,
+    )
+    from .loader import (  # noqa: F401
+        AdapterConfig,
+        LoadedModel,
+        LoadedModelWithLoRA,
+        ModelDType,
+        create_from_preset,
+        create_model,
+        load_model,
+        load_model_async,
+        load_model_tuple,
+        load_model_with_lora,
+        load_model_with_lora_async,
+        save_adapter,
+    )
+    from .losses import compute_lm_loss  # noqa: F401
+    from .models import (  # noqa: F401
+        CausalLM,
+        Model,
+        ModelOutput,
+        SequenceClassifier,
+        TokenClassifier,
+    )
 
-# Families
-from .families import granite, llama, llama4, mamba, qwen3
-from .families.granite import (
-    GraniteConfig,
-    GraniteForCausalLM,
-    GraniteHybridConfig,
-    GraniteHybridForCausalLM,
-)
-from .families.llama import LlamaConfig, LlamaForCausalLM
-from .families.llama4 import Llama4Config, Llama4ForCausalLM, Llama4TextConfig
-from .families.mamba import MambaConfig, MambaForCausalLM
-from .families.qwen3 import Qwen3Config, Qwen3ForCausalLM
 
-# Heads
-from .heads import (
-    ClassifierHead,
-    Head,
-    HeadOutput,
-    LMHead,
-    RegressionHead,
-)
+# Map of public name -> (relative submodule path, attribute to pull).
+# Kept as a plain dict so PEP 562 ``__getattr__`` can look symbols up in
+# constant time without hitting multiple submodules unnecessarily.
+_LAZY: dict[str, tuple[str, str]] = {
+    # Core — enums, configs, registry, backend
+    "ModelMode": (".core", "ModelMode"),
+    "BlockType": (".core", "BlockType"),
+    "BackboneType": (".core", "BackboneType"),
+    "HeadType": (".core", "HeadType"),
+    "AttentionType": (".core", "AttentionType"),
+    "FFNType": (".core", "FFNType"),
+    "NormType": (".core", "NormType"),
+    "ActivationType": (".core", "ActivationType"),
+    "PositionEmbeddingType": (".core", "PositionEmbeddingType"),
+    "BackendType": (".core", "BackendType"),
+    "ModelConfig": (".core", "ModelConfig"),
+    "AttentionConfig": (".core", "AttentionConfig"),
+    "FFNConfig": (".core", "FFNConfig"),
+    "NormConfig": (".core", "NormConfig"),
+    "SSMConfig": (".core", "SSMConfig"),
+    "register_model": (".core", "register_model"),
+    "get_factory": (".core", "get_factory"),
+    "list_models": (".core", "list_models"),
+    "ModelCapability": (".core", "ModelCapability"),
+    "get_model_capabilities": (".core", "get_model_capabilities"),
+    "find_models_by_capability": (".core", "find_models_by_capability"),
+    "get_backend": (".core", "get_backend"),
+    "set_backend": (".core", "set_backend"),
+    # Components — embeddings
+    "TokenEmbedding": (".components.embeddings", "TokenEmbedding"),
+    "RoPE": (".components.embeddings", "RoPE"),
+    "ALiBi": (".components.embeddings", "ALiBi"),
+    "LearnedPositionEmbedding": (".components.embeddings", "LearnedPositionEmbedding"),
+    "SinusoidalPositionEmbedding": (
+        ".components.embeddings",
+        "SinusoidalPositionEmbedding",
+    ),
+    # Components — attention
+    "MultiHeadAttention": (".components.attention", "MultiHeadAttention"),
+    "GroupedQueryAttention": (".components.attention", "GroupedQueryAttention"),
+    "SlidingWindowAttention": (".components.attention", "SlidingWindowAttention"),
+    # Components — FFN
+    "MLP": (".components.ffn", "MLP"),
+    "SwiGLU": (".components.ffn", "SwiGLU"),
+    "GEGLU": (".components.ffn", "GEGLU"),
+    "MoE": (".components.ffn", "MoE"),
+    # Components — normalization
+    "RMSNorm": (".components.normalization", "RMSNorm"),
+    "LayerNorm": (".components.normalization", "LayerNorm"),
+    "GemmaNorm": (".components.normalization", "GemmaNorm"),
+    # Components — SSM / recurrent
+    "SelectiveSSM": (".components.ssm", "SelectiveSSM"),
+    "Mamba": (".components.ssm", "Mamba"),
+    "MambaBlock": (".components.ssm", "MambaBlock"),
+    "LSTM": (".components.recurrent", "LSTM"),
+    "GRU": (".components.recurrent", "GRU"),
+    "MinGRU": (".components.recurrent", "MinGRU"),
+    # Blocks
+    "Block": (".blocks", "Block"),
+    "BlockOutput": (".blocks", "BlockOutput"),
+    "TransformerBlock": (".blocks", "TransformerBlock"),
+    "MambaBlockWrapper": (".blocks", "MambaBlockWrapper"),
+    "RecurrentBlockWrapper": (".blocks", "RecurrentBlockWrapper"),
+    "HybridBlock": (".blocks", "HybridBlock"),
+    # Backbones
+    "Backbone": (".backbones", "Backbone"),
+    "BackboneOutput": (".backbones", "BackboneOutput"),
+    "TransformerBackbone": (".backbones", "TransformerBackbone"),
+    "MambaBackbone": (".backbones", "MambaBackbone"),
+    "RecurrentBackbone": (".backbones", "RecurrentBackbone"),
+    "HybridBackbone": (".backbones", "HybridBackbone"),
+    # Heads
+    "Head": (".heads", "Head"),
+    "HeadOutput": (".heads", "HeadOutput"),
+    "LMHead": (".heads", "LMHead"),
+    "ClassifierHead": (".heads", "ClassifierHead"),
+    "RegressionHead": (".heads", "RegressionHead"),
+    # Models
+    "Model": (".models", "Model"),
+    "ModelOutput": (".models", "ModelOutput"),
+    "CausalLM": (".models", "CausalLM"),
+    "SequenceClassifier": (".models", "SequenceClassifier"),
+    "TokenClassifier": (".models", "TokenClassifier"),
+    # Families (submodules exposed as attributes)
+    "granite": (".families", "granite"),
+    "llama": (".families", "llama"),
+    "llama4": (".families", "llama4"),
+    "mamba": (".families", "mamba"),
+    "qwen3": (".families", "qwen3"),
+    "GraniteConfig": (".families.granite", "GraniteConfig"),
+    "GraniteForCausalLM": (".families.granite", "GraniteForCausalLM"),
+    "GraniteHybridConfig": (".families.granite", "GraniteHybridConfig"),
+    "GraniteHybridForCausalLM": (".families.granite", "GraniteHybridForCausalLM"),
+    "LlamaConfig": (".families.llama", "LlamaConfig"),
+    "LlamaForCausalLM": (".families.llama", "LlamaForCausalLM"),
+    "Llama4Config": (".families.llama4", "Llama4Config"),
+    "Llama4TextConfig": (".families.llama4", "Llama4TextConfig"),
+    "Llama4ForCausalLM": (".families.llama4", "Llama4ForCausalLM"),
+    "MambaConfig": (".families.mamba", "MambaConfig"),
+    "MambaForCausalLM": (".families.mamba", "MambaForCausalLM"),
+    "Qwen3Config": (".families.qwen3", "Qwen3Config"),
+    "Qwen3ForCausalLM": (".families.qwen3", "Qwen3ForCausalLM"),
+    # Loader
+    "ModelDType": (".loader", "ModelDType"),
+    "LoadedModel": (".loader", "LoadedModel"),
+    "LoadedModelWithLoRA": (".loader", "LoadedModelWithLoRA"),
+    "AdapterConfig": (".loader", "AdapterConfig"),
+    "load_model": (".loader", "load_model"),
+    "load_model_async": (".loader", "load_model_async"),
+    "load_model_tuple": (".loader", "load_model_tuple"),
+    "load_model_with_lora": (".loader", "load_model_with_lora"),
+    "load_model_with_lora_async": (".loader", "load_model_with_lora_async"),
+    "save_adapter": (".loader", "save_adapter"),
+    "create_model": (".loader", "create_model"),
+    "create_from_preset": (".loader", "create_from_preset"),
+    # Adapters
+    "LoRAConfig": (".adapters", "LoRAConfig"),
+    "LoRALinear": (".adapters", "LoRALinear"),
+    "apply_lora": (".adapters", "apply_lora"),
+    "merge_lora_weights": (".adapters", "merge_lora_weights"),
+    "count_lora_parameters": (".adapters", "count_lora_parameters"),
+    # Introspection
+    "ParameterStats": (".introspection", "ParameterStats"),
+    "FLOPsEstimate": (".introspection", "FLOPsEstimate"),
+    "MemoryEstimate": (".introspection", "MemoryEstimate"),
+    "ModelCapabilities": (".introspection", "ModelCapabilities"),
+    "ModelInfo": (".introspection", "ModelInfo"),
+    "count_parameters": (".introspection", "count_parameters"),
+    "estimate_flops": (".introspection", "estimate_flops"),
+    "estimate_memory": (".introspection", "estimate_memory"),
+    "detect_model_capabilities": (".introspection", "detect_model_capabilities"),
+    "get_model_info": (".introspection", "get_model_info"),
+    "introspect": (".introspection", "introspect"),
+    "print_introspection": (".introspection", "print_introspection"),
+    # Losses
+    "compute_lm_loss": (".losses", "compute_lm_loss"),
+}
 
-# Introspection
-from .introspection import (
-    FLOPsEstimate,
-    MemoryEstimate,
-    ModelCapabilities,
-    ModelInfo,
-    ParameterStats,
-    count_parameters,
-    detect_model_capabilities,
-    estimate_flops,
-    estimate_memory,
-    get_model_info,
-    introspect,
-    print_introspection,
-)
+__all__ = sorted(_LAZY.keys())
 
-# Loader
-from .loader import (
-    # Primary API
-    AdapterConfig,
-    LoadedModel,
-    LoadedModelWithLoRA,
-    ModelDType,
-    # Legacy (deprecated)
-    create_from_preset,
-    create_model,
-    load_model,
-    load_model_async,
-    load_model_tuple,
-    load_model_with_lora,
-    load_model_with_lora_async,
-    save_adapter,
-)
 
-# Loss functions
-from .losses import compute_lm_loss
+def __getattr__(name: str):
+    if name in _LAZY:
+        import importlib
 
-# Models
-from .models import (
-    CausalLM,
-    Model,
-    ModelOutput,
-    SequenceClassifier,
-    TokenClassifier,
-)
+        mod_name, attr = _LAZY[name]
+        mod = importlib.import_module(mod_name, __name__)
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-__all__ = [
-    # === Core ===
-    # Enums
-    "ModelMode",
-    "BlockType",
-    "BackboneType",
-    "HeadType",
-    "AttentionType",
-    "FFNType",
-    "NormType",
-    "ActivationType",
-    "PositionEmbeddingType",
-    "BackendType",
-    # Config
-    "ModelConfig",
-    "AttentionConfig",
-    "FFNConfig",
-    "NormConfig",
-    "SSMConfig",
-    # Registry
-    "register_model",
-    "get_factory",
-    "list_models",
-    "ModelCapability",
-    "get_model_capabilities",
-    "find_models_by_capability",
-    # Backend
-    "get_backend",
-    "set_backend",
-    # === Components ===
-    # Embeddings
-    "TokenEmbedding",
-    "RoPE",
-    "ALiBi",
-    "LearnedPositionEmbedding",
-    "SinusoidalPositionEmbedding",
-    # Attention
-    "MultiHeadAttention",
-    "GroupedQueryAttention",
-    "SlidingWindowAttention",
-    # FFN
-    "MLP",
-    "SwiGLU",
-    "GEGLU",
-    "MoE",
-    # Normalization
-    "RMSNorm",
-    "LayerNorm",
-    "GemmaNorm",
-    # SSM
-    "SelectiveSSM",
-    "Mamba",
-    "MambaBlock",
-    # Recurrent
-    "LSTM",
-    "GRU",
-    "MinGRU",
-    # === Blocks ===
-    "Block",
-    "BlockOutput",
-    "TransformerBlock",
-    "MambaBlockWrapper",
-    "RecurrentBlockWrapper",
-    "HybridBlock",
-    # === Backbones ===
-    "Backbone",
-    "BackboneOutput",
-    "TransformerBackbone",
-    "MambaBackbone",
-    "RecurrentBackbone",
-    "HybridBackbone",
-    # === Heads ===
-    "Head",
-    "HeadOutput",
-    "LMHead",
-    "ClassifierHead",
-    "RegressionHead",
-    # === Models ===
-    "Model",
-    "ModelOutput",
-    "CausalLM",
-    "SequenceClassifier",
-    "TokenClassifier",
-    # === Families ===
-    "granite",
-    "llama",
-    "llama4",
-    "mamba",
-    "qwen3",
-    "GraniteConfig",
-    "GraniteForCausalLM",
-    "GraniteHybridConfig",
-    "GraniteHybridForCausalLM",
-    "LlamaConfig",
-    "LlamaForCausalLM",
-    "Llama4Config",
-    "Llama4TextConfig",
-    "Llama4ForCausalLM",
-    "MambaConfig",
-    "MambaForCausalLM",
-    "Qwen3Config",
-    "Qwen3ForCausalLM",
-    # === Loader ===
-    # Primary API
-    "ModelDType",
-    "LoadedModel",
-    "LoadedModelWithLoRA",
-    "AdapterConfig",
-    "load_model",
-    "load_model_async",
-    "load_model_tuple",
-    "load_model_with_lora",
-    "load_model_with_lora_async",
-    "save_adapter",
-    # Legacy (deprecated)
-    "create_model",
-    "create_from_preset",
-    # === Adapters ===
-    "LoRAConfig",
-    "LoRALinear",
-    "apply_lora",
-    "merge_lora_weights",
-    "count_lora_parameters",
-    # === Introspection ===
-    "ParameterStats",
-    "FLOPsEstimate",
-    "MemoryEstimate",
-    "ModelCapabilities",
-    "ModelInfo",
-    "count_parameters",
-    "estimate_flops",
-    "estimate_memory",
-    "get_model_capabilities",
-    "detect_model_capabilities",
-    "get_model_info",
-    "introspect",
-    "print_introspection",
-    # === Losses ===
-    "compute_lm_loss",
-]
+
+def __dir__() -> list[str]:
+    return list(globals().keys()) + __all__

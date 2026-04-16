@@ -15,16 +15,39 @@ from .types import BackendType
 class TorchBackend(Backend):
     """PyTorch backend implementation."""
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda", check_sm: bool = True):
         try:
             import torch
 
             self._torch = torch
-            self._device = device if torch.cuda.is_available() else "cpu"
+            self._check_sm = check_sm
+            self._device = self._resolve_device(device)
+            self._dtype = self._resolve_dtype(check_sm)
         except ImportError as e:
             raise ImportError(
                 "PyTorch is required for TorchBackend. Install with: pip install torch"
             ) from e
+
+    def _resolve_device(self, device: str) -> str:
+        normalized = (device or "cuda").lower()
+        if normalized.startswith("cuda"):
+            return normalized if self._torch.cuda.is_available() else "cpu"
+        if normalized == "mps":
+            mps_backend = getattr(self._torch.backends, "mps", None)
+            if mps_backend is not None and mps_backend.is_available():
+                return "mps"
+            return "cpu"
+        return normalized
+
+    def _resolve_dtype(self, check_sm: bool) -> Any:
+        if self._device.startswith("cuda"):
+            if check_sm:
+                device_id = self._device if ":" in self._device else "cuda:0"
+                major, _ = self._torch.cuda.get_device_capability(device_id)
+                if major >= 8:
+                    return self._torch.bfloat16
+            return self._torch.float16
+        return self._torch.float32
 
     @property
     def name(self) -> BackendType:
@@ -33,6 +56,22 @@ class TorchBackend(Backend):
     @property
     def device(self) -> str:
         return self._device
+
+    @property
+    def dtype(self) -> Any:
+        return self._dtype
+
+    def array(self, data: Any, dtype: Any = None) -> Any:
+        return self._torch.as_tensor(data, dtype=dtype, device=self._device)
+
+    def save(self, data: Any, path: str) -> None:
+        self._torch.save(data, path)
+
+    def load(self, path: str) -> Any:
+        try:
+            return self._torch.load(path, map_location=self._device, weights_only=False)
+        except TypeError:
+            return self._torch.load(path, map_location=self._device)
 
     def zeros(self, shape: tuple[int, ...], dtype: Any = None) -> Any:
         return self._torch.zeros(shape, dtype=dtype, device=self._device)

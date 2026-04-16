@@ -53,6 +53,8 @@ class GymRunConfig(CommandConfig):
     timeout: float = Field(default=10.0, gt=0, description="Connection timeout")
     retries: int = Field(default=3, ge=0, description="Max retries")
     seed: int | None = Field(default=None, description="Random seed")
+    backend: str | None = Field(default=None, description="Runtime backend (mlx|torch)")
+    device: str | None = Field(default=None, description="Device override (e.g. cuda:0, mps, cpu)")
 
     @classmethod
     def from_args(cls, args: Namespace) -> GymRunConfig:
@@ -75,6 +77,8 @@ class GymRunConfig(CommandConfig):
             timeout=getattr(args, "timeout", 10.0),
             retries=getattr(args, "retries", 3),
             seed=getattr(args, "seed", None),
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
 
@@ -100,6 +104,8 @@ class BenchmarkConfig(CommandConfig):
     token_budget: int = Field(default=8192, ge=1, description="Token budget")
     bucket_edges: str = Field(default="128,256,512,1024", description="Bucket edges")
     seed: int = Field(default=42, description="Random seed")
+    backend: str | None = Field(default=None, description="Runtime backend (mlx|torch)")
+    device: str | None = Field(default=None, description="Device override (e.g. cuda:0, mps, cpu)")
 
     @classmethod
     def from_args(cls, args: Namespace) -> BenchmarkConfig:
@@ -113,6 +119,8 @@ class BenchmarkConfig(CommandConfig):
             token_budget=getattr(args, "token_budget", 8192),
             bucket_edges=getattr(args, "bucket_edges", "128,256,512,1024"),
             seed=getattr(args, "seed", 42),
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
     def get_bucket_edges(self) -> tuple[int, ...]:

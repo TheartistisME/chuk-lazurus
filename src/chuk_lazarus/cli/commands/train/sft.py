@@ -7,6 +7,7 @@ The CLI command is a thin wrapper that delegates to SFTTrainer.run().
 from __future__ import annotations
 
 import logging
+import os
 from argparse import Namespace
 
 from ._types import SFTConfig, TrainMode, TrainResult
@@ -25,6 +26,15 @@ async def train_sft_cmd(args: Namespace) -> None:
     Args:
         args: Parsed command-line arguments
     """
+    # EWS-10: propagate --backend/--device into env so downstream trainer +
+    # backend-aware helpers (losses, optimizer_adapter) observe the selection.
+    backend = getattr(args, "backend", None)
+    if backend:
+        os.environ["CHUK_BACKEND"] = backend
+    device = getattr(args, "device", None)
+    if device:
+        os.environ["CHUK_DEVICE"] = device
+
     from ....training.trainers.sft_trainer import SFTTrainer, SFTTrainingConfig
 
     # Parse CLI args using shared config

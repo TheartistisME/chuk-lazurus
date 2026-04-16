@@ -14,14 +14,16 @@ Design principles:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-import mlx.core as mx
 from pydantic import BaseModel, Field
+
+from ._lazy_mlx import mx
 
 if TYPE_CHECKING:
     import mlx.nn as nn
@@ -35,7 +37,7 @@ class DType(str, Enum):
     FLOAT32 = "float32"
     BFLOAT16 = "bfloat16"
 
-    def to_mlx(self) -> mx.Dtype:
+    def to_mlx(self) -> Any:
         """Convert to MLX dtype."""
         mapping = {
             DType.FLOAT16: mx.float16,
@@ -62,7 +64,7 @@ class LoadedWeights(BaseModel):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    weights: dict[str, mx.array] = Field(..., description="Weight tensors by name")
+    weights: dict[str, Any] = Field(..., description="Weight tensors by name")
     dtype: DType = Field(DType.BFLOAT16, description="Target dtype")
     source_path: Path = Field(..., description="Path weights were loaded from")
     tensor_count: int = Field(..., description="Number of tensors loaded")
@@ -285,7 +287,7 @@ class HFLoader:
             converter = StandardWeightConverter()
 
         # Load and convert weights
-        converted_weights: dict[str, mx.array] = {}
+        converted_weights: dict[str, Any] = {}
 
         for sf_path in safetensor_files:
             if verbose:
@@ -353,7 +355,7 @@ class HFLoader:
         return nested
 
     @staticmethod
-    def load_raw_weights(model_path: Path, verbose: bool = True) -> dict[str, mx.array]:
+    def load_raw_weights(model_path: Path, verbose: bool = True) -> dict[str, Any]:
         """Load raw weights from safetensors without any name conversion.
 
         Use this when you want to apply model-specific sanitize methods.
@@ -369,7 +371,7 @@ class HFLoader:
         if not safetensor_files:
             raise FileNotFoundError(f"No safetensors files found in {model_path}")
 
-        raw_weights: dict[str, mx.array] = {}
+        raw_weights: dict[str, Any] = {}
         for sf_path in safetensor_files:
             if verbose:
                 print(f"  Loading {sf_path.name}...")
@@ -379,7 +381,7 @@ class HFLoader:
 
     @staticmethod
     def apply_weights_to_model(
-        model: nn.Module,
+        model: Any,
         model_path: Path,
         model_config: Any,
         dtype: DType = DType.BFLOAT16,
@@ -398,8 +400,6 @@ class HFLoader:
             dtype: Target dtype for weights
             verbose: Print progress messages
         """
-        import inspect
-
         from mlx.utils import tree_unflatten
 
         model_class = model.__class__
@@ -443,3 +443,39 @@ class HFLoader:
 
         model.update(nested)
         mx.eval(model.parameters())
+
+
+def resolve_pipeline_backend(config: Any):
+    """Bridge inference config fields onto the shared models_v2 backend registry."""
+    import chuk_lazarus.models_v2.core.backend as backend_pkg
+
+    kwargs = {
+        "name": getattr(config, "backend_name", None),
+        "device": getattr(config, "device", None),
+        "check_sm": getattr(config, "cuda_check_sm", True),
+    }
+
+    try:
+        signature = inspect.signature(backend_pkg.get_backend)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None:
+        accepts_var_kw = any(
+            param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
+        )
+        if accepts_var_kw:
+            return backend_pkg.get_backend(**kwargs)
+
+        accepted_kwargs = {
+            key: value for key, value in kwargs.items() if key in signature.parameters
+        }
+        if accepted_kwargs:
+            return backend_pkg.get_backend(**accepted_kwargs)
+
+    backend_name = kwargs["name"]
+    if backend_name is not None and hasattr(backend_pkg, "set_backend"):
+        target = "torch" if backend_name == "torch" else backend_name
+        backend_pkg.set_backend(target)
+    return backend_pkg.get_backend()

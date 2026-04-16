@@ -30,9 +30,10 @@ import sys
 import time
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
 from pydantic import BaseModel
+
+from chuk_lazarus.inference._lazy_mlx import mx
 
 from .._types import SourceType, VecInjectMatch, VecInjectMeta, VecInjectResult
 from ._index_format import (

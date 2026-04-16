@@ -31,6 +31,8 @@ class BatchPlanBuildConfig(CommandConfig):
     epochs: int = Field(default=1, gt=0, description="Number of epochs")
     output: Path = Field(..., description="Output path for batch plan")
     dataset_hash: str | None = Field(default=None, description="Dataset hash")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Device override")
 
     @classmethod
     def from_args(cls, args: Namespace) -> BatchPlanBuildConfig:
@@ -45,6 +47,8 @@ class BatchPlanBuildConfig(CommandConfig):
             epochs=args.epochs,
             output=Path(args.output),
             dataset_hash=args.dataset_hash,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
     def get_bucket_edges(self) -> tuple[int, ...]:
@@ -105,6 +109,8 @@ class BatchPlanInfoConfig(CommandConfig):
     rank: int | None = Field(default=None, ge=0, description="Rank for sharding")
     world_size: int | None = Field(default=None, gt=0, description="World size for sharding")
     show_batches: int | None = Field(default=None, gt=0, description="Show sample batches")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Device override")
 
     @classmethod
     def from_args(cls, args: Namespace) -> BatchPlanInfoConfig:
@@ -114,6 +120,8 @@ class BatchPlanInfoConfig(CommandConfig):
             rank=args.rank,
             world_size=args.world_size,
             show_batches=args.show_batches,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
 
@@ -193,11 +201,18 @@ class BatchPlanVerifyConfig(CommandConfig):
 
     plan: Path = Field(..., description="Path to batch plan")
     lengths: Path = Field(..., description="Path to length cache")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Device override")
 
     @classmethod
     def from_args(cls, args: Namespace) -> BatchPlanVerifyConfig:
         """Create config from argparse namespace."""
-        return cls(plan=Path(args.plan), lengths=Path(args.lengths))
+        return cls(
+            plan=Path(args.plan),
+            lengths=Path(args.lengths),
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
+        )
 
 
 class BatchPlanVerifyResult(CommandResult):
@@ -251,6 +266,8 @@ class BatchPlanShardConfig(CommandConfig):
     plan: Path = Field(..., description="Path to batch plan")
     world_size: int = Field(..., gt=0, description="Number of shards")
     output: Path = Field(..., description="Output directory")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Device override")
 
     @classmethod
     def from_args(cls, args: Namespace) -> BatchPlanShardConfig:
@@ -259,6 +276,8 @@ class BatchPlanShardConfig(CommandConfig):
             plan=Path(args.plan),
             world_size=args.world_size,
             output=Path(args.output),
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
         )
 
 

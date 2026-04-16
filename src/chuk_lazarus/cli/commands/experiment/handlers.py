@@ -134,6 +134,8 @@ def experiment_run(
     config_file: str | None = None,
     params: list[str] | None = None,
     dry_run: bool = False,
+    backend: str | None = None,
+    device: str | None = None,
 ) -> None:
     """Run an experiment.
 
@@ -180,6 +182,8 @@ def experiment_run(
             experiments_dir=exp_dir,
             config_overrides=overrides if overrides else None,
             dry_run=dry_run,
+            backend=backend,
+            device=device,
         )
 
         print()

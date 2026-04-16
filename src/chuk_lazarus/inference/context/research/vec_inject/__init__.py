@@ -1,78 +1,36 @@
-"""Vector injection (vec_inject) — Experiment 2bd41b18.
+"""Vector injection (vec_inject) public surface."""
 
-The model's L29 H4 head copies a scalar projection of the answer token's
-embedding direction into the residual stream.  The full information content
-of one retrieved fact is 12 bytes:
+from __future__ import annotations
 
-    token_id   : int32   — the answer token
-    coefficient: float32 — c = dot(R_L30, embed(token_id))
+_LAZY: dict[str, tuple[str, str]] = {
+    "vec_inject": ("._primitives", "vec_inject"),
+    "vec_inject_all": ("._primitives", "vec_inject_all"),
+    "VecInjectProvider": ("._protocol", "VecInjectProvider"),
+    "SourceType": ("._types", "SourceType"),
+    "VecInjectMatch": ("._types", "VecInjectMatch"),
+    "VecInjectMeta": ("._types", "VecInjectMeta"),
+    "VecInjectResult": ("._types", "VecInjectResult"),
+    "KV_ROUTE_FILE": (".providers", "KV_ROUTE_FILE"),
+    "VEC_INJECT_FILE": (".providers", "VEC_INJECT_FILE"),
+    "LocalVecInjectProvider": (".providers", "LocalVecInjectProvider"),
+    "VecInjectMetaKey": (".providers", "VecInjectMetaKey"),
+    "VecInjectWindowKey": (".providers", "VecInjectWindowKey"),
+}
 
-This is distinct from Mode 6 KV injection (full KV cache per window).
-Vec injection stores only the 1D directional signature per fact position.
+__all__ = sorted(_LAZY.keys())
 
-Public surface
---------------
-Types:
-    VecInjectMatch   — one retrieved fact ready for injection
-    VecInjectResult  — retrieval outcome from any provider
-    VecInjectMeta    — typed metadata from a vec_inject.npz file
 
-Protocol:
-    VecInjectProvider — async retrieve + inject interface
+def __getattr__(name: str):
+    if name in _LAZY:
+        import importlib
 
-Primitives:
-    vec_inject      — add one fact's directional component to residual h
-    vec_inject_all  — apply all matches from VecInjectResult in one call
+        mod_name, attr = _LAZY[name]
+        mod = importlib.import_module(mod_name, __name__)
+        value = getattr(mod, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-Providers:
-    LocalVecInjectProvider — file-backed provider (vec_inject.npz or kv_route_index.npz)
 
-Index format constants:
-    VecInjectMetaKey   — NPZ scalar keys (no magic strings)
-    VecInjectWindowKey — NPZ per-window array key helpers
-    VEC_INJECT_FILE    — canonical filename "vec_inject.npz"
-
-Usage
------
-    from chuk_lazarus.inference.context.vec_inject import (
-        vec_inject_all,
-        LocalVecInjectProvider,
-    )
-
-    provider = await LocalVecInjectProvider.load(checkpoint_dir, kv_gen)
-    result   = await provider.retrieve(query_ids, query_text, top_k=5)
-
-    # At result.injection_layer in the forward pass:
-    h = vec_inject_all(h, result.matches, embed_matrix)
-"""
-
-from ._primitives import vec_inject, vec_inject_all
-from ._protocol import VecInjectProvider
-from ._types import SourceType, VecInjectMatch, VecInjectMeta, VecInjectResult
-from .providers import (
-    KV_ROUTE_FILE,
-    VEC_INJECT_FILE,
-    LocalVecInjectProvider,
-    VecInjectMetaKey,
-    VecInjectWindowKey,
-)
-
-__all__ = [
-    # Types
-    "SourceType",
-    "VecInjectMatch",
-    "VecInjectResult",
-    "VecInjectMeta",
-    # Protocol
-    "VecInjectProvider",
-    # Primitives
-    "vec_inject",
-    "vec_inject_all",
-    # Providers
-    "LocalVecInjectProvider",
-    # Index format constants
-    "VecInjectMetaKey",
-    "VecInjectWindowKey",
-    "VEC_INJECT_FILE",
-    "KV_ROUTE_FILE",
-]
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + __all__)

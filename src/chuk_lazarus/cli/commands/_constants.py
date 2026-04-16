@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from enum import Enum
 
-# Import shared constants from introspection module to avoid circular imports
-# These are re-exported here for backwards compatibility
-from chuk_lazarus.introspection._shared_constants import (
+# Import package-neutral shared constants so train-facing CLI imports do not
+# need to import the entire introspection package at module import time.
+from chuk_lazarus._shared_constants import (
     Domain,
     LayerPhase,
     LayerPhaseDefaults,

@@ -37,7 +37,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from chuk_lazarus.models_v2.families import (
     FamilyInfo,
@@ -46,6 +46,7 @@ from chuk_lazarus.models_v2.families import (
     get_family_info,
 )
 
+from .backends.types import LazarusBackend
 from .chat import ChatHistory, format_chat_prompt, format_history
 from .generation import GenerationConfig, GenerationResult, generate
 from .loader import DType, HFLoader
@@ -72,6 +73,22 @@ class UnifiedPipelineConfig(BaseModel):
 
     dtype: DType = Field(DType.BFLOAT16, description="Weight dtype")
     cache_dir: Path | None = Field(None, description="Model cache directory")
+    backend: LazarusBackend | None = Field(
+        None,
+        description=(
+            "Optional runtime backend override. Mirrors CHUK_BACKEND semantics "
+            "for explicit selection."
+        ),
+    )
+    backend_name: str | None = Field(
+        None,
+        description="Shared backend registry selector name (for example: torch or mlx)",
+    )
+    device: str | None = Field(None, description="Explicit runtime device override")
+    cuda_check_sm: bool = Field(
+        True,
+        description="Validate CUDA SM compatibility when selecting the torch backend",
+    )
     default_system_message: str | None = Field(
         "You are a helpful assistant.", description="Default system prompt"
     )
@@ -84,6 +101,12 @@ class UnifiedPipelineConfig(BaseModel):
 
     # Engine
     engine: EngineMode = Field(EngineMode.STANDARD, description="Inference engine mode")
+
+    @model_validator(mode="after")
+    def _bridge_backend_name(self) -> UnifiedPipelineConfig:
+        if self.backend_name is None and self.backend is not None:
+            self.backend_name = "torch" if self.backend == LazarusBackend.CUDA else "mlx"
+        return self
 
 
 class UnifiedPipelineState(BaseModel):

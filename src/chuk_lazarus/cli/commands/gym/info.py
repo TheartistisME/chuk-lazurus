@@ -11,16 +11,23 @@ from argparse import Namespace
 logger = logging.getLogger(__name__)
 
 
-async def gym_info() -> None:
+async def gym_info(backend: str | None = None, device: str | None = None) -> None:
     """Display gym stream configuration info."""
     from ....data.batching.streaming import (
         GymOutputMode,
         GymTransport,
     )
+    from ....models_v2.core.backend import get_backend
+
+    resolved = get_backend(backend, device)
 
     print(f"\n{'=' * 60}")
     print("Gym Stream Configuration")
     print(f"{'=' * 60}")
+
+    print("\nBackend:")
+    print(f"  Name:             {resolved.name}")
+    print(f"  Device:           {getattr(resolved, 'device', None)}")
 
     print("\nSupported Transports:")
     for transport in GymTransport:
@@ -53,9 +60,12 @@ async def gym_info_cmd(args: Namespace) -> None:
     """CLI entry point for gym info command.
 
     Args:
-        args: Parsed command-line arguments (unused)
+        args: Parsed command-line arguments (may carry --backend/--device)
     """
-    await gym_info()
+    await gym_info(
+        backend=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
+    )
 
 
 __all__ = [

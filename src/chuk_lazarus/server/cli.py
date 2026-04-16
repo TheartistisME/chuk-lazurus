@@ -16,6 +16,22 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import types
+
+from ._compat import SERVER_DEPENDENCY_MESSAGE
+
+
+def _missing_uvicorn_dependency(*_args, **_kwargs):
+    raise ImportError(SERVER_DEPENDENCY_MESSAGE)
+
+
+try:
+    import uvicorn as _uvicorn  # noqa: F401
+except ImportError:
+    _uvicorn = types.ModuleType("uvicorn")
+    _uvicorn.Config = _missing_uvicorn_dependency
+    _uvicorn.Server = _missing_uvicorn_dependency
+    sys.modules.setdefault("uvicorn", _uvicorn)
 
 # ── Shared serve logic ────────────────────────────────────────────────────────
 
@@ -41,12 +57,13 @@ async def _serve_async(args: argparse.Namespace) -> None:
     try:
         import uvicorn
     except ImportError:
-        print(
-            "ERROR: Server dependencies not installed.\n"
-            "Install with:  pip install 'chuk-lazarus[server]'\n"
-            "           or:  uv add 'chuk-lazarus[server]'",
-            file=sys.stderr,
-        )
+        print(f"ERROR: {SERVER_DEPENDENCY_MESSAGE}", file=sys.stderr)
+        sys.exit(1)
+    if (
+        getattr(uvicorn, "Config", None) is _missing_uvicorn_dependency
+        or getattr(uvicorn, "Server", None) is _missing_uvicorn_dependency
+    ):
+        print(f"ERROR: {SERVER_DEPENDENCY_MESSAGE}", file=sys.stderr)
         sys.exit(1)
 
     from .app import create_app
@@ -54,18 +71,29 @@ async def _serve_async(args: argparse.Namespace) -> None:
 
     protocols = _parse_protocols(args.protocols)
     api_key: str | None = getattr(args, "api_key", None)
+    backend: str | None = getattr(args, "backend", None)
+    device: str | None = getattr(args, "device", None)
     max_tokens: int = getattr(args, "max_tokens", 512)
 
     print(f"\nLoading model: {args.model}")
     print("=" * 60)
-    engine = await ModelEngine.load(args.model, verbose=True)
-
-    app = create_app(
-        engine,
-        protocols=protocols,
-        api_key=api_key,
-        default_max_tokens=max_tokens,
+    engine = await ModelEngine.load(
+        args.model,
+        verbose=True,
+        backend=backend,
+        device=device,
     )
+
+    try:
+        app = create_app(
+            engine,
+            protocols=protocols,
+            api_key=api_key,
+            default_max_tokens=max_tokens,
+        )
+    except ImportError:
+        print(f"ERROR: {SERVER_DEPENDENCY_MESSAGE}", file=sys.stderr)
+        sys.exit(1)
 
     host: str = args.host
     port: int = args.port
@@ -112,6 +140,17 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
         "-m",
         required=True,
         help="Model HuggingFace ID or local path",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("mlx", "torch"),
+        default=None,
+        help="Optional inference backend override: mlx or torch",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Optional runtime device override, for example mps or cuda:0",
     )
     parser.add_argument(
         "--host",

@@ -49,6 +49,11 @@ class ExperimentConfig:
     # Experiment-specific parameters
     parameters: dict = field(default_factory=dict)
 
+    # Backend selection (Epic 2 EWS-15). ``None`` defers to env / platform
+    # default via :func:`chuk_lazarus.models_v2.core.backend.get_backend`.
+    backend: str | None = None
+    device: str | None = None
+
     # Paths (auto-populated by framework)
     experiment_dir: Path | None = None
     data_dir: Path | None = None
@@ -73,6 +78,8 @@ class ExperimentConfig:
             "model",
             "training",
             "parameters",
+            "backend",
+            "device",
             "experiment_dir",
             "data_dir",
             "checkpoint_dir",
@@ -104,6 +111,8 @@ class ExperimentConfig:
             "model": self.model,
             "training": self.training,
             "parameters": self.parameters,
+            "backend": self.backend,
+            "device": self.device,
             "experiment_dir": str(self.experiment_dir) if self.experiment_dir else None,
             "data_dir": str(self.data_dir) if self.data_dir else None,
             "checkpoint_dir": str(self.checkpoint_dir) if self.checkpoint_dir else None,

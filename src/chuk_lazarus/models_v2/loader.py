@@ -22,11 +22,12 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import mlx.core as mx
-import mlx.nn as nn
 from pydantic import BaseModel, ConfigDict, Field
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
+    import mlx.core as mx  # noqa: F401
+    import mlx.nn as nn  # noqa: F401
+
     from .adapters.lora import LoRAConfig, LoRALinear
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,8 @@ class ModelDType(str, Enum):
 
     def to_mlx(self) -> mx.Dtype:
         """Convert to MLX dtype."""
+        import mlx.core as mx  # noqa: PLC0415
+
         return {
             ModelDType.FLOAT16: mx.float16,
             ModelDType.FLOAT32: mx.float32,
@@ -408,6 +411,8 @@ def _load_adapter_weights_into_lora(
             f"No adapter weights found in {adapter_path}. Expected: adapters.safetensors"
         )
 
+    import mlx.core as mx  # noqa: PLC0415
+
     logger.info(f"Loading adapter weights from {weights_path}")
     weights = mx.load(str(weights_path))
 
@@ -463,6 +468,8 @@ def save_adapter(
         weights[f"model.{name}.lora_b"] = lora_layer.lora_B
 
     # Save weights
+    import mlx.core as mx  # noqa: PLC0415
+
     weights_path = output_path / "adapters.safetensors"
     mx.save_safetensors(str(weights_path), weights)
     logger.info(f"Saved adapter weights to {weights_path}")

@@ -10,7 +10,8 @@ from pathlib import Path
 
 async def knowledge_build_cmd(args: Namespace) -> None:
     """Build knowledge store from a text file."""
-    from ....inference.context.knowledge import ArchitectureConfig, streaming_prefill
+    from ....inference.context.knowledge import ArchitectureConfig
+    from ._backend import load_build_backend, load_pipeline, resolve_backend_selection
     from ._common import load_model
 
     input_path = Path(args.input)
@@ -20,8 +21,23 @@ async def knowledge_build_cmd(args: Namespace) -> None:
         print(f"Error: input file not found: {input_path}", file=sys.stderr)
         sys.exit(1)
 
+    selection = resolve_backend_selection(args)
+
     # ── Load model ────────────────────────────────────────────────────
-    pipeline, kv_gen, tokenizer = load_model(args.model)
+    if selection.effective == "torch":
+        pipeline = load_pipeline(
+            args.model,
+            backend=selection.requested,
+            device=selection.device,
+        )
+        kv_gen = None
+        tokenizer = pipeline.tokenizer
+    else:
+        pipeline, kv_gen, tokenizer = load_model(
+            args.model,
+            backend=selection.requested,
+            device=selection.device,
+        )
 
     # ── Architecture config ────────────────────────────────────────────
     ac = ArchitectureConfig.from_model_config(pipeline.config)
@@ -56,19 +72,33 @@ async def knowledge_build_cmd(args: Namespace) -> None:
             file=sys.stderr,
         )
 
-    store = streaming_prefill(
-        kv_gen=kv_gen,
-        document_tokens=tokens,
-        config=ac,
-        tokenizer=tokenizer,
-        progress_fn=progress,
-    )
+    build_store = load_build_backend(selection.effective)
+    if selection.effective == "torch":
+        store = build_store(
+            model=pipeline.model,
+            tokenizer=tokenizer,
+            raw_text=text,
+            config=ac,
+            output_path=output_path,
+            max_tokens=args.max_tokens,
+            progress_fn=progress,
+        )
+    else:
+        store = build_store(
+            kv_gen=kv_gen,
+            document_tokens=tokens,
+            config=ac,
+            tokenizer=tokenizer,
+            progress_fn=progress,
+        )
     elapsed = time.monotonic() - t0
     print(file=sys.stderr)
 
     # ── Save ──────────────────────────────────────────────────────────
-    store.save(output_path)
-    store.log_stats()
+    if selection.effective != "torch":
+        store.save(output_path)
+    if hasattr(store, "log_stats"):
+        store.log_stats()
 
     print(
         f"  Built in {elapsed:.1f}s → {output_path}",

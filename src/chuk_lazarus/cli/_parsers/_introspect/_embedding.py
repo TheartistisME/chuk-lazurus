@@ -1,10 +1,7 @@
 """Embedding, early-layers, commutativity introspect parsers."""
 
-from ...commands.introspect import (
-    introspect_commutativity,
-    introspect_early_layers,
-    introspect_embedding,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_command
 
 
 def register_embedding_parsers(introspect_subparsers):
@@ -54,7 +51,8 @@ Examples:
         "-o",
         help="Save results to JSON file",
     )
-    embedding_parser.set_defaults(func=introspect_embedding)
+    add_backend_flags(embedding_parser)
+    embedding_parser.set_defaults(func=run_command("introspect_embedding"))
 
     # Commutativity command - test if representations respect A*B = B*A
     commutativity_parser = introspect_subparsers.add_parser(
@@ -102,7 +100,8 @@ Examples:
         "-o",
         help="Save results to JSON file",
     )
-    commutativity_parser.set_defaults(func=introspect_commutativity)
+    add_backend_flags(commutativity_parser)
+    commutativity_parser.set_defaults(func=run_command("introspect_commutativity"))
 
     # Early layers command - analyze what information is encoded in early layers
     early_layers_parser = introspect_subparsers.add_parser(
@@ -160,4 +159,5 @@ Examples:
         "-o",
         help="Save results to JSON file",
     )
-    early_layers_parser.set_defaults(func=introspect_early_layers)
+    add_backend_flags(early_layers_parser)
+    early_layers_parser.set_defaults(func=run_command("introspect_early_layers"))

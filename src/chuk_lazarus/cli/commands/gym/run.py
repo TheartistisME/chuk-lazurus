@@ -33,7 +33,11 @@ async def gym_run(config: GymRunConfig) -> GymRunResult:
         ReplayBuffer,
         ReplayBufferConfig,
     )
+    from ....models_v2.core.backend import get_backend
     from ....utils.tokenizer_loader import load_tokenizer
+
+    backend = get_backend(config.backend, config.device)
+    logger.info(f"Using backend: {backend.name} device={getattr(backend, 'device', None)}")
 
     logger.info(f"Loading tokenizer: {config.tokenizer}")
     tokenizer = load_tokenizer(config.tokenizer)

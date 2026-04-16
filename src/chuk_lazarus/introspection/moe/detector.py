@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import mlx.nn as nn
+from chuk_lazarus.introspection._backend_dispatch import lazy_nn as nn  # EWS-6 lazy
 
 from .enums import MoEArchitecture
 from .models import MoELayerInfo

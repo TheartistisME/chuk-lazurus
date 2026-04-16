@@ -1,5 +1,6 @@
 """Data command parsers."""
 
+from ..commands._base import add_backend_flags
 from ..commands.data import (
     data_batch_generate,
     data_batching_analyze,
@@ -38,6 +39,7 @@ def register_data_parsers(subparsers):
     lengths_build_parser.add_argument(
         "--output", "-o", required=True, help="Output cache file path"
     )
+    add_backend_flags(lengths_build_parser)
     lengths_build_parser.set_defaults(func=data_lengths_build)
 
     # Length cache stats
@@ -45,6 +47,7 @@ def register_data_parsers(subparsers):
         "stats", help="Show length cache statistics"
     )
     lengths_stats_parser.add_argument("--cache", "-c", required=True, help="Length cache file")
+    add_backend_flags(lengths_stats_parser)
     lengths_stats_parser.set_defaults(func=data_lengths_stats)
 
     # === BatchPlan subcommands ===
@@ -96,6 +99,7 @@ def register_data_parsers(subparsers):
     batchplan_build_parser.add_argument(
         "--output", "-o", required=True, help="Output directory for batch plan"
     )
+    add_backend_flags(batchplan_build_parser)
     batchplan_build_parser.set_defaults(func=data_batchplan_build)
 
     # Batch plan info
@@ -120,6 +124,7 @@ def register_data_parsers(subparsers):
     batchplan_info_parser.add_argument(
         "--world-size", "-w", type=int, default=None, help="Total number of workers"
     )
+    add_backend_flags(batchplan_info_parser)
     batchplan_info_parser.set_defaults(func=data_batchplan_info)
 
     # Batch plan verify
@@ -128,6 +133,7 @@ def register_data_parsers(subparsers):
     )
     batchplan_verify_parser.add_argument("--plan", "-p", required=True, help="Batch plan directory")
     batchplan_verify_parser.add_argument("--lengths", "-l", required=True, help="Length cache file")
+    add_backend_flags(batchplan_verify_parser)
     batchplan_verify_parser.set_defaults(func=data_batchplan_verify)
 
     # Batch plan shard
@@ -147,6 +153,7 @@ def register_data_parsers(subparsers):
     batchplan_shard_parser.add_argument(
         "--output", "-o", required=True, help="Output directory for sharded plans"
     )
+    add_backend_flags(batchplan_shard_parser)
     batchplan_shard_parser.set_defaults(func=data_batchplan_shard)
 
     # === Batching analysis subcommands ===
@@ -172,6 +179,7 @@ def register_data_parsers(subparsers):
         help="Max length for overflow bucket (default: 2048)",
     )
     batching_analyze_parser.add_argument("--output", "-o", help="Save JSON report to file")
+    add_backend_flags(batching_analyze_parser)
     batching_analyze_parser.set_defaults(func=data_batching_analyze)
 
     # Length histogram
@@ -185,6 +193,7 @@ def register_data_parsers(subparsers):
     batching_histogram_parser.add_argument(
         "--width", type=int, default=50, help="Chart width (default: 50)"
     )
+    add_backend_flags(batching_histogram_parser)
     batching_histogram_parser.set_defaults(func=data_batching_histogram)
 
     # Suggest bucket edges
@@ -212,6 +221,7 @@ def register_data_parsers(subparsers):
         default=2048,
         help="Maximum sequence length (default: 2048)",
     )
+    add_backend_flags(batching_suggest_parser)
     batching_suggest_parser.set_defaults(func=data_batching_suggest)
 
     # === Batch generation subcommands ===

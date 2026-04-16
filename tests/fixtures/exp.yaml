@@ -1,0 +1,4 @@
+model: Qwen/Qwen2.5-0.5B-Instruct
+seed: 0
+batch_size: 2
+max_steps: 4

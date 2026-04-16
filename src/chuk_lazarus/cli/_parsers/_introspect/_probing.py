@@ -1,12 +1,7 @@
 """Probe, neurons, cluster introspect parsers."""
 
-import asyncio
-
-from ...commands.introspect import (
-    introspect_activation_cluster,
-    introspect_neurons,
-    introspect_probe,
-)
+from ...commands._base import add_backend_flags
+from ._dispatch import run_async_command, run_command
 
 
 def register_probing_parsers(introspect_subparsers):
@@ -78,7 +73,8 @@ Example:
         default="logistic",
         help="Direction extraction method: 'logistic' (probe weights) or 'difference' (mean difference)",
     )
-    probe_parser.set_defaults(func=lambda args: asyncio.run(introspect_probe(args)))
+    add_backend_flags(probe_parser)
+    probe_parser.set_defaults(func=run_async_command("introspect_probe"))
 
     # Neurons command - analyze individual neuron activations
     neurons_parser = introspect_subparsers.add_parser(
@@ -170,7 +166,8 @@ Examples:
         "-o",
         help="Save results to JSON file",
     )
-    neurons_parser.set_defaults(func=introspect_neurons)
+    add_backend_flags(neurons_parser)
+    neurons_parser.set_defaults(func=run_command("introspect_neurons"))
 
     # Cluster command - visualize activation clusters
     cluster_parser = introspect_subparsers.add_parser(
@@ -245,4 +242,5 @@ Multi-class example:
         "--save-plot",
         help="Save matplotlib scatter plot to file (e.g., cluster.png)",
     )
-    cluster_parser.set_defaults(func=lambda args: asyncio.run(introspect_activation_cluster(args)))
+    add_backend_flags(cluster_parser)
+    cluster_parser.set_defaults(func=run_async_command("introspect_activation_cluster"))
