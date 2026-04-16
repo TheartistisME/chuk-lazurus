@@ -204,20 +204,30 @@ class TorchKnowledgeStore:
         if k <= 0:
             return []
 
-        exact_windows = self._route_exact(query_text, tokenizer=tokenizer)
+        exact_mode, exact_matches = self._collect_exact_matches(query_text)
+        exact_windows = self._primary_windows_for_matches(exact_matches)
         if exact_windows:
-            if len(exact_windows) >= k or tokenizer is None:
+            if tokenizer is None:
                 return exact_windows
-
-            router = self._get_tfidf_router()
-            query_ids = _encode_token_ids(tokenizer, query_text, add_special_tokens=False)
-            if expansion_ids:
-                useful = [int(t) for t in expansion_ids if self.idf.get(int(t), 0.0) > 0]
-                if useful:
-                    query_ids = query_ids + useful
-            tfidf_result = router.route(query_ids, top_k=k)
-            if not isinstance(tfidf_result, list):
-                tfidf_result = [tfidf_result] if tfidf_result is not None else []
+            if exact_mode == "clause_id" and len(exact_windows) >= k:
+                return exact_windows
+            tfidf_result = self._route_tfidf_ranked(
+                query_text,
+                tokenizer,
+                top_k=max(k, len(exact_windows) + 1),
+            )
+            if expansion_ids and len(tfidf_result) < max(k, len(exact_windows) + 1):
+                expanded_result = self._route_tfidf_ranked(
+                    query_text,
+                    tokenizer,
+                    top_k=max(k, len(exact_windows) + 1),
+                    expansion_ids=expansion_ids,
+                )
+                seen_ranked = set(tfidf_result)
+                for wid in expanded_result:
+                    if wid not in seen_ranked:
+                        tfidf_result.append(wid)
+                        seen_ranked.add(wid)
 
             seen = set(exact_windows)
             merged = list(exact_windows)
@@ -225,32 +235,27 @@ class TorchKnowledgeStore:
                 if wid not in seen:
                     merged.append(wid)
                     seen.add(wid)
-                if len(merged) >= k:
+                if exact_mode == "clause_id" and len(merged) >= k:
                     break
             return merged
 
-        router = self._get_tfidf_router()
-        query_ids = _encode_token_ids(tokenizer, query_text, add_special_tokens=False)
-
-        base_result = router.route(query_ids, top_k=k)
-        if not isinstance(base_result, list):
-            base_result = [base_result] if base_result is not None else []
-
+        base_result = self._route_tfidf_ranked(
+            query_text,
+            tokenizer,
+            top_k=k,
+        )
         if not expansion_ids or len(base_result) >= k:
             return base_result[:k]
 
-        useful = [int(t) for t in expansion_ids if self.idf.get(int(t), 0.0) > 0]
-        if not useful:
-            return base_result[:k]
-
-        expanded_ids = query_ids + useful
-        exp_result = router.route(expanded_ids, top_k=k)
-        if not isinstance(exp_result, list):
-            exp_result = [exp_result] if exp_result is not None else []
-
+        expanded_result = self._route_tfidf_ranked(
+            query_text,
+            tokenizer,
+            top_k=k,
+            expansion_ids=expansion_ids,
+        )
         seen = set(base_result)
         merged = list(base_result)
-        for wid in exp_result:
+        for wid in expanded_result:
             if wid not in seen and len(merged) < k:
                 merged.append(wid)
                 seen.add(wid)
@@ -295,82 +300,88 @@ class TorchKnowledgeStore:
         )
 
     def _route_tfidf(self, query_text: str, tokenizer) -> int | None:
-        router = self._get_tfidf_router()
-        query_ids = _encode_token_ids(tokenizer, query_text, add_special_tokens=False)
-        return router.route(query_ids)
+        ranked = self._route_tfidf_ranked(query_text, tokenizer, top_k=1)
+        return ranked[0] if ranked else None
 
     def _route_keyword(self, query_text: str) -> int | None:
         router = self._get_keyword_router()
         return router.route(query_text)
 
     def _route_exact(self, query_text: str, tokenizer=None) -> list[int]:
+        _, matches = self._collect_exact_matches(query_text)
+        return self._primary_windows_for_matches(matches)
+
+    def _route_tfidf_ranked(
+        self,
+        query_text: str,
+        tokenizer,
+        *,
+        top_k: int,
+        expansion_ids: list[int] | None = None,
+    ) -> list[int]:
+        if top_k <= 0:
+            return []
+
+        router = self._get_tfidf_router()
+        query_ids = _encode_token_ids(tokenizer, query_text, add_special_tokens=False)
+        if expansion_ids:
+            useful = [int(t) for t in expansion_ids if self.idf.get(int(t), 0.0) > 0]
+            if useful:
+                query_ids = query_ids + useful
+
+        hint_windows = set(self._route_hint_windows(query_text))
+        scored: list[tuple[float, float, int]] = []
+        for window_id in self.window_tokens:
+            base_score = router.score_window(query_ids, window_id)
+            if base_score <= 0.0 and window_id not in hint_windows:
+                continue
+            boosted_score = base_score + (0.1 if window_id in hint_windows else 0.0)
+            scored.append((boosted_score, base_score, window_id))
+
+        if not scored:
+            return []
+
+        scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        if top_k == 1:
+            return [scored[0][2]]
+
+        top_score = scored[0][0]
+        threshold = top_score * 0.5
+        adaptive = [window_id for score, _, window_id in scored if score >= threshold]
+        return adaptive[:top_k]
+
+    def _collect_exact_matches(self, query_text: str) -> tuple[str | None, list[Any]]:
+        router = self._get_clause_router()
+        if router is None:
+            return None, []
+        clause_id_matches = router.collect_clause_id_matches(query_text)
+        if clause_id_matches:
+            return "clause_id", clause_id_matches
+        title_matches = router.collect_exact_title_matches(query_text)
+        if title_matches:
+            return "title", title_matches
+        return None, []
+
+    def _route_hint_windows(self, query_text: str) -> list[int]:
         router = self._get_clause_router()
         if router is None:
             return []
-        strong_matches, weak_matches = router.collect_matches(query_text)
-        matches = strong_matches or weak_matches
-        if not matches:
+        if router.collect_clause_id_matches(query_text):
+            return []
+        return self._primary_windows_for_matches(router.collect_hint_matches(query_text))
+
+    def _primary_windows_for_matches(self, matches: list[Any]) -> list[int]:
+        router = self._get_clause_router()
+        if router is None:
             return []
 
-        if tokenizer is None or not self.window_tokens:
-            window_ids: list[int] = []
-            seen_window_ids: set[int] = set()
-            for match in matches:
-                for window_id in router.clause_id_to_primary_windows.get(match.clause_id, []):
-                    if window_id not in seen_window_ids:
-                        seen_window_ids.add(window_id)
-                        window_ids.append(window_id)
-            return window_ids
-
-        query_ids = _encode_token_ids(tokenizer, query_text, add_special_tokens=False)
-        tfidf_router = self._get_tfidf_router()
-
-        if strong_matches:
-            scored: list[tuple[int, float, int]] = []
-            for match in strong_matches:
-                for window_id in router.clause_id_to_primary_windows.get(match.clause_id, []):
-                    scored.append((match.start, tfidf_router.score_window(query_ids, window_id), window_id))
-            scored.sort(key=lambda item: (item[0], -item[1], item[2]))
-            window_ids: list[int] = []
-            seen_window_ids: set[int] = set()
-            for _, _, window_id in scored:
+        window_ids: list[int] = []
+        seen_window_ids: set[int] = set()
+        for match in matches:
+            for window_id in router.clause_id_to_primary_windows.get(match.clause_id, []):
                 if window_id not in seen_window_ids:
                     seen_window_ids.add(window_id)
                     window_ids.append(window_id)
-            return window_ids
-
-        tfidf_candidates = tfidf_router.route(query_ids, top_k=max(5, len(weak_matches)))
-        if not isinstance(tfidf_candidates, list):
-            tfidf_candidates = [tfidf_candidates] if tfidf_candidates is not None else []
-
-        candidate_ids: list[int] = []
-        weak_ids = set()
-        for match in weak_matches:
-            for window_id in router.clause_id_to_primary_windows.get(match.clause_id, []):
-                if window_id not in weak_ids:
-                    weak_ids.add(window_id)
-                    candidate_ids.append(window_id)
-        for window_id in tfidf_candidates:
-            if window_id not in weak_ids and window_id not in candidate_ids:
-                candidate_ids.append(window_id)
-
-        if not candidate_ids:
-            return []
-
-        scored_candidates: list[tuple[float, int, int]] = []
-        for window_id in candidate_ids:
-            score = tfidf_router.score_window(query_ids, window_id)
-            if window_id in weak_ids:
-                score -= 0.25
-            scored_candidates.append((score, window_id, window_id))
-
-        scored_candidates.sort(key=lambda item: (-item[0], item[1]))
-        window_ids: list[int] = []
-        seen_window_ids: set[int] = set()
-        for _, _, window_id in scored_candidates:
-            if window_id not in seen_window_ids:
-                seen_window_ids.add(window_id)
-                window_ids.append(window_id)
         return window_ids
 
     def _get_tfidf_router(self) -> TFIDFRouter:

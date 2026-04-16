@@ -238,7 +238,7 @@ def _load_store(tmp_path: Path) -> TorchKnowledgeStore:
     return TorchKnowledgeStore.load(_write_store(tmp_path / "store"))
 
 
-def test_exact_clause_query_stays_on_matched_window_only(tmp_path: Path) -> None:
+def test_exact_clause_id_query_stays_on_matched_window_only(tmp_path: Path) -> None:
     store = _load_store(tmp_path)
     runtime = _FakeRuntime()
     tokenizer = _Tokenizer()
@@ -252,7 +252,7 @@ def test_exact_clause_query_stays_on_matched_window_only(tmp_path: Path) -> None
     ):
         response = run_torch_query_command(
             model_id="m",
-            prompt="Accessible",
+            prompt="Explain clause 1.4.2 Accessible.",
             max_new_tokens=8,
             temperature=0.0,
             top_k=1,
@@ -270,7 +270,7 @@ def test_exact_clause_query_stays_on_matched_window_only(tmp_path: Path) -> None
     assert runtime.residual_prompts == []
 
 
-def test_rcd_rule_query_stays_on_matched_window_only(tmp_path: Path) -> None:
+def test_exact_title_query_stays_on_matched_window_only(tmp_path: Path) -> None:
     store = _load_store(tmp_path)
     runtime = _FakeRuntime()
     tokenizer = _Tokenizer()
@@ -280,11 +280,11 @@ def test_rcd_rule_query_stays_on_matched_window_only(tmp_path: Path) -> None:
         return_value=(runtime, tokenizer),
     ), patch(
         "chuk_lazarus.inference.context.knowledge.torch_query._expand_query",
-        side_effect=AssertionError("RCD exact lookup should not expand"),
+        side_effect=AssertionError("exact title lookup should not expand"),
     ):
         response = run_torch_query_command(
             model_id="m",
-            prompt="RCD live conductor faults",
+            prompt="Residual current device (RCD)",
             max_new_tokens=8,
             temperature=0.0,
             top_k=1,
@@ -301,6 +301,37 @@ def test_rcd_rule_query_stays_on_matched_window_only(tmp_path: Path) -> None:
     assert "accessible alpha" not in prompt
     assert "accessible readily clause" not in prompt
     assert runtime.residual_prompts == []
+
+
+def test_comparison_title_prompt_keeps_exact_and_backstop_windows(tmp_path: Path) -> None:
+    store = _load_store(tmp_path)
+    runtime = _FakeRuntime()
+    tokenizer = _Tokenizer()
+
+    with patch(
+        "chuk_lazarus.inference.context.knowledge.torch_query._load_torch_runtime",
+        return_value=(runtime, tokenizer),
+    ), patch(
+        "chuk_lazarus.inference.context.knowledge.torch_query._expand_query",
+        side_effect=AssertionError("comparison exact-title lookup should not expand"),
+    ):
+        response = run_torch_query_command(
+            model_id="m",
+            prompt="What is the difference between Accessible and Accessible, readily under AS/NZS 3000?",
+            max_new_tokens=8,
+            temperature=0.0,
+            top_k=2,
+            store_path=store._store_path,
+            stdout=SimpleNamespace(write=lambda *_: None, flush=lambda: None),
+            stderr=SimpleNamespace(write=lambda *_: None),
+        )
+
+    assert response.routing_mode == "exact"
+    assert response.window_ids == [1, 0]
+    prompt = runtime.generate_prompts[-1].lower()
+    assert "accessible alpha" in prompt
+    assert "accessible readily clause" in prompt
+    assert "residual current device gamma" not in prompt
 
 
 def test_operation_of_rcds_keeps_required_anchor_content(tmp_path: Path) -> None:

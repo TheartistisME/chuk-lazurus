@@ -972,9 +972,6 @@ def _run_strict_mode(
         print(f"Summary: mode={args.mode} pass={outcome.pass_count} fail={outcome.fail_count}", file=sys.stderr)
         return outcome
 
-    runtime, tokenizer = _load_torch_runtime(str(args.model), args.device)
-    store = TorchKnowledgeStore.load(store_path)
-
     started = time.monotonic()
     deadline = started + max(args.duration_minutes, 0.0) * 60.0
     executed = 0
@@ -987,6 +984,11 @@ def _run_strict_mode(
 
     with args.output.open("w", encoding="utf-8") as handle:
         write_header(handle, args=args, metadata=metadata, store_path=store_path, records=records, cases=cases)
+        handle.write("Startup: loading torch runtime and knowledge store\n\n")
+        handle.flush()
+
+        runtime, tokenizer = _load_torch_runtime(str(args.model), args.device)
+        store = TorchKnowledgeStore.load(store_path)
 
         try:
             if args.mode == "soak_gate":

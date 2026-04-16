@@ -267,9 +267,11 @@ def _resolve_grounded_windows(
     top_k: int,
     expansion_ids: list[int] | None = None,
 ) -> tuple[list[int], str]:
-    exact_windows = store._route_exact(query_text)
-    if exact_windows:
-        return exact_windows, "exact"
+    exact_mode, exact_matches = store._collect_exact_matches(query_text)
+    if exact_matches:
+        if exact_mode == "clause_id":
+            return store._primary_windows_for_matches(exact_matches), "exact"
+        return store.route_top_k(query_text, tokenizer, k=top_k), "exact"
 
     window_ids = store.route_top_k(query_text, tokenizer, k=top_k, expansion_ids=expansion_ids)
     routing_mode = "tfidf"
@@ -313,10 +315,13 @@ def _prepare_store_response(
         top_p=1.0,
     )
 
-    exact_windows = store._route_exact(question)
-    if exact_windows:
+    exact_mode, exact_matches = store._collect_exact_matches(question)
+    if exact_matches:
         expansion_terms: list[str] = []
-        window_ids = exact_windows
+        if exact_mode == "clause_id":
+            window_ids = store._primary_windows_for_matches(exact_matches)
+        else:
+            window_ids = store.route_top_k(question, tokenizer, k=top_k)
         routing_mode = "exact"
     else:
         expansion_ids, expansion_terms = _expand_query(question, tokenizer, runtime)

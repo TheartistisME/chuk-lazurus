@@ -272,3 +272,70 @@ def test_single_pass_gate_counts_strict_pass_fail_only(tmp_path: Path, monkeypat
     assert outcome.grounding_pass_count == 17
     assert outcome.ood_pass_count == 6
     assert outcome.regression_pass_count == 17
+
+
+def test_strict_mode_creates_output_before_runtime_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cases = evaluator.build_case_suite()
+    fixture = evaluator.load_benchmark_fixture()
+    window_metadata, window_ids_by_clause_id = _build_window_map(cases)
+    store_path = tmp_path / "checkpoint" / "torch_store"
+    _write_window_metadata(store_path, window_metadata)
+
+    records = _build_records(cases)
+    response_map: dict[str, SimpleNamespace] = {}
+    for case in cases:
+        if case.expect_insufficient:
+            response_map[case.prompt] = _make_response(
+                case,
+                [window_ids_by_clause_id[next(iter(window_ids_by_clause_id))]],
+            )
+            continue
+
+        if case.category == "comparison":
+            window_ids = [window_ids_by_clause_id[clause_id] for clause_id in case.primary_clause_ids]
+        else:
+            window_ids = [window_ids_by_clause_id[case.primary_clause_ids[0]]]
+        response_map[case.prompt] = _make_response(case, window_ids)
+
+    def _fake_prepare_store_response(**kwargs):  # noqa: ANN001
+        return response_map[kwargs["question"]]
+
+    def _fake_load_torch_runtime(*args, **kwargs):  # noqa: ANN001
+        report_path = output_path
+        assert report_path.exists()
+        report_text = report_path.read_text(encoding="utf-8")
+        assert "Startup: loading torch runtime and knowledge store" in report_text
+        return _DummyRuntime(), object()
+
+    output_path = tmp_path / "strict_report.txt"
+
+    monkeypatch.setattr(evaluator, "_prepare_store_response", _fake_prepare_store_response)
+    monkeypatch.setattr(evaluator, "_load_torch_runtime", _fake_load_torch_runtime)
+    monkeypatch.setattr(evaluator, "TorchKnowledgeStore", SimpleNamespace(load=lambda path: _DummyStore(window_metadata)))
+
+    args = SimpleNamespace(
+        mode="single_pass_gate",
+        model="test-model",
+        checkpoint=tmp_path / "checkpoint",
+        corpus=evaluator.DEFAULT_CORPUS,
+        output=output_path,
+        benchmark_fixture=evaluator.DEFAULT_BENCHMARK_FIXTURE,
+        duration_minutes=1.0,
+        max_cases=None,
+        max_new_tokens=120,
+        temperature=0.0,
+        top_k=3,
+        clear_cache_every=0,
+        no_chat_template=False,
+        device="cpu",
+    )
+
+    outcome = evaluator._run_strict_mode(
+        args=args,
+        metadata={"windowing": {"num_windows": len(window_metadata), "num_tokens": 0}},
+        store_path=store_path,
+        records=records,
+        cases=cases,
+    )
+
+    assert outcome.overall_pass is True

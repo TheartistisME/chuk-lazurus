@@ -218,4 +218,4 @@ def test_loads_window_metadata_and_routes_exact_clauses(tmp_path):
     assert store.route("1.4.2", tokenizer=tokenizer, method="auto") == 0
     assert store.route("Accessible", tokenizer=tokenizer, method="auto") == 0
     assert store.route("Residual current device (RCD)", tokenizer=tokenizer, method="auto") == 2
-    assert store.route_top_k("Accessible and Accessible, readily", tokenizer, k=1) == [0, 1]
+    assert store.route_top_k("Accessible and Accessible, readily", tokenizer, k=1) == [1, 0]

@@ -215,7 +215,7 @@ def test_exact_clause_id_and_normalized_title_routing(tmp_path):
     assert store.route("Residual current device (RCD)", tokenizer=tokenizer, method="auto") == 2
 
 
-def test_comparison_prompt_returns_all_exact_primary_windows(tmp_path):
+def test_comparison_prompt_returns_all_primary_windows(tmp_path):
     store = TorchKnowledgeStore.load(_write_store(tmp_path / "clause_store"))
     tokenizer = SimpleTokenizer(
         {
@@ -227,7 +227,7 @@ def test_comparison_prompt_returns_all_exact_primary_windows(tmp_path):
     )
 
     routed = store.route_top_k("What is the difference between Accessible and Accessible, readily?", tokenizer, k=1)
-    assert routed == [0, 1]
+    assert routed == [1, 0]
 
 
 def test_exact_routing_beats_tf_idf_ties(tmp_path):
@@ -273,3 +273,26 @@ def test_rcd_prompts_fall_through_to_stronger_clause_evidence(tmp_path):
         tokenizer=tokenizer,
         method="auto",
     ) == 5
+
+
+def test_clause_id_matches_ignore_ambiguous_titles_and_generic_aliases(tmp_path):
+    store = TorchKnowledgeStore.load(_write_store(tmp_path / "clause_store"))
+    tokenizer = SimpleTokenizer(
+        {
+            "rcd": 6,
+            "rcds": 6,
+            "basic": 10,
+            "protection": 11,
+            "sole": 12,
+            "means": 13,
+            "normal": 14,
+            "service": 15,
+            "recognized": 16,
+        }
+    )
+
+    assert store.route(
+        "Does clause 1.5.6.1 recognize RCDs as a sole means of basic protection in normal service?",
+        tokenizer=tokenizer,
+        method="auto",
+    ) == 4

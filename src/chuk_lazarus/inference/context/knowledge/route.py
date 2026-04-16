@@ -22,7 +22,7 @@ from ..research._stopwords import WORD_RE as _WORD_RE
 _CLAUSE_ID_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
 _CLAUSE_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _PAREN_CONTENT_RE = re.compile(r"\(([^)]*)\)")
-_GENERIC_SINGLE_TOKEN_TITLES = {"rcds", "protection", "live", "conductors", "general"}
+_GENERIC_SINGLE_TOKEN_TITLES = {"general", "live", "protection", "conductors"}
 
 # ── Keyword extraction helpers ───────────────────────────────────────
 
@@ -71,6 +71,10 @@ def _title_alias_token_sequences(title: str) -> list[tuple[str, ...]]:
     return candidates
 
 
+def _single_token_in_longer_alias(token: str, alias_map: dict[tuple[str, ...], set[str]]) -> bool:
+    return any(len(tokens) > 1 and token in tokens for tokens in alias_map)
+
+
 def extract_window_keywords(
     token_ids: list[int],
     tokenizer,
@@ -84,7 +88,7 @@ def extract_window_keywords(
 @dataclass(frozen=True)
 class _ClauseAliasPattern:
     tokens: tuple[str, ...]
-    clause_id: str
+    clause_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -92,7 +96,6 @@ class _ClauseMatch:
     clause_id: str
     start: int
     token_count: int
-    is_weak: bool
 
 
 @dataclass
@@ -106,7 +109,8 @@ class ClauseMetadataRouter:
 
     window_metadata: dict[int, dict[str, Any]]
     clause_id_to_primary_windows: dict[str, list[int]]
-    alias_patterns: list[_ClauseAliasPattern]
+    exact_title_patterns: list[_ClauseAliasPattern]
+    hint_patterns: list[_ClauseAliasPattern]
 
     @classmethod
     def from_window_metadata(
@@ -120,7 +124,8 @@ class ClauseMetadataRouter:
             clause_groups.setdefault(clause_id, []).append((int(window_id), metadata))
 
         clause_id_to_primary_windows: dict[str, list[int]] = {}
-        alias_patterns: list[_ClauseAliasPattern] = []
+        alias_map: dict[tuple[str, ...], set[str]] = {}
+        full_title_map: dict[tuple[str, ...], set[str]] = {}
 
         for clause_id, rows in clause_groups.items():
             rows.sort(
@@ -140,43 +145,84 @@ class ClauseMetadataRouter:
 
             representative = rows[0][1]
             title = str(representative.get("clause_title", "")).strip()
+            full_title = tuple(_normalize_clause_tokens(title))
+            if full_title:
+                full_title_map.setdefault(full_title, set()).add(clause_id)
             alias_tokens = _title_alias_token_sequences(title)
             for tokens in alias_tokens:
-                alias_patterns.append(
-                    _ClauseAliasPattern(
-                        tokens=tokens,
-                        clause_id=clause_id,
-                    )
-                )
+                if not tokens:
+                    continue
+                alias_map.setdefault(tokens, set()).add(clause_id)
 
-        alias_patterns.sort(key=lambda pattern: (-len(pattern.tokens), pattern.clause_id))
+        exact_title_map: dict[tuple[str, ...], tuple[str, ...]] = {
+            tokens: tuple(sorted(clause_ids))
+            for tokens, clause_ids in alias_map.items()
+            if len(tokens) >= 2 and len(clause_ids) == 1
+        }
+        for tokens, clause_ids in full_title_map.items():
+            if len(tokens) != 1 or len(clause_ids) != 1:
+                continue
+            token = tokens[0]
+            if token in _GENERIC_SINGLE_TOKEN_TITLES:
+                continue
+            if _single_token_in_longer_alias(token, alias_map):
+                continue
+            exact_title_map[tokens] = tuple(sorted(clause_ids))
+
+        exact_title_patterns = [
+            _ClauseAliasPattern(tokens=tokens, clause_ids=clause_ids)
+            for tokens, clause_ids in exact_title_map.items()
+        ]
+        exact_title_patterns.sort(key=lambda pattern: (-len(pattern.tokens), pattern.clause_ids))
+        hint_patterns = [
+            _ClauseAliasPattern(tokens=tokens, clause_ids=tuple(sorted(clause_ids)))
+            for tokens, clause_ids in alias_map.items()
+            if len(tokens) < 2 or len(clause_ids) != 1
+        ]
+        hint_patterns.sort(key=lambda pattern: (-len(pattern.tokens), pattern.clause_ids))
         return cls(
             window_metadata=window_metadata,
             clause_id_to_primary_windows=clause_id_to_primary_windows,
-            alias_patterns=alias_patterns,
+            exact_title_patterns=exact_title_patterns,
+            hint_patterns=hint_patterns,
         )
 
-    def collect_matches(self, query_text: str) -> tuple[list[_ClauseMatch], list[_ClauseMatch]]:
-        """Return strong and weak clause matches in query order."""
-
+    def collect_clause_id_matches(self, query_text: str) -> list[_ClauseMatch]:
         if not self.window_metadata:
-            return [], []
+            return []
 
-        strong_by_clause: dict[str, _ClauseMatch] = {}
-        weak_by_clause: dict[str, _ClauseMatch] = {}
+        matches_by_clause: dict[str, _ClauseMatch] = {}
 
         for clause_match in _CLAUSE_ID_RE.finditer(query_text):
             clause_id = clause_match.group(0)
             if clause_id in self.clause_id_to_primary_windows:
-                strong_by_clause[clause_id] = _ClauseMatch(
+                matches_by_clause[clause_id] = _ClauseMatch(
                     clause_id=clause_id,
                     start=clause_match.start(),
                     token_count=0,
-                    is_weak=False,
                 )
+        return sorted(
+            matches_by_clause.values(),
+            key=lambda item: (item.start, -item.token_count, item.clause_id),
+        )
 
+    def collect_exact_title_matches(self, query_text: str) -> list[_ClauseMatch]:
+        return self._collect_pattern_matches(query_text, self.exact_title_patterns)
+
+    def collect_hint_matches(self, query_text: str) -> list[_ClauseMatch]:
+        return self._collect_pattern_matches(query_text, self.hint_patterns)
+
+    def _collect_pattern_matches(
+        self,
+        query_text: str,
+        patterns: list[_ClauseAliasPattern],
+    ) -> list[_ClauseMatch]:
+        if not self.window_metadata:
+            return []
+
+        matches_by_clause: dict[str, _ClauseMatch] = {}
         query_tokens = _normalize_clause_tokens(query_text)
-        for pattern in self.alias_patterns:
+        for pattern in patterns:
             tokens = pattern.tokens
             token_count = len(tokens)
             if token_count == 0 or token_count > len(query_tokens):
@@ -186,34 +232,29 @@ class ClauseMetadataRouter:
                 if tuple(query_tokens[start : start + token_count]) != tokens:
                     continue
 
-                match = _ClauseMatch(
-                    clause_id=pattern.clause_id,
-                    start=start,
-                    token_count=token_count,
-                    is_weak=token_count == 1 and tokens[0] in _GENERIC_SINGLE_TOKEN_TITLES,
-                )
-                if match.is_weak:
-                    if pattern.clause_id not in strong_by_clause and pattern.clause_id not in weak_by_clause:
-                        weak_by_clause[pattern.clause_id] = match
-                else:
-                    existing = strong_by_clause.get(pattern.clause_id)
-                    if existing is None or (match.start, -match.token_count) < (existing.start, -existing.token_count):
-                        strong_by_clause[pattern.clause_id] = match
+                for clause_id in pattern.clause_ids:
+                    match = _ClauseMatch(
+                        clause_id=clause_id,
+                        start=start,
+                        token_count=token_count,
+                    )
+                    existing = matches_by_clause.get(clause_id)
+                    if existing is None or (match.start, -match.token_count) < (
+                        existing.start,
+                        -existing.token_count,
+                    ):
+                        matches_by_clause[clause_id] = match
                 break
 
-        strong_matches = sorted(
-            strong_by_clause.values(),
+        return sorted(
+            matches_by_clause.values(),
             key=lambda item: (item.start, -item.token_count, item.clause_id),
         )
-        weak_matches = sorted(
-            weak_by_clause.values(),
-            key=lambda item: (item.start, -item.token_count, item.clause_id),
-        )
-        return strong_matches, weak_matches
 
     def route_primary_windows(self, query_text: str) -> list[int]:
-        strong_matches, weak_matches = self.collect_matches(query_text)
-        matches = strong_matches or weak_matches
+        matches = self.collect_clause_id_matches(query_text)
+        if not matches:
+            matches = self.collect_exact_title_matches(query_text)
         window_ids: list[int] = []
         seen_window_ids: set[int] = set()
         for match in matches:
