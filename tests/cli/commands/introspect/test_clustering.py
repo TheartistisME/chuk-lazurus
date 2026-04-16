@@ -1,11 +1,47 @@
 """Tests for introspect clustering CLI commands."""
 
 import asyncio
+import sys
 from argparse import Namespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from .conftest import requires_sklearn
+
+
+@pytest.fixture(autouse=True)
+def mock_backend_dispatch_module():
+    """Expose the backend-dispatch shim under the mocked introspection package."""
+    module_name = "chuk_lazarus.introspection._backend_dispatch"
+    original_module = sys.modules.get(module_name)
+    intro_module = sys.modules.get("chuk_lazarus.introspection")
+    original_path = getattr(intro_module, "__path__", None) if intro_module is not None else None
+
+    if intro_module is not None:
+        intro_module.__path__ = []
+
+    backend_dispatch = ModuleType(module_name)
+    backend_dispatch.from_backend_tensor = MagicMock()
+    backend_dispatch.to_backend_tensor = MagicMock()
+    sys.modules[module_name] = backend_dispatch
+
+    yield
+
+    if intro_module is not None:
+        if original_path is None:
+            try:
+                delattr(intro_module, "__path__")
+            except AttributeError:
+                pass
+        else:
+            intro_module.__path__ = original_path
+
+    if original_module is not None:
+        sys.modules[module_name] = original_module
+    else:
+        sys.modules.pop(module_name, None)
 
 
 @requires_sklearn
@@ -129,6 +165,30 @@ class TestIntrospectActivationCluster:
 
         with pytest.raises(ValueError, match="must match"):
             asyncio.run(introspect_activation_cluster(args))
+
+    def test_cluster_threads_backend_and_device(self, cluster_args):
+        """Test backend/device flow into clustering config."""
+        from chuk_lazarus.cli.commands.introspect import introspect_activation_cluster
+
+        cluster_args.backend = "torch"
+        cluster_args.device = "cuda:1"
+
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "CLUSTERING"
+
+        with patch(
+            "chuk_lazarus.introspection.clustering.ClusteringService.analyze",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_analyze, patch(
+            "chuk_lazarus.introspection.clustering.ClusteringConfig",
+            side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+        ):
+            asyncio.run(introspect_activation_cluster(cluster_args))
+
+        config = mock_analyze.call_args.args[0]
+        assert config.backend == "torch"
+        assert config.device == "cuda:1"
 
 
 class TestClusteringConfig:

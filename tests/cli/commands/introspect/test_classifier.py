@@ -1,12 +1,59 @@
 """Tests for introspect classifier CLI commands."""
 
 import json
+import sys
 import tempfile
 from argparse import Namespace
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_backend_dispatch_module():
+    """Expose the backend-dispatch shim under the mocked introspection package."""
+    module_name = "chuk_lazarus.introspection._backend_dispatch"
+    original_module = sys.modules.get(module_name)
+    logit_module_name = "chuk_lazarus.introspection.logit_lens"
+    original_logit_module = sys.modules.get(logit_module_name)
+    intro_module = sys.modules.get("chuk_lazarus.introspection")
+    original_path = getattr(intro_module, "__path__", None) if intro_module is not None else None
+
+    if intro_module is not None:
+        intro_module.__path__ = []
+
+    backend_dispatch = ModuleType(module_name)
+    backend_dispatch.from_backend_tensor = MagicMock()
+    backend_dispatch.to_backend_tensor = MagicMock()
+    sys.modules[module_name] = backend_dispatch
+
+    logit_lens = ModuleType(logit_module_name)
+    logit_lens.LogitLensService = MagicMock()
+    logit_lens.LogitLensConfig = MagicMock()
+    sys.modules[logit_module_name] = logit_lens
+
+    yield
+
+    if intro_module is not None:
+        if original_path is None:
+            try:
+                delattr(intro_module, "__path__")
+            except AttributeError:
+                pass
+        else:
+            intro_module.__path__ = original_path
+
+    if original_module is not None:
+        sys.modules[module_name] = original_module
+    else:
+        sys.modules.pop(module_name, None)
+
+    if original_logit_module is not None:
+        sys.modules[logit_module_name] = original_logit_module
+    else:
+        sys.modules.pop(logit_module_name, None)
 
 
 class TestIntrospectClassifier:
@@ -22,6 +69,8 @@ class TestIntrospectClassifier:
             categories_file=None,
             layers=None,
             all_layers=False,
+            backend=None,
+            device=None,
             output=None,
         )
 
@@ -191,6 +240,31 @@ class TestIntrospectClassifier:
         mock_result.save.assert_called_once_with(output_file)
 
     @pytest.mark.asyncio
+    async def test_classifier_threads_backend_and_device(self, classifier_args, capsys):
+        """Test backend/device flow into classifier config."""
+        from chuk_lazarus.cli.commands.introspect.classifier import (
+            introspect_classifier,
+        )
+
+        classifier_args.backend = "torch"
+        classifier_args.device = "cuda:0"
+
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "CLASSIFIER RESULTS\nAccuracy: 0.95"
+
+        with patch(
+            "chuk_lazarus.introspection.classifier.ClassifierService.train_and_evaluate",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_train:
+            await introspect_classifier(classifier_args)
+
+            call_args = mock_train.call_args[0]
+            config = call_args[0]
+            assert config.backend == "torch"
+            assert config.device == "cuda:0"
+
+    @pytest.mark.asyncio
     async def test_classifier_invalid_class_format_error(self, capsys):
         """Test classifier raises error for invalid --classes format."""
         from chuk_lazarus.cli.commands.introspect.classifier import (
@@ -281,6 +355,9 @@ class TestIntrospectLogitLens:
             "chuk_lazarus.introspection.logit_lens.LogitLensService.analyze",
             new_callable=AsyncMock,
             return_value=mock_result,
+        ), patch(
+            "chuk_lazarus.introspection.logit_lens.LogitLensConfig",
+            side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
         ):
             await introspect_logit_lens(logit_lens_args)
 
@@ -303,7 +380,10 @@ class TestIntrospectLogitLens:
             "chuk_lazarus.introspection.logit_lens.LogitLensService.analyze",
             new_callable=AsyncMock,
             return_value=mock_result,
-        ) as mock_analyze:
+        ) as mock_analyze, patch(
+            "chuk_lazarus.introspection.logit_lens.LogitLensConfig",
+            side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+        ):
             await introspect_logit_lens(logit_lens_args)
 
             call_args = mock_analyze.call_args[0]
@@ -326,7 +406,10 @@ class TestIntrospectLogitLens:
             "chuk_lazarus.introspection.logit_lens.LogitLensService.analyze",
             new_callable=AsyncMock,
             return_value=mock_result,
-        ) as mock_analyze:
+        ) as mock_analyze, patch(
+            "chuk_lazarus.introspection.logit_lens.LogitLensConfig",
+            side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+        ):
             await introspect_logit_lens(logit_lens_args)
 
             call_args = mock_analyze.call_args[0]
@@ -357,7 +440,10 @@ class TestIntrospectLogitLens:
             "chuk_lazarus.introspection.logit_lens.LogitLensService.analyze",
             new_callable=AsyncMock,
             return_value=mock_result,
-        ) as mock_analyze:
+        ) as mock_analyze, patch(
+            "chuk_lazarus.introspection.logit_lens.LogitLensConfig",
+            side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+        ):
             await introspect_logit_lens(args)
 
             call_args = mock_analyze.call_args[0]

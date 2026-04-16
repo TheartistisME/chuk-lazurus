@@ -88,6 +88,8 @@ async def introspect_activation_cluster(args: Namespace) -> None:
         grid_width=DisplayDefaults.ASCII_GRID_WIDTH,
         grid_height=DisplayDefaults.ASCII_GRID_HEIGHT,
         save_plot=extract_arg(args, "save_plot"),
+        backend=extract_arg(args, "backend"),
+        device=extract_arg(args, "device"),
     )
 
     # Run clustering - all logic is in the service

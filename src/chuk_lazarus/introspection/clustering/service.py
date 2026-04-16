@@ -13,6 +13,59 @@ if TYPE_CHECKING:
     import numpy as np
 
 
+def _load_pipeline(model_id: str, *, backend: str | None = None, device: str | None = None):
+    from ...inference import UnifiedPipeline, UnifiedPipelineConfig
+
+    return UnifiedPipeline.from_pretrained(
+        model_id,
+        pipeline_config=UnifiedPipelineConfig(
+            backend_name=backend,
+            device=device,
+        ),
+        verbose=False,
+    )
+
+
+def _get_num_layers(model: Any, config: Any) -> int:
+    if hasattr(config, "num_hidden_layers"):
+        return int(config.num_hidden_layers)
+    if hasattr(config, "num_layers"):
+        return int(config.num_layers)
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return len(model.model.layers)
+    if hasattr(model, "layers"):
+        return len(model.layers)
+    return 32
+
+
+def _normalize_layers(layers: list[int], *, num_layers: int) -> list[int]:
+    normalized: list[int] = []
+    max_index = max(num_layers - 1, 0)
+    for layer in layers:
+        clamped = max(0, min(int(layer), max_index))
+        if clamped not in normalized:
+            normalized.append(clamped)
+    return normalized
+
+
+def _extract_hidden_vector(runtime: Any, prompt: str, *, layer: int):
+    import numpy as np
+
+    residual_state = runtime.extract_residual_state(prompt, layer_index=layer)
+    tensor = residual_state.tensor
+
+    if isinstance(tensor, np.ndarray):
+        array = tensor
+    elif type(tensor).__module__.startswith("torch"):
+        array = tensor.detach().cpu().numpy()
+    else:
+        array = np.asarray(tensor)
+
+    if array.ndim > 1:
+        array = array[0]
+    return array.astype(np.float32, copy=False).reshape(-1)
+
+
 class ClusteringConfig(BaseModel):
     """Configuration for clustering analysis."""
 
@@ -26,6 +79,8 @@ class ClusteringConfig(BaseModel):
     grid_width: int = Field(default=60, description="ASCII grid width")
     grid_height: int = Field(default=20, description="ASCII grid height")
     save_plot: str | None = Field(default=None, description="Path to save plot")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Runtime device override")
 
 
 class ClusteringResult(BaseModel):
@@ -84,59 +139,26 @@ class ClusteringService:
         Projects hidden states to 2D to see if different prompt types
         cluster separately.
         """
-        import mlx.core as mx
-        import mlx.nn as nn
         import numpy as np
         from sklearn.decomposition import PCA
 
-        from ...models_v2 import load_model
-        from ..accessor import ModelAccessor
-
-        # Load model using framework loader
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
-        model_config = load_result.config
-
-        num_layers = getattr(model_config, "num_hidden_layers", 32)
-        accessor = ModelAccessor(model=model, config=model_config)
+        pipeline = _load_pipeline(
+            config.model,
+            backend=config.backend,
+            device=config.device,
+        )
+        num_layers = _get_num_layers(pipeline.model, pipeline.config)
 
         # Determine target layers
         if config.target_layers:
-            target_layers = config.target_layers
+            target_layers = _normalize_layers(config.target_layers, num_layers=num_layers)
         elif config.layer_depth_ratio:
-            target_layers = [int(num_layers * config.layer_depth_ratio)]
+            target_layers = _normalize_layers(
+                [int(num_layers * config.layer_depth_ratio)],
+                num_layers=num_layers,
+            )
         else:
-            target_layers = [int(num_layers * 0.5)]
-
-        def get_hidden_at_layer(prompt: str, layer: int) -> np.ndarray:
-            """Get hidden state at specific layer."""
-            input_ids = mx.array(tokenizer.encode(prompt))[None, :]
-            layers = accessor.layers
-            embed = accessor.embed
-
-            h = embed(input_ids)
-            scale = accessor.embedding_scale
-            if scale:
-                h = h * scale
-
-            seq_len = input_ids.shape[1]
-            mask = nn.MultiHeadAttention.create_additive_causal_mask(seq_len).astype(h.dtype)
-
-            for idx, lyr in enumerate(layers):
-                try:
-                    out = lyr(h, mask=mask)
-                except TypeError:
-                    out = lyr(h)
-                h = (
-                    out.hidden_states
-                    if hasattr(out, "hidden_states")
-                    else (out[0] if isinstance(out, tuple) else out)
-                )
-                if idx == layer:
-                    return np.array(h[0, -1, :].tolist())
-
-            return np.array(h[0, -1, :].tolist())
+            target_layers = _normalize_layers([int(num_layers * 0.5)], num_layers=num_layers)
 
         # Get unique labels
         unique_labels = list(dict.fromkeys(config.labels))
@@ -146,7 +168,7 @@ class ClusteringService:
 
         for prompt in config.prompts:
             for target_layer in target_layers:
-                h = get_hidden_at_layer(prompt, target_layer)
+                h = _extract_hidden_vector(pipeline.runtime, prompt, layer=target_layer)
                 activations_by_layer[target_layer].append(h)
 
         # Create symbols for each label

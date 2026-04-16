@@ -87,6 +87,8 @@ async def introspect_classifier(args: Namespace) -> None:
         max_iter=ProbeDefaults.LOGISTIC_MAX_ITER,
         random_seed=AnalysisDefaults.RANDOM_SEED,
         bar_width=DisplayDefaults.PROBABILITY_BAR_WIDTH,
+        backend=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
     )
 
     # Run classifier training - all logic is in the service

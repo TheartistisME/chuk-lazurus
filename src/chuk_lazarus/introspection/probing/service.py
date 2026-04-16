@@ -14,6 +14,59 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
+def _load_pipeline(model_id: str, *, backend: str | None = None, device: str | None = None):
+    from ...inference import UnifiedPipeline, UnifiedPipelineConfig
+
+    return UnifiedPipeline.from_pretrained(
+        model_id,
+        pipeline_config=UnifiedPipelineConfig(
+            backend_name=backend,
+            device=device,
+        ),
+        verbose=False,
+    )
+
+
+def _get_num_layers(model: Any, config: Any) -> int:
+    if hasattr(config, "num_hidden_layers"):
+        return int(config.num_hidden_layers)
+    if hasattr(config, "num_layers"):
+        return int(config.num_layers)
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return len(model.model.layers)
+    if hasattr(model, "layers"):
+        return len(model.layers)
+    return 32
+
+
+def _normalize_layers(layers: list[int], *, num_layers: int) -> list[int]:
+    normalized: list[int] = []
+    max_index = max(num_layers - 1, 0)
+    for layer in layers:
+        clamped = max(0, min(int(layer), max_index))
+        if clamped not in normalized:
+            normalized.append(clamped)
+    return normalized
+
+
+def _extract_hidden_vector(runtime: Any, prompt: str, *, layer: int):
+    import numpy as np
+
+    residual_state = runtime.extract_residual_state(prompt, layer_index=layer)
+    tensor = residual_state.tensor
+
+    if isinstance(tensor, np.ndarray):
+        array = tensor
+    elif type(tensor).__module__.startswith("torch"):
+        array = tensor.detach().cpu().numpy()
+    else:
+        array = np.asarray(tensor)
+
+    if array.ndim > 1:
+        array = array[0]
+    return array.astype(np.float32, copy=False).reshape(-1)
+
+
 class MetacognitiveConfig(BaseModel):
     """Configuration for metacognitive analysis."""
 
@@ -207,6 +260,8 @@ class UncertaintyConfig(BaseModel):
     )
     layer: int | None = Field(default=None, description="Target layer")
     layer_depth_ratio: float | None = Field(default=None, description="Layer depth ratio")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Runtime device override")
 
 
 class UncertaintyResult(BaseModel):
@@ -261,53 +316,25 @@ class UncertaintyService:
         Uses hidden state distance to "compute center" vs "refusal center"
         to predict whether model is confident about an answer.
         """
-        import mlx.core as mx
         import numpy as np
 
-        from ...models_v2 import load_model
-        from ..accessor import ModelAccessor
-
-        # Load model using framework loader
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
-        model_config = load_result.config
-
-        # Use ModelAccessor for unified access
-        accessor = ModelAccessor(model=model, config=model_config)
-        num_layers = accessor.num_layers
+        pipeline = _load_pipeline(
+            config.model,
+            backend=config.backend,
+            device=config.device,
+        )
+        num_layers = _get_num_layers(pipeline.model, pipeline.config)
 
         # Determine detection layer
         if config.layer is not None:
-            detection_layer = config.layer
+            detection_layer = _normalize_layers([config.layer], num_layers=num_layers)[0]
         elif config.layer_depth_ratio is not None:
-            detection_layer = int(num_layers * config.layer_depth_ratio)
+            detection_layer = _normalize_layers(
+                [int(num_layers * config.layer_depth_ratio)],
+                num_layers=num_layers,
+            )[0]
         else:
-            detection_layer = int(num_layers * 0.7)
-
-        def get_hidden_state(prompt: str) -> np.ndarray:
-            """Get hidden state at detection layer."""
-            input_ids = mx.array(tokenizer.encode(prompt))[None, :]
-            h = accessor.embed(input_ids)
-
-            seq_len = input_ids.shape[1]
-            mask = accessor.create_causal_mask(seq_len, h.dtype)
-
-            for idx, lyr in enumerate(accessor.layers):
-                try:
-                    out = lyr(h, mask=mask)
-                except TypeError:
-                    out = lyr(h)
-                h = (
-                    out.hidden_states
-                    if hasattr(out, "hidden_states")
-                    else (out[0] if isinstance(out, tuple) else out)
-                )
-
-                if idx == detection_layer:
-                    return np.array(h[0, -1, :].tolist())
-
-            return np.array(h[0, -1, :].tolist())
+            detection_layer = _normalize_layers([int(num_layers * 0.7)], num_layers=num_layers)[0]
 
         # Default calibration prompts
         working_prompts = config.working_prompts or [
@@ -326,8 +353,12 @@ class UncertaintyService:
         ]
 
         # Calibrate
-        working_hiddens = [get_hidden_state(p) for p in working_prompts]
-        broken_hiddens = [get_hidden_state(p) for p in broken_prompts]
+        working_hiddens = [
+            _extract_hidden_vector(pipeline.runtime, p, layer=detection_layer) for p in working_prompts
+        ]
+        broken_hiddens = [
+            _extract_hidden_vector(pipeline.runtime, p, layer=detection_layer) for p in broken_prompts
+        ]
 
         compute_center = np.mean(working_hiddens, axis=0)
         refusal_center = np.mean(broken_hiddens, axis=0)
@@ -340,7 +371,7 @@ class UncertaintyService:
         uncertain_count = 0
 
         for prompt in config.prompts:
-            h = get_hidden_state(prompt)
+            h = _extract_hidden_vector(pipeline.runtime, prompt, layer=detection_layer)
 
             dist_compute = float(np.linalg.norm(h - compute_center))
             dist_refusal = float(np.linalg.norm(h - refusal_center))
@@ -389,6 +420,8 @@ class ProbeConfig(BaseModel):
     logistic_max_iter: int = Field(default=1000, description="Max iterations")
     random_seed: int = Field(default=42, description="Random seed")
     cross_val_folds: int = Field(default=5, description="Cross-validation folds")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Runtime device override")
 
 
 class ProbeResult(BaseModel):
@@ -447,71 +480,46 @@ class ProbeService:
         Uses logistic regression to find which layers can distinguish
         between two types of prompts.
         """
-        import mlx.core as mx
         import numpy as np
         from sklearn.linear_model import LogisticRegression
         from sklearn.metrics import f1_score, roc_auc_score
         from sklearn.model_selection import cross_val_score
 
-        from ...models_v2 import load_model
-        from ..accessor import ModelAccessor
-
-        # Load model using framework loader
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
-        model_config = load_result.config
-
-        # Use ModelAccessor for unified access
-        accessor = ModelAccessor(model=model, config=model_config)
-        num_layers = accessor.num_layers
-
-        def get_all_hidden_states(prompt: str) -> list[np.ndarray]:
-            """Get hidden state at each layer."""
-            input_ids = mx.array(tokenizer.encode(prompt))[None, :]
-            h = accessor.embed(input_ids)
-
-            seq_len = input_ids.shape[1]
-            mask = accessor.create_causal_mask(seq_len, h.dtype)
-
-            hidden_states = []
-            for idx, lyr in enumerate(accessor.layers):
-                try:
-                    out = lyr(h, mask=mask)
-                except TypeError:
-                    out = lyr(h)
-                h = (
-                    out.hidden_states
-                    if hasattr(out, "hidden_states")
-                    else (out[0] if isinstance(out, tuple) else out)
-                )
-                hidden_states.append(np.array(h[0, -1, :].tolist()))
-
-            return hidden_states
+        pipeline = _load_pipeline(
+            config.model,
+            backend=config.backend,
+            device=config.device,
+        )
+        num_layers = _get_num_layers(pipeline.model, pipeline.config)
 
         # Determine which layers to probe
         if config.all_layers:
             target_layers = list(range(num_layers))
         elif config.layers:
-            target_layers = config.layers
+            target_layers = _normalize_layers(config.layers, num_layers=num_layers)
         else:
             # Default: sample 8 evenly spaced layers
-            target_layers = [int(i * num_layers / 8) for i in range(8)]
+            target_layers = _normalize_layers(
+                [int(i * num_layers / 8) for i in range(8)],
+                num_layers=num_layers,
+            )
 
-        # Collect activations at all layers
-        all_activations = {layer: [] for layer in range(num_layers)}
+        # Collect activations at the layers we actually probe
+        all_activations = {layer: [] for layer in target_layers}
         all_labels = []
 
         for prompt in config.positive_prompts:
-            hiddens = get_all_hidden_states(prompt)
-            for layer, h in enumerate(hiddens):
-                all_activations[layer].append(h)
+            for layer in target_layers:
+                all_activations[layer].append(
+                    _extract_hidden_vector(pipeline.runtime, prompt, layer=layer)
+                )
             all_labels.append(1)
 
         for prompt in config.negative_prompts:
-            hiddens = get_all_hidden_states(prompt)
-            for layer, h in enumerate(hiddens):
-                all_activations[layer].append(h)
+            for layer in target_layers:
+                all_activations[layer].append(
+                    _extract_hidden_vector(pipeline.runtime, prompt, layer=layer)
+                )
             all_labels.append(0)
 
         y = np.array(all_labels)

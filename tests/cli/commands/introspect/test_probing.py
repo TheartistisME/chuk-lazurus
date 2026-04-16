@@ -1,9 +1,45 @@
 """Tests for introspect probing CLI commands."""
 
 import asyncio
+import sys
 from argparse import Namespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_backend_dispatch_module():
+    """Expose the backend-dispatch shim under the mocked introspection package."""
+    module_name = "chuk_lazarus.introspection._backend_dispatch"
+    original_module = sys.modules.get(module_name)
+    intro_module = sys.modules.get("chuk_lazarus.introspection")
+    original_path = getattr(intro_module, "__path__", None) if intro_module is not None else None
+
+    if intro_module is not None:
+        intro_module.__path__ = []
+
+    backend_dispatch = ModuleType(module_name)
+    backend_dispatch.from_backend_tensor = MagicMock()
+    backend_dispatch.to_backend_tensor = MagicMock()
+    sys.modules[module_name] = backend_dispatch
+
+    yield
+
+    if intro_module is not None:
+        if original_path is None:
+            try:
+                delattr(intro_module, "__path__")
+            except AttributeError:
+                pass
+        else:
+            intro_module.__path__ = original_path
+
+    if original_module is not None:
+        sys.modules[module_name] = original_module
+    else:
+        sys.modules.pop(module_name, None)
 
 
 class TestIntrospectMetacognitive:
@@ -70,8 +106,13 @@ class TestIntrospectUncertainty:
         return Namespace(
             model="test-model",
             prompt="What is 2+2?",
+            prompts=None,
             layer=None,
             calibration_file=None,
+            working=None,
+            broken=None,
+            backend=None,
+            device=None,
             output=None,
         )
 
@@ -96,6 +137,37 @@ class TestIntrospectUncertainty:
         captured = capsys.readouterr()
         assert captured.out != "" or captured.err != ""
 
+    def test_uncertainty_threads_backend_and_uses_prompts_arg(self, uncertainty_args):
+        """Test uncertainty config uses prompts/backend/device from real CLI args."""
+        from chuk_lazarus.cli.commands.introspect.probing import introspect_uncertainty
+
+        uncertainty_args.prompt = None
+        uncertainty_args.prompts = "working|broken"
+        uncertainty_args.working = "1+1 = |2+2 = "
+        uncertainty_args.broken = "1+1 =|2+2 ="
+        uncertainty_args.backend = "torch"
+        uncertainty_args.device = "cuda:0"
+
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "UNCERTAINTY"
+
+        with patch(
+            "chuk_lazarus.introspection.probing.UncertaintyService.analyze",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_analyze, patch(
+            "chuk_lazarus.introspection.probing.UncertaintyConfig",
+            side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+        ):
+            asyncio.run(introspect_uncertainty(uncertainty_args))
+
+        config = mock_analyze.call_args.args[0]
+        assert config.prompts == ["working", "broken"]
+        assert config.working_prompts == ["1+1 = ", "2+2 = "]
+        assert config.broken_prompts == ["1+1 =", "2+2 ="]
+        assert config.backend == "torch"
+        assert config.device == "cuda:0"
+
 
 class TestIntrospectProbe:
     """Tests for introspect_probe command."""
@@ -107,9 +179,18 @@ class TestIntrospectProbe:
             model="test-model",
             positive="good|positive|great",
             negative="bad|negative|terrible",
+            class_a=None,
+            class_b=None,
+            label_a=None,
+            label_b=None,
+            positive_label=None,
+            negative_label=None,
+            layer=None,
             layers=None,
             all_layers=False,
             probe_file=None,
+            backend=None,
+            device=None,
             output=None,
         )
 
@@ -138,6 +219,42 @@ class TestIntrospectProbe:
 
         with pytest.raises(ValueError, match="Probing requires"):
             asyncio.run(introspect_probe(args))
+
+    def test_probe_supports_parser_class_args_and_backend(self, probe_args):
+        """Test probe config accepts parser-style args and threads backend/device."""
+        from chuk_lazarus.cli.commands.introspect.probing import introspect_probe
+
+        probe_args.positive = None
+        probe_args.negative = None
+        probe_args.class_a = "math1|math2"
+        probe_args.class_b = "lang1|lang2"
+        probe_args.label_a = "math"
+        probe_args.label_b = "lang"
+        probe_args.layer = 7
+        probe_args.backend = "torch"
+        probe_args.device = "cuda:2"
+
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "PROBE"
+
+        with patch(
+            "chuk_lazarus.introspection.probing.ProbeService.train_and_evaluate",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_train, patch(
+            "chuk_lazarus.introspection.probing.ProbeConfig",
+            side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+        ):
+            asyncio.run(introspect_probe(probe_args))
+
+        config = mock_train.call_args.args[0]
+        assert config.positive_prompts == ["math1", "math2"]
+        assert config.negative_prompts == ["lang1", "lang2"]
+        assert config.positive_label == "math"
+        assert config.negative_label == "lang"
+        assert config.layers == [7]
+        assert config.backend == "torch"
+        assert config.device == "cuda:2"
 
 
 class TestProbingUtils:
