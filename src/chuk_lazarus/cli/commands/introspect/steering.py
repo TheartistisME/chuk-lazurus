@@ -30,6 +30,8 @@ async def _async_introspect_steer(args: Namespace) -> None:
     from ....introspection.steering import SteeringService
 
     config = SteeringConfig.from_args(args)
+    backend = getattr(args, "backend", None)
+    device = getattr(args, "device", None)
 
     # Mode 1: Extract direction from contrastive prompts
     if config.extract:
@@ -46,6 +48,8 @@ async def _async_introspect_steer(args: Namespace) -> None:
             positive_prompt=config.positive,
             negative_prompt=config.negative,
             layer=config.layer,
+            backend=backend,
+            device=device,
         )
 
         # Display result
@@ -72,7 +76,11 @@ async def _async_introspect_steer(args: Namespace) -> None:
     print(f"Loading model: {config.model}")
 
     # Load direction - from file, neuron, or contrastive prompts
-    direction, layer, metadata = await _get_direction(config)
+    direction, layer, metadata = await _get_direction(
+        config,
+        backend=backend,
+        device=device,
+    )
 
     # Parse prompts
     prompts = parse_prompts(config.prompts)
@@ -91,6 +99,8 @@ async def _async_introspect_steer(args: Namespace) -> None:
                 coefficients=coefficients,
                 max_tokens=config.max_tokens,
                 temperature=config.temperature,
+                backend=backend,
+                device=device,
             )
 
             print(f"\n{'=' * 70}")
@@ -119,6 +129,8 @@ async def _async_introspect_steer(args: Namespace) -> None:
             name=config.name,
             positive_label=config.positive_label,
             negative_label=config.negative_label,
+            backend=backend,
+            device=device,
         )
 
         for r in results:
@@ -146,20 +158,28 @@ async def _async_introspect_steer(args: Namespace) -> None:
             print(f"\nResults saved to: {config.output}")
 
 
-async def _get_direction(config: SteeringConfig) -> tuple:
+async def _get_direction(
+    config: SteeringConfig,
+    *,
+    backend: str | None = None,
+    device: str | None = None,
+) -> tuple:
     """Get direction from config (file, neuron, or on-the-fly extraction).
 
     Returns:
         Tuple of (direction, layer, metadata).
     """
-    from ....introspection.steering import ActivationSteering, SteeringService
+    from ....introspection.steering import SteeringService
 
     neuron_idx = config.neuron
     if neuron_idx is not None:
         # Create one-hot direction for single neuron steering
-        steerer = ActivationSteering.from_pretrained(config.model)
-        layer = config.layer or steerer.num_layers // 2
-        hidden_size = steerer.model.config.hidden_size
+        num_layers, hidden_size = SteeringService.resolve_model_shape(
+            config.model,
+            backend=backend,
+            device=device,
+        )
+        layer = config.layer or num_layers // 2
         direction = SteeringService.create_neuron_direction(hidden_size, neuron_idx)
         print(f"\nSteering neuron {neuron_idx} at layer {layer}")
         print(f"  Hidden size: {hidden_size}")
@@ -195,6 +215,8 @@ async def _get_direction(config: SteeringConfig) -> tuple:
             positive_prompt=config.positive,
             negative_prompt=config.negative,
             layer=config.layer,
+            backend=backend,
+            device=device,
         )
         print(f"Using on-the-fly direction from layer {result.layer}")
         return result.direction, result.layer, {}

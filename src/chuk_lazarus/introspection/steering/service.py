@@ -9,13 +9,117 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx  # EWS-6 lazy
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..hooks import CaptureConfig, ModelHooks, PositionSelection
 from .config import SteeringConfig
 from .core import ActivationSteering
+
+
+def _load_pipeline(model_id: str, *, backend: str | None = None, device: str | None = None):
+    from ...inference import UnifiedPipeline, UnifiedPipelineConfig
+
+    return UnifiedPipeline.from_pretrained(
+        model_id,
+        pipeline_config=UnifiedPipelineConfig(
+            backend_name=backend,
+            device=device,
+        ),
+        verbose=False,
+    )
+
+
+def _get_num_layers(model: Any, config: Any) -> int:
+    if hasattr(config, "num_hidden_layers"):
+        return int(config.num_hidden_layers)
+    if hasattr(config, "num_layers"):
+        return int(config.num_layers)
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return len(model.model.layers)
+    if hasattr(model, "layers"):
+        return len(model.layers)
+    return 32
+
+
+def _get_hidden_size(model: Any, config: Any) -> int:
+    if hasattr(config, "hidden_size"):
+        return int(config.hidden_size)
+    if hasattr(config, "d_model"):
+        return int(config.d_model)
+    if hasattr(model, "config") and hasattr(model.config, "hidden_size"):
+        return int(model.config.hidden_size)
+    if hasattr(model, "model") and hasattr(model.model, "hidden_size"):
+        return int(model.model.hidden_size)
+    return 4096
+
+
+def _runtime_backend_name(runtime: Any) -> str | None:
+    backend = getattr(runtime, "backend", None)
+    if backend is None:
+        return None
+    name = str(backend).lower()
+    if name == "cuda":
+        return "torch"
+    if name == "mlx":
+        return "mlx"
+    return name
+
+
+def _vector_to_numpy(vector: Any) -> np.ndarray:
+    if isinstance(vector, np.ndarray):
+        array = vector
+    elif type(vector).__module__.startswith("torch"):
+        array = vector.detach().cpu().numpy()
+    else:
+        array = np.asarray(vector)
+    return array.astype(np.float32, copy=False).reshape(-1)
+
+
+def _extract_hidden_vector(runtime: Any, prompt: str, *, layer: int) -> np.ndarray:
+    residual_state = runtime.extract_residual_state(prompt, layer_index=layer)
+    tensor = residual_state.tensor
+    array = _vector_to_numpy(tensor)
+    return array.reshape(-1)
+
+
+def _normalize_direction(direction: np.ndarray) -> np.ndarray:
+    direction = np.asarray(direction, dtype=np.float32).reshape(-1)
+    norm = np.linalg.norm(direction)
+    return direction / (norm + 1e-8)
+
+
+def _steer_residual_state(base_state: Any, direction: np.ndarray, coefficient: float):
+    from ...inference.backends.types import ResidualState
+
+    base_tensor = base_state.tensor
+    if not type(base_tensor).__module__.startswith("torch"):
+        raise RuntimeError("Residual steering injection currently requires the torch runtime.")
+
+    import torch
+
+    base_array = _vector_to_numpy(base_tensor)
+    base_norm = float(np.sqrt(np.mean(base_array * base_array)))
+    steering = _normalize_direction(direction) * (coefficient * base_norm)
+
+    update = torch.from_numpy(steering)
+    steered_tensor = base_tensor.detach().cpu().clone()
+    update = update.to(dtype=steered_tensor.dtype)
+
+    if steered_tensor.ndim == 1:
+        steered_tensor = steered_tensor + update
+    else:
+        steered_tensor = steered_tensor.clone()
+        steered_tensor[..., :] = steered_tensor[..., :] + update
+
+    return ResidualState(
+        backend=base_state.backend,
+        layer_index=base_state.layer_index,
+        tensor=steered_tensor,
+        sequence_length=base_state.sequence_length,
+        hidden_size=base_state.hidden_size,
+        dtype=base_state.dtype,
+        device=base_state.device,
+    )
 
 
 class SteeringServiceConfig(BaseModel):
@@ -82,6 +186,8 @@ class SteeringService:
         positive_prompt: str,
         negative_prompt: str,
         layer: int | None = None,
+        backend: str | None = None,
+        device: str | None = None,
     ) -> DirectionExtractionResult:
         """Extract steering direction from contrastive prompts.
 
@@ -94,49 +200,24 @@ class SteeringService:
         Returns:
             DirectionExtractionResult with direction and metadata.
         """
-        steerer = ActivationSteering.from_pretrained(model)
+        pipeline = _load_pipeline(model, backend=backend, device=device)
+        num_layers = _get_num_layers(pipeline.model, pipeline.config)
 
         # Determine layer
-        target_layer = layer if layer is not None else steerer.num_layers // 2
+        target_layer = layer if layer is not None else num_layers // 2
 
-        # Get positive activation
-        hooks = ModelHooks(steerer.model)
-        hooks.configure(
-            CaptureConfig(
-                layers=[target_layer],
-                capture_hidden_states=True,
-                positions=PositionSelection.LAST,
-            )
-        )
-        input_ids = mx.array(steerer.tokenizer.encode(positive_prompt))[None, :]
-        hooks.forward(input_ids)
-        h_positive = hooks.state.hidden_states[target_layer][0, -1, :]
-
-        # Get negative activation
-        hooks = ModelHooks(steerer.model)
-        hooks.configure(
-            CaptureConfig(
-                layers=[target_layer],
-                capture_hidden_states=True,
-                positions=PositionSelection.LAST,
-            )
-        )
-        input_ids = mx.array(steerer.tokenizer.encode(negative_prompt))[None, :]
-        hooks.forward(input_ids)
-        h_negative = hooks.state.hidden_states[target_layer][0, -1, :]
+        h_positive = _extract_hidden_vector(pipeline.runtime, positive_prompt, layer=target_layer)
+        h_negative = _extract_hidden_vector(pipeline.runtime, negative_prompt, layer=target_layer)
 
         # Compute direction: positive - negative
         direction = h_positive - h_negative
-        direction_np = np.array(direction.tolist(), dtype=np.float32)
+        direction_np = np.asarray(direction, dtype=np.float32)
 
         # Compute statistics
-        norm = float(mx.sqrt(mx.sum(direction * direction)))
+        norm = float(np.linalg.norm(direction_np))
         cos_sim = float(
-            mx.sum(h_positive * h_negative)
-            / (
-                mx.sqrt(mx.sum(h_positive * h_positive)) * mx.sqrt(mx.sum(h_negative * h_negative))
-                + 1e-8
-            )
+            np.dot(h_positive, h_negative)
+            / ((np.linalg.norm(h_positive) * np.linalg.norm(h_negative)) + 1e-8)
         )
 
         return DirectionExtractionResult(
@@ -216,6 +297,21 @@ class SteeringService:
             raise ValueError(f"Unsupported direction format: {path.suffix}")
 
     @classmethod
+    def resolve_model_shape(
+        cls,
+        model: str,
+        *,
+        backend: str | None = None,
+        device: str | None = None,
+    ) -> tuple[int, int]:
+        """Get ``(num_layers, hidden_size)`` for a model via UnifiedPipeline."""
+        pipeline = _load_pipeline(model, backend=backend, device=device)
+        return (
+            _get_num_layers(pipeline.model, pipeline.config),
+            _get_hidden_size(pipeline.model, pipeline.config),
+        )
+
+    @classmethod
     async def generate_with_steering(
         cls,
         model: str,
@@ -228,6 +324,8 @@ class SteeringService:
         name: str = "custom",
         positive_label: str = "positive",
         negative_label: str = "negative",
+        backend: str | None = None,
+        device: str | None = None,
     ) -> list[SteeringGenerationResult]:
         """Generate text with steering applied.
 
@@ -246,9 +344,47 @@ class SteeringService:
         Returns:
             List of generation results.
         """
-        steerer = ActivationSteering.from_pretrained(model)
+        pipeline = _load_pipeline(model, backend=backend, device=device)
+        steering_config = SteeringConfig(
+            layers=[layer],
+            coefficient=coefficient,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+        )
+        backend_name = _runtime_backend_name(pipeline.runtime)
 
-        # Add direction
+        results = []
+        if backend_name == "torch":
+            from ...inference.generation import GenerationConfig
+
+            generation_config = GenerationConfig(
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+            )
+
+            for prompt in prompts:
+                base_state = pipeline.runtime.extract_residual_state(prompt, layer_index=layer)
+                steered_state = _steer_residual_state(base_state, direction, coefficient)
+                output = pipeline.runtime.generate_with_residual(
+                    prompt,
+                    steered_state,
+                    generation_config,
+                )
+                results.append(
+                    SteeringGenerationResult(
+                        prompt=prompt,
+                        output=output.text,
+                        layer=layer,
+                        coefficient=coefficient,
+                    )
+                )
+            return results
+
+        steerer = ActivationSteering(
+            pipeline.model,
+            pipeline.tokenizer,
+            model_id=model,
+        )
         steerer.add_direction(
             layer=layer,
             direction=direction,
@@ -257,16 +393,8 @@ class SteeringService:
             negative_label=negative_label,
         )
 
-        config = SteeringConfig(
-            layers=[layer],
-            coefficient=coefficient,
-            max_new_tokens=max_tokens,
-            temperature=temperature,
-        )
-
-        results = []
         for prompt in prompts:
-            output = steerer.generate(prompt, config)
+            output = steerer.generate(prompt, steering_config)
             results.append(
                 SteeringGenerationResult(
                     prompt=prompt,
@@ -288,6 +416,8 @@ class SteeringService:
         coefficients: list[float],
         max_tokens: int = 100,
         temperature: float = 0.0,
+        backend: str | None = None,
+        device: str | None = None,
     ) -> SteeringComparisonResult:
         """Compare steering at different coefficients.
 
@@ -303,12 +433,35 @@ class SteeringService:
         Returns:
             Comparison result with outputs for each coefficient.
         """
-        steerer = ActivationSteering.from_pretrained(model)
-
-        # Add direction
-        steerer.add_direction(layer=layer, direction=direction)
+        pipeline = _load_pipeline(model, backend=backend, device=device)
+        backend_name = _runtime_backend_name(pipeline.runtime)
 
         results = {}
+        if backend_name == "torch":
+            from ...inference.generation import GenerationConfig
+
+            for coef in coefficients:
+                base_state = pipeline.runtime.extract_residual_state(prompt, layer_index=layer)
+                steered_state = _steer_residual_state(base_state, direction, coef)
+                config = GenerationConfig(
+                    max_new_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                results[coef] = pipeline.runtime.generate_with_residual(
+                    prompt,
+                    steered_state,
+                    config,
+                ).text
+
+            return SteeringComparisonResult(prompt=prompt, results=results)
+
+        steerer = ActivationSteering(
+            pipeline.model,
+            pipeline.tokenizer,
+            model_id=model,
+        )
+        steerer.add_direction(layer=layer, direction=direction)
+
         for coef in coefficients:
             config = SteeringConfig(
                 layers=[layer],

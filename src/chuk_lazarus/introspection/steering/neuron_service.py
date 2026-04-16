@@ -6,14 +6,24 @@ functionality for analyzing individual neuron activations.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
-from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx  # EWS-6 lazy
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..ablation import AblationStudy
+from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx  # EWS-6 lazy
+
 from ..hooks import CaptureConfig, ModelHooks, PositionSelection
+from .core import ActivationSteering
+from .service import (
+    _extract_hidden_vector,
+    _get_num_layers,
+    _load_pipeline,
+    _normalize_direction,
+    _runtime_backend_name,
+    _vector_to_numpy,
+)
 
 
 class NeuronActivationResult(BaseModel):
@@ -101,6 +111,8 @@ class NeuronAnalysisService:
         labels: list[str],
         layer: int,
         top_k: int = 10,
+        backend: str | None = None,
+        device: str | None = None,
     ) -> list[DiscoveredNeuron]:
         """Auto-discover discriminative neurons based on label groups.
 
@@ -114,27 +126,11 @@ class NeuronAnalysisService:
         Returns:
             List of discovered neurons sorted by separation score.
         """
-        study = AblationStudy.from_pretrained(model)
-        model_obj = study.adapter.model
-        tokenizer = study.adapter.tokenizer
-        config = study.adapter.config
+        pipeline = _load_pipeline(model, backend=backend, device=device)
 
-        # Collect hidden states
-        full_activations = []
-        for prompt in prompts:
-            hooks = ModelHooks(model_obj, model_config=config)
-            hooks.configure(
-                CaptureConfig(
-                    layers=[layer],
-                    capture_hidden_states=True,
-                    positions=PositionSelection.LAST,
-                )
-            )
-            input_ids = tokenizer.encode(prompt, return_tensors="np")
-            hooks.forward(mx.array(input_ids))
-            h = hooks.state.hidden_states[layer][0, 0, :]
-            h_np = np.array(h.astype(mx.float32), copy=False)
-            full_activations.append(h_np)
+        full_activations = [
+            _extract_hidden_vector(pipeline.runtime, prompt, layer=layer) for prompt in prompts
+        ]
 
         full_activations = np.array(full_activations)
         num_neurons = full_activations.shape[1]
@@ -205,6 +201,8 @@ class NeuronAnalysisService:
         neurons: list[int],
         layers: list[int],
         steer_config: dict[str, Any] | None = None,
+        backend: str | None = None,
+        device: str | None = None,
     ) -> dict[int, list[NeuronActivationResult]]:
         """Analyze neuron activations across prompts.
 
@@ -218,49 +216,44 @@ class NeuronAnalysisService:
         Returns:
             Dict mapping layer -> list of neuron results.
         """
-        study = AblationStudy.from_pretrained(model)
-        model_obj = study.adapter.model
-        tokenizer = study.adapter.tokenizer
-        config = study.adapter.config
+        pipeline = _load_pipeline(model, backend=backend, device=device)
+        backend_name = _runtime_backend_name(pipeline.runtime)
+        target_layers = sorted({int(layer) for layer in layers})
 
         # Collect activations
-        all_activations = {layer: [] for layer in layers}
+        all_activations = {layer: [] for layer in target_layers}
 
-        steerer = None
-        if steer_config:
-            from . import ActivationSteering
-
-            steerer = ActivationSteering(model_obj, tokenizer)
-            steerer.add_direction(
-                steer_config["layer"],
-                mx.array(steer_config["direction"]),
-            )
-            steerer._wrap_layer(steer_config["layer"], steer_config["coefficient"])
-
-        try:
-            for prompt in prompts:
-                hooks = ModelHooks(model_obj, model_config=config)
-                hooks.configure(
-                    CaptureConfig(
-                        layers=layers,
-                        capture_hidden_states=True,
-                        positions=PositionSelection.LAST,
-                    )
+        for prompt in prompts:
+            if steer_config and backend_name == "torch":
+                hidden_by_layer = cls._capture_hidden_states_torch(
+                    pipeline,
+                    prompt,
+                    target_layers,
+                    steer_config=steer_config,
                 )
-                input_ids = tokenizer.encode(prompt, return_tensors="np")
-                hooks.forward(mx.array(input_ids))
+                for layer in target_layers:
+                    all_activations[layer].append(hidden_by_layer[layer])
+                continue
 
-                for layer in layers:
-                    h = hooks.state.hidden_states[layer][0, 0, :]
-                    h_np = np.array(h.astype(mx.float32), copy=False)
-                    all_activations[layer].append(h_np)
-        finally:
-            if steerer:
-                steerer._unwrap_layers()
+            if steer_config:
+                hidden_by_layer = cls._capture_hidden_states_mlx(
+                    pipeline,
+                    prompt,
+                    target_layers,
+                    steer_config=steer_config,
+                )
+                for layer in target_layers:
+                    all_activations[layer].append(hidden_by_layer[layer])
+                continue
+
+            for layer in target_layers:
+                all_activations[layer].append(
+                    _extract_hidden_vector(pipeline.runtime, prompt, layer=layer)
+                )
 
         # Compute statistics per layer
         results = {}
-        for layer in layers:
+        for layer in target_layers:
             activations = np.array(all_activations[layer])
             layer_results = []
 
@@ -279,6 +272,140 @@ class NeuronAnalysisService:
             results[layer] = layer_results
 
         return results
+
+    @staticmethod
+    def _capture_hidden_states_mlx(
+        pipeline: Any,
+        prompt: str,
+        layers: list[int],
+        *,
+        steer_config: dict[str, Any] | None = None,
+    ) -> dict[int, np.ndarray]:
+        """Capture hidden states on MLX, optionally with steering applied."""
+        model_obj = pipeline.model
+        tokenizer = pipeline.tokenizer
+        config = pipeline.config
+
+        steerer = None
+        if steer_config:
+            steerer = ActivationSteering(model_obj, tokenizer)
+            steerer.add_direction(
+                steer_config["layer"],
+                steer_config["direction"],
+            )
+            steerer._wrap_layer(steer_config["layer"], steer_config["coefficient"])
+
+        try:
+            hooks = ModelHooks(model_obj, model_config=config)
+            hooks.configure(
+                CaptureConfig(
+                    layers=layers,
+                    capture_hidden_states=True,
+                    positions=PositionSelection.LAST,
+                )
+            )
+            input_ids = tokenizer.encode(prompt, return_tensors="np")
+            hooks.forward(mx.array(input_ids))
+
+            captured = {}
+            for layer in layers:
+                h = hooks.state.hidden_states[layer][0, 0, :]
+                captured[layer] = np.array(h.astype(mx.float32), copy=False)
+            return captured
+        finally:
+            if steerer:
+                steerer._unwrap_layers()
+
+    @staticmethod
+    def _capture_hidden_states_torch(
+        pipeline: Any,
+        prompt: str,
+        layers: list[int],
+        *,
+        steer_config: dict[str, Any] | None = None,
+    ) -> dict[int, np.ndarray]:
+        """Capture hidden states from a torch runtime, optionally with steering."""
+        runtime = pipeline.runtime
+        model = pipeline.model
+
+        import torch
+
+        resolve_layers = getattr(runtime, "_resolve_layers", None)
+        if callable(resolve_layers):
+            model_layers = resolve_layers()
+        elif hasattr(model, "model") and hasattr(model.model, "layers"):
+            model_layers = model.model.layers
+        elif hasattr(model, "layers"):
+            model_layers = model.layers
+        else:
+            raise ValueError("Cannot detect torch model layer structure")
+
+        tokenize_prompt = getattr(runtime, "_tokenize_prompt", None)
+        if callable(tokenize_prompt):
+            model_inputs = tokenize_prompt(prompt)
+        else:
+            batch = pipeline.tokenizer(prompt, return_tensors="pt")
+            model_inputs = {
+                name: tensor.to(getattr(runtime, "_device", "cpu"), non_blocking=True)
+                for name, tensor in batch.items()
+            }
+
+        def unwrap_hidden_states(output: Any):
+            if hasattr(output, "hidden_states"):
+                return output.hidden_states
+            if isinstance(output, tuple):
+                return output[0]
+            return output
+
+        def replace_hidden_states(output: Any, hidden_states: Any):
+            if hasattr(output, "hidden_states"):
+                try:
+                    output.hidden_states = hidden_states
+                    return output
+                except Exception:
+                    cloned = copy.copy(output)
+                    cloned.hidden_states = hidden_states
+                    return cloned
+            if isinstance(output, tuple):
+                return (hidden_states, *output[1:])
+            return hidden_states
+
+        handles = []
+        captured: dict[int, np.ndarray] = {}
+
+        if steer_config:
+            direction = _normalize_direction(steer_config["direction"])
+            steer_layer = int(steer_config["layer"])
+            coefficient = float(steer_config["coefficient"])
+
+            def steering_hook(_module, _args, output):
+                hidden = unwrap_hidden_states(output)
+                steering = torch.from_numpy(direction).to(
+                    device=hidden.device,
+                    dtype=hidden.dtype,
+                )
+                hidden_norm = torch.sqrt(torch.mean(hidden * hidden))
+                updated = hidden.clone()
+                updated = updated + steering.view(1, 1, -1) * (coefficient * hidden_norm)
+                return replace_hidden_states(output, updated)
+
+            handles.append(model_layers[steer_layer].register_forward_hook(steering_hook))
+
+        for layer_idx in layers:
+            def capture_hook(_module, _args, output, layer_idx=layer_idx):
+                hidden = unwrap_hidden_states(output)
+                captured[layer_idx] = _vector_to_numpy(hidden[:, -1, :])
+
+            handles.append(model_layers[layer_idx].register_forward_hook(capture_hook))
+
+        try:
+            with torch.inference_mode():
+                model(**model_inputs, use_cache=False)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        return captured
 
 
 __all__ = [

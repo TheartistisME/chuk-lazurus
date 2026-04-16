@@ -40,6 +40,8 @@ async def _async_introspect_neurons(args: Namespace) -> None:
     )
 
     config = NeuronAnalysisConfig.from_args(args)
+    backend = getattr(args, "backend", None)
+    device = getattr(args, "device", None)
 
     # Parse layers
     if config.layers:
@@ -103,6 +105,8 @@ async def _async_introspect_neurons(args: Namespace) -> None:
             labels=labels,
             layer=discover_layer,
             top_k=config.top_k,
+            backend=backend,
+            device=device,
         )
 
         neurons = [n.idx for n in discovered]
@@ -164,6 +168,8 @@ async def _async_introspect_neurons(args: Namespace) -> None:
         neurons=neurons,
         layers=layers_to_analyze,
         steer_config=steer_config,
+        backend=backend,
+        device=device,
     )
 
     # Print results
@@ -449,17 +455,19 @@ def introspect_operand_directions(args: Namespace) -> None:
 
 async def _async_introspect_operand_directions(args: Namespace) -> None:
     """Async implementation of operand direction extraction."""
-    import mlx.core as mx
     import numpy as np
 
-    from ....introspection import CaptureConfig, ModelHooks, PositionSelection
-    from ....introspection.ablation import AblationStudy
+    from ....inference import UnifiedPipeline, UnifiedPipelineConfig
 
     print(f"Loading model: {args.model}")
-    study = AblationStudy.from_pretrained(args.model)
-    model = study.adapter.model
-    tokenizer = study.adapter.tokenizer
-    model_config = study.adapter.config
+    pipeline = UnifiedPipeline.from_pretrained(
+        args.model,
+        pipeline_config=UnifiedPipelineConfig(
+            backend_name=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
+        ),
+        verbose=False,
+    )
 
     # Parse digits
     if args.digits:
@@ -471,7 +479,16 @@ async def _async_introspect_operand_directions(args: Namespace) -> None:
     if args.layers:
         layers = [int(layer.strip()) for layer in args.layers.split(",")]
     else:
-        num_layers = study.adapter.num_layers
+        if hasattr(pipeline.config, "num_hidden_layers"):
+            num_layers = int(pipeline.config.num_hidden_layers)
+        elif hasattr(pipeline.config, "num_layers"):
+            num_layers = int(pipeline.config.num_layers)
+        elif hasattr(pipeline.model, "model") and hasattr(pipeline.model.model, "layers"):
+            num_layers = len(pipeline.model.model.layers)
+        elif hasattr(pipeline.model, "layers"):
+            num_layers = len(pipeline.model.layers)
+        else:
+            num_layers = 32
         layers = sorted(
             {
                 int(num_layers * 0.25),
@@ -487,19 +504,18 @@ async def _async_introspect_operand_directions(args: Namespace) -> None:
     print(f"Analyzing layers: {layers}")
 
     def get_activation(prompt: str, layer: int) -> np.ndarray:
-        """Get last-token hidden state."""
-        hooks = ModelHooks(model, model_config=model_config)
-        hooks.configure(
-            CaptureConfig(
-                layers=[layer],
-                capture_hidden_states=True,
-                positions=PositionSelection.LAST,
-            )
-        )
-        input_ids = tokenizer.encode(prompt, return_tensors="np")
-        hooks.forward(mx.array(input_ids))
-        h = hooks.state.hidden_states[layer][0, 0, :]
-        return np.array(h.astype(mx.float32), copy=False)
+        """Get last-token hidden state via the backend-aware runtime seam."""
+        residual_state = pipeline.runtime.extract_residual_state(prompt, layer_index=layer)
+        tensor = residual_state.tensor
+        if isinstance(tensor, np.ndarray):
+            array = tensor
+        elif type(tensor).__module__.startswith("torch"):
+            array = tensor.detach().cpu().numpy()
+        else:
+            array = np.asarray(tensor)
+        if array.ndim > 1:
+            array = array[0]
+        return array.astype(np.float32, copy=False).reshape(-1)
 
     def cosine_sim(v1: np.ndarray, v2: np.ndarray) -> float:
         """Compute cosine similarity."""

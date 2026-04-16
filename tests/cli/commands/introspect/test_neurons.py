@@ -1,10 +1,46 @@
 """Tests for introspect neurons CLI commands."""
 
+import sys
 import tempfile
 from argparse import Namespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_backend_dispatch_module():
+    """Expose the backend-dispatch shim under the mocked introspection package."""
+    module_name = "chuk_lazarus.introspection._backend_dispatch"
+    original_module = sys.modules.get(module_name)
+    intro_module = sys.modules.get("chuk_lazarus.introspection")
+    original_path = getattr(intro_module, "__path__", None) if intro_module is not None else None
+
+    if intro_module is not None:
+        intro_module.__path__ = []
+
+    backend_dispatch = ModuleType(module_name)
+    backend_dispatch.from_backend_tensor = MagicMock()
+    backend_dispatch.to_backend_tensor = MagicMock()
+    sys.modules[module_name] = backend_dispatch
+
+    yield
+
+    if intro_module is not None:
+        if original_path is None:
+            try:
+                delattr(intro_module, "__path__")
+            except AttributeError:
+                pass
+        else:
+            intro_module.__path__ = original_path
+
+    if original_module is not None:
+        sys.modules[module_name] = original_module
+    else:
+        sys.modules.pop(module_name, None)
 
 
 class TestNeuronAnalysisConfig:
@@ -108,6 +144,8 @@ class TestIntrospectNeurons:
             strength=None,
             auto_discover=False,
             neuron_names=None,
+            backend=None,
+            device=None,
         )
 
     def test_neurons_basic(self, neurons_args, capsys):
@@ -227,6 +265,20 @@ class TestIntrospectNeurons:
 
         captured = capsys.readouterr()
         assert "Warning: 1 labels for 2 prompts" in captured.out
+
+    def test_neurons_threads_backend_and_device(self, neurons_args):
+        """Test neuron analysis threads backend/device to the service."""
+        from chuk_lazarus.cli.commands.introspect.neurons import introspect_neurons
+
+        neuron_module = sys.modules["chuk_lazarus.introspection.steering.neuron_service"]
+        neurons_args.backend = "torch"
+        neurons_args.device = "cuda:2"
+
+        introspect_neurons(neurons_args)
+
+        call = neuron_module.NeuronAnalysisService.analyze_neurons.call_args
+        assert call.kwargs["backend"] == "torch"
+        assert call.kwargs["device"] == "cuda:2"
 
 
 class TestDirectionComparisonConfig:
@@ -377,7 +429,51 @@ class TestIntrospectDirections:
         if Path(directions_args.output).exists():
             with open(directions_args.output) as f:
                 data = json.load(f)
-                assert "pairs" in data
+            assert "pairs" in data
+
+
+class TestIntrospectOperandDirections:
+    """Tests for operand-directions CLI command."""
+
+    def test_operand_directions_threads_backend_to_unified_pipeline(self, capsys):
+        """Test operand-directions uses UnifiedPipeline with backend/device."""
+        from chuk_lazarus.cli.commands.introspect.neurons import introspect_operand_directions
+
+        class FakeRuntime:
+            def extract_residual_state(self, prompt: str, layer_index: int):
+                del prompt
+                return SimpleNamespace(
+                    tensor=np.array([[float(layer_index), 0.0]], dtype=np.float32)
+                )
+
+        fake_pipeline = SimpleNamespace(
+            model=SimpleNamespace(),
+            tokenizer=SimpleNamespace(),
+            config=SimpleNamespace(num_hidden_layers=8),
+            runtime=FakeRuntime(),
+        )
+
+        args = Namespace(
+            model="test-model",
+            digits="2,3",
+            operation="*",
+            layers="1,2",
+            output=None,
+            backend="torch",
+            device="cuda:0",
+        )
+
+        with patch(
+            "chuk_lazarus.inference.UnifiedPipeline.from_pretrained",
+            return_value=fake_pipeline,
+        ) as mock_from_pretrained:
+            introspect_operand_directions(args)
+
+        call = mock_from_pretrained.call_args
+        assert call.kwargs["pipeline_config"].backend_name == "torch"
+        assert call.kwargs["pipeline_config"].device == "cuda:0"
+        captured = capsys.readouterr()
+        assert "LAYER 1" in captured.out
 
 
 class TestDirectionPairSimilarity:

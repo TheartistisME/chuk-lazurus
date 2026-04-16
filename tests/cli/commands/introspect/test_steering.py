@@ -1,11 +1,47 @@
 """Tests for introspect steering CLI commands."""
 
+import sys
 import tempfile
 from argparse import Namespace
+from types import ModuleType
+from unittest.mock import MagicMock
 
 import pytest
 
 from chuk_lazarus.cli.commands.introspect._types import SteeringConfig
+
+
+@pytest.fixture(autouse=True)
+def mock_backend_dispatch_module():
+    """Expose the backend-dispatch shim under the mocked introspection package."""
+    module_name = "chuk_lazarus.introspection._backend_dispatch"
+    original_module = sys.modules.get(module_name)
+    intro_module = sys.modules.get("chuk_lazarus.introspection")
+    original_path = getattr(intro_module, "__path__", None) if intro_module is not None else None
+
+    if intro_module is not None:
+        intro_module.__path__ = []
+
+    backend_dispatch = ModuleType(module_name)
+    backend_dispatch.from_backend_tensor = MagicMock()
+    backend_dispatch.to_backend_tensor = MagicMock()
+    sys.modules[module_name] = backend_dispatch
+
+    yield
+
+    if intro_module is not None:
+        if original_path is None:
+            try:
+                delattr(intro_module, "__path__")
+            except AttributeError:
+                pass
+        else:
+            intro_module.__path__ = original_path
+
+    if original_module is not None:
+        sys.modules[module_name] = original_module
+    else:
+        sys.modules.pop(module_name, None)
 
 
 class TestSteeringConfig:
@@ -31,6 +67,8 @@ class TestSteeringConfig:
             max_tokens=10,
             temperature=0.0,
             output=None,
+            backend=None,
+            device=None,
         )
 
     def test_from_args(self, basic_args):
@@ -258,6 +296,10 @@ class TestIntrospectSteer:
         """Test steering single neuron."""
         from chuk_lazarus.cli.commands.introspect import introspect_steer
 
+        steering_module = sys.modules["chuk_lazarus.introspection.steering"]
+        steering_module.SteeringService.resolve_model_shape = MagicMock(
+            return_value=(12, 768)
+        )
         steer_args.neuron = 42
 
         introspect_steer(steer_args)
@@ -298,3 +340,38 @@ class TestIntrospectSteer:
 
         captured = capsys.readouterr()
         assert "on-the-fly direction" in captured.out
+
+    def test_steer_extract_threads_backend_and_device(self, steer_args):
+        """Test extract mode threads backend/device to SteeringService."""
+        from chuk_lazarus.cli.commands.introspect import introspect_steer
+
+        steering_module = sys.modules["chuk_lazarus.introspection.steering"]
+        steer_args.extract = True
+        steer_args.positive = "good"
+        steer_args.negative = "bad"
+        steer_args.backend = "torch"
+        steer_args.device = "cuda:1"
+
+        introspect_steer(steer_args)
+
+        call = steering_module.SteeringService.extract_direction.call_args
+        assert call.kwargs["backend"] == "torch"
+        assert call.kwargs["device"] == "cuda:1"
+
+    def test_steer_neuron_mode_uses_shape_resolver(self, steer_args):
+        """Test neuron steering resolves model shape through SteeringService."""
+        from chuk_lazarus.cli.commands.introspect import introspect_steer
+
+        steering_module = sys.modules["chuk_lazarus.introspection.steering"]
+        steering_module.SteeringService.resolve_model_shape = MagicMock(return_value=(12, 768))
+        steer_args.neuron = 42
+        steer_args.backend = "torch"
+        steer_args.device = "cuda:0"
+
+        introspect_steer(steer_args)
+
+        steering_module.SteeringService.resolve_model_shape.assert_called_once_with(
+            "test-model",
+            backend="torch",
+            device="cuda:0",
+        )

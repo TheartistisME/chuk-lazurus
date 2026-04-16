@@ -3,6 +3,8 @@
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -254,3 +256,132 @@ class TestSteeringServiceConfigAlias:
     def test_config_alias(self):
         """Test that SteeringService.Config is SteeringServiceConfig."""
         assert SteeringService.Config == SteeringServiceConfig
+
+
+torch = pytest.importorskip("torch")
+
+from chuk_lazarus.inference.backends.types import LazarusBackend, ResidualState
+from chuk_lazarus.inference.generation import GenerationResult, GenerationStats, StopReason
+
+
+class FakeTorchRuntime:
+    """Runtime stub for backend-aware steering service tests."""
+
+    backend = LazarusBackend.CUDA
+
+    def __init__(self):
+        self.generated = []
+
+    def extract_residual_state(self, prompt: str, layer_index: int) -> ResidualState:
+        if "positive" in prompt:
+            vector = [3.0, 0.0, 0.0]
+        elif "negative" in prompt:
+            vector = [-1.0, 0.0, 0.0]
+        else:
+            vector = [1.0, 0.5, -0.5]
+
+        tensor = torch.tensor([vector], dtype=torch.float32)
+        return ResidualState(
+            backend=LazarusBackend.CUDA,
+            layer_index=layer_index,
+            tensor=tensor,
+            sequence_length=1,
+            hidden_size=3,
+            dtype="float32",
+            device="cpu",
+        )
+
+    def generate_with_residual(self, prompt: str, residual_state: ResidualState, config) -> GenerationResult:
+        self.generated.append((prompt, residual_state, config))
+        return GenerationResult(
+            text=f"steered:{prompt}",
+            stats=GenerationStats(
+                input_tokens=1,
+                output_tokens=1,
+                total_time_seconds=0.01,
+                tokens_per_second=100.0,
+            ),
+            stop_reason=StopReason.MAX_TOKENS,
+        )
+
+
+def _fake_pipeline():
+    return SimpleNamespace(
+        model=SimpleNamespace(),
+        tokenizer=SimpleNamespace(),
+        config=SimpleNamespace(num_hidden_layers=8, hidden_size=3),
+        runtime=FakeTorchRuntime(),
+    )
+
+
+class TestSteeringServiceTorchRuntime:
+    """Torch/runtime coverage for steering service."""
+
+    @pytest.mark.asyncio
+    async def test_extract_direction_uses_unified_pipeline_backend_overrides(self):
+        """Test direction extraction through the runtime seam."""
+        with patch(
+            "chuk_lazarus.inference.UnifiedPipeline.from_pretrained",
+            return_value=_fake_pipeline(),
+        ) as mock_from_pretrained:
+            result = await SteeringService.extract_direction(
+                model="fake/model",
+                positive_prompt="positive prompt",
+                negative_prompt="negative prompt",
+                backend="torch",
+                device="cuda:1",
+            )
+
+        call = mock_from_pretrained.call_args
+        assert call.kwargs["pipeline_config"].backend_name == "torch"
+        assert call.kwargs["pipeline_config"].device == "cuda:1"
+        assert result.layer == 4
+        assert np.allclose(result.direction, np.array([4.0, 0.0, 0.0], dtype=np.float32))
+
+    @pytest.mark.asyncio
+    async def test_generate_with_steering_uses_torch_residual_injection(self):
+        """Test torch steering generation goes through runtime.generate_with_residual."""
+        pipeline = _fake_pipeline()
+        direction = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+        with patch(
+            "chuk_lazarus.inference.UnifiedPipeline.from_pretrained",
+            return_value=pipeline,
+        ):
+            result = await SteeringService.generate_with_steering(
+                model="fake/model",
+                prompts=["hello"],
+                direction=direction,
+                layer=2,
+                coefficient=1.5,
+                backend="torch",
+                device="cuda:0",
+            )
+
+        assert result[0].output == "steered:hello"
+        assert len(pipeline.runtime.generated) == 1
+        residual_state = pipeline.runtime.generated[0][1]
+        assert type(residual_state.tensor).__module__.startswith("torch")
+
+    @pytest.mark.asyncio
+    async def test_compare_coefficients_uses_torch_runtime_generation(self):
+        """Test compare mode uses runtime residual injection for each coefficient."""
+        pipeline = _fake_pipeline()
+        direction = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+        with patch(
+            "chuk_lazarus.inference.UnifiedPipeline.from_pretrained",
+            return_value=pipeline,
+        ):
+            result = await SteeringService.compare_coefficients(
+                model="fake/model",
+                prompt="hello",
+                direction=direction,
+                layer=1,
+                coefficients=[-1.0, 0.0, 1.0],
+                backend="torch",
+                device="cuda:0",
+            )
+
+        assert sorted(result.results) == [-1.0, 0.0, 1.0]
+        assert len(pipeline.runtime.generated) == 3
