@@ -41,40 +41,18 @@ def _render_torch_context_prompt(
     system_prompt: str | None = None,
     no_chat_template: bool = False,
 ) -> str:
-    from .....inference.context.knowledge.torch_query import _SYSTEM_PROMPT
+    from .....inference.context.knowledge.torch_query import _render_prompt
 
-    user_sections: list[str] = []
-    if context_blocks:
-        user_sections.append("Knowledge store context:\n" + "\n\n---\n\n".join(context_blocks))
-    if window_keywords:
-        user_sections.append("Retrieved keywords: " + ", ".join(window_keywords[:12]))
-    user_sections.append(f"Execution mode: {mode}")
-    user_sections.append(f"Question: {question}")
-    user_content = "\n\n".join(user_sections)
-
-    if _uses_chat_template(tokenizer, no_chat_template):
-        messages = [
-            {"role": "system", "content": system_prompt or _SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-        try:
-            return tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        except Exception:
-            pass
-
-    if no_chat_template:
-        return user_content + "\n\nAnswer:"
-
-    parts = [
-        f"SYSTEM:\n{system_prompt or _SYSTEM_PROMPT}",
-        f"USER:\n{user_content}",
-        "ASSISTANT:\n",
-    ]
-    return "\n\n".join(parts)
+    return _render_prompt(
+        tokenizer,
+        question=question,
+        context_blocks=context_blocks,
+        window_keywords=window_keywords,
+        mode=mode,
+        system_prompt=system_prompt,
+        use_chat_template=_uses_chat_template(tokenizer, no_chat_template),
+        no_chat_template=no_chat_template,
+    )
 
 
 class _TorchReplayLibraryView:
@@ -131,6 +109,7 @@ def _prepare_explicit_store_response(
     residual_reason = "boundary unavailable"
     mode = "prompt-context"
     prompt_mode = "context-replay"
+    attempt_residual = len(replay_window_ids) == 1
     prompt = _render_torch_context_prompt(
         tokenizer,
         question=question,
@@ -142,7 +121,7 @@ def _prepare_explicit_store_response(
     )
 
     try:
-        if replay_window_ids:
+        if attempt_residual:
             boundary = store.load_boundary(replay_window_ids[0], device="cpu")
             boundary_tensor = _as_cpu_torch_tensor(boundary)
             boundary_shape = tuple(boundary_tensor.shape)
@@ -179,7 +158,10 @@ def _prepare_explicit_store_response(
             else:
                 result = runtime.generate(prompt, generation_config)
         else:
-            residual_reason = "no explicit replay windows selected"
+            if replay_window_ids:
+                residual_reason = "multiple replay windows selected"
+            else:
+                residual_reason = "no explicit replay windows selected"
             result = runtime.generate(prompt, generation_config)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         residual_reason = str(exc)
@@ -248,47 +230,7 @@ def _run_torch_store_generate(
             )
             replay_ids = None
 
-        if replay_ids is None and no_chat_template:
-            expansion_ids, expansion_terms = _expand_query(prompt, tokenizer, runtime)
-            window_ids = store.route_top_k(prompt, tokenizer, k=top_k, expansion_ids=expansion_ids)
-            routing_mode = "tfidf"
-            if not window_ids:
-                fallback_window = store.route(prompt, tokenizer=tokenizer, method="auto")
-                if fallback_window is not None:
-                    window_ids = [fallback_window]
-                    routing_mode = "auto"
-
-            if window_ids:
-                response = _prepare_explicit_store_response(
-                    store=store,
-                    runtime=runtime,
-                    tokenizer=tokenizer,
-                    question=prompt,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    replay_window_ids=window_ids,
-                    routing_mode=routing_mode,
-                    system_prompt=None,
-                    no_chat_template=True,
-                )
-                response = response.model_copy(update={"expansion_terms": expansion_terms})
-            else:
-                response = _prepare_explicit_store_response(
-                    store=store,
-                    runtime=runtime,
-                    tokenizer=tokenizer,
-                    question=prompt,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    replay_window_ids=[],
-                    routing_mode="miss",
-                    system_prompt=None,
-                    no_chat_template=True,
-                )
-                response = response.model_copy(
-                    update={"mode": "plain", "expansion_terms": expansion_terms}
-                )
-        elif replay_ids is None:
+        if replay_ids is None:
             response = _prepare_store_response(
                 store=store,
                 runtime=runtime,
@@ -298,7 +240,7 @@ def _run_torch_store_generate(
                 temperature=temperature,
                 top_k=top_k,
                 system_prompt=system_prompt,
-                no_chat_template=False,
+                no_chat_template=no_chat_template,
             )
         else:
             response = _prepare_explicit_store_response(

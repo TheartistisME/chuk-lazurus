@@ -156,6 +156,23 @@ def _residual_is_compatible(
     return True, "boundary and model shapes are compatible"
 
 
+def _build_store_user_content(
+    *,
+    question: str,
+    context_blocks: list[str],
+    window_keywords: list[str],
+    mode: str,
+) -> str:
+    user_sections: list[str] = []
+    if context_blocks:
+        user_sections.append("Knowledge store context:\n" + "\n\n---\n\n".join(context_blocks))
+    if window_keywords:
+        user_sections.append("Retrieved keywords: " + ", ".join(window_keywords[:12]))
+    user_sections.append(f"Execution mode: {mode}")
+    user_sections.append(f"Question: {question}")
+    return "\n\n".join(user_sections)
+
+
 def _render_prompt(
     tokenizer: Any,
     *,
@@ -166,20 +183,20 @@ def _render_prompt(
     history: list[dict[str, str]] | None = None,
     system_prompt: str | None = None,
     use_chat_template: bool = True,
+    no_chat_template: bool = False,
 ) -> str:
     system_text = system_prompt or _SYSTEM_PROMPT
     messages: list[dict[str, str]] = [{"role": "system", "content": system_text}]
     if history:
         messages.extend(history)
 
-    user_sections: list[str] = []
-    if context_blocks:
-        user_sections.append("Knowledge store context:\n" + "\n\n---\n\n".join(context_blocks))
-    if window_keywords:
-        user_sections.append("Retrieved keywords: " + ", ".join(window_keywords[:12]))
-    user_sections.append(f"Execution mode: {mode}")
-    user_sections.append(f"Question: {question}")
-    messages.append({"role": "user", "content": "\n\n".join(user_sections)})
+    user_content = _build_store_user_content(
+        question=question,
+        context_blocks=context_blocks,
+        window_keywords=window_keywords,
+        mode=mode,
+    )
+    messages.append({"role": "user", "content": user_content})
 
     if use_chat_template and callable(getattr(tokenizer, "apply_chat_template", None)):
         try:
@@ -190,6 +207,9 @@ def _render_prompt(
             )
         except Exception:
             pass
+
+    if no_chat_template:
+        return user_content + "\n\nAnswer:"
 
     parts = []
     for message in messages:
@@ -239,6 +259,28 @@ def _expand_query(
     return expansion_ids, terms
 
 
+def _resolve_grounded_windows(
+    store: TorchKnowledgeStore,
+    query_text: str,
+    tokenizer: Any,
+    *,
+    top_k: int,
+    expansion_ids: list[int] | None = None,
+) -> tuple[list[int], str]:
+    exact_windows = store._route_exact(query_text)
+    if exact_windows:
+        return exact_windows, "exact"
+
+    window_ids = store.route_top_k(query_text, tokenizer, k=top_k, expansion_ids=expansion_ids)
+    routing_mode = "tfidf"
+    if not window_ids:
+        fallback_window = store.route(query_text, tokenizer=tokenizer, method="auto")
+        if fallback_window is not None:
+            window_ids = [fallback_window]
+            routing_mode = "auto"
+    return window_ids, routing_mode
+
+
 def _merge_keywords(store: TorchKnowledgeStore, window_ids: list[int]) -> list[str]:
     seen: set[str] = set()
     keywords: list[str] = []
@@ -271,14 +313,20 @@ def _prepare_store_response(
         top_p=1.0,
     )
 
-    expansion_ids, expansion_terms = _expand_query(question, tokenizer, runtime)
-    window_ids = store.route_top_k(question, tokenizer, k=top_k, expansion_ids=expansion_ids)
-    routing_mode = "tfidf"
-    if not window_ids:
-        fallback_window = store.route(question, tokenizer=tokenizer, method="auto")
-        if fallback_window is not None:
-            window_ids = [fallback_window]
-            routing_mode = "auto"
+    exact_windows = store._route_exact(question)
+    if exact_windows:
+        expansion_terms: list[str] = []
+        window_ids = exact_windows
+        routing_mode = "exact"
+    else:
+        expansion_ids, expansion_terms = _expand_query(question, tokenizer, runtime)
+        window_ids, routing_mode = _resolve_grounded_windows(
+            store,
+            question,
+            tokenizer,
+            top_k=top_k,
+            expansion_ids=expansion_ids,
+        )
 
     if not window_ids:
         prompt = _render_prompt(
@@ -290,6 +338,7 @@ def _prepare_store_response(
             history=history,
             system_prompt=system_prompt,
             use_chat_template=not no_chat_template,
+            no_chat_template=no_chat_template,
         )
         result = runtime.generate(prompt, generation_config)
         return TorchKnowledgeResponse(
@@ -308,6 +357,9 @@ def _prepare_store_response(
     residual_reason = "boundary unavailable"
     mode = "prompt-context"
     prompt_mode = "context-replay"
+    attempt_residual = len(window_ids) == 1 and routing_mode != "exact"
+    if routing_mode == "exact" and len(window_ids) == 1:
+        residual_reason = "exact route uses prompt context only"
 
     prompt = _render_prompt(
         tokenizer,
@@ -318,44 +370,50 @@ def _prepare_store_response(
         history=history,
         system_prompt=system_prompt,
         use_chat_template=not no_chat_template,
+        no_chat_template=no_chat_template,
     )
 
     try:
-        boundary = store.load_boundary(window_ids[0], device="cpu")
-        boundary_tensor = _as_cpu_torch_tensor(boundary)
-        boundary_shape = tuple(boundary_tensor.shape)
-        crystal_layer = int(store.config.crystal_layer)
-        residual_compatible, residual_reason = _residual_is_compatible(
-            runtime,
-            boundary_tensor,
-            crystal_layer,
-        )
-        if residual_compatible:
-            prompt_mode = "markov-boundary"
-            prompt = _render_prompt(
-                tokenizer,
-                question=question,
-                context_blocks=context_blocks,
-                window_keywords=window_keywords,
-                mode=prompt_mode,
-                history=history,
-                system_prompt=system_prompt,
-                use_chat_template=not no_chat_template,
+        if attempt_residual:
+            boundary = store.load_boundary(window_ids[0], device="cpu")
+            boundary_tensor = _as_cpu_torch_tensor(boundary)
+            boundary_shape = tuple(boundary_tensor.shape)
+            crystal_layer = int(store.config.crystal_layer)
+            residual_compatible, residual_reason = _residual_is_compatible(
+                runtime,
+                boundary_tensor,
+                crystal_layer,
             )
-            residual_state = ResidualState(
-                backend=LazarusBackend.CUDA,
-                layer_index=crystal_layer,
-                tensor=boundary_tensor,
-                sequence_length=int(
-                    len(store.window_token_lists.get(window_ids[0], [])) or store.num_tokens
-                ),
-                hidden_size=int(boundary_tensor.shape[-1]),
-                dtype=str(boundary_tensor.dtype).replace("torch.", ""),
-                device="cpu",
-            )
-            result = runtime.generate_with_residual(prompt, residual_state, generation_config)
-            mode = "residual"
+            if residual_compatible:
+                prompt_mode = "markov-boundary"
+                prompt = _render_prompt(
+                    tokenizer,
+                    question=question,
+                    context_blocks=context_blocks,
+                    window_keywords=window_keywords,
+                    mode=prompt_mode,
+                    history=history,
+                    system_prompt=system_prompt,
+                    use_chat_template=not no_chat_template,
+                    no_chat_template=no_chat_template,
+                )
+                residual_state = ResidualState(
+                    backend=LazarusBackend.CUDA,
+                    layer_index=crystal_layer,
+                    tensor=boundary_tensor,
+                    sequence_length=int(
+                        len(store.window_token_lists.get(window_ids[0], [])) or store.num_tokens
+                    ),
+                    hidden_size=int(boundary_tensor.shape[-1]),
+                    dtype=str(boundary_tensor.dtype).replace("torch.", ""),
+                    device="cpu",
+                )
+                result = runtime.generate_with_residual(prompt, residual_state, generation_config)
+                mode = "residual"
+            else:
+                result = runtime.generate(prompt, generation_config)
         else:
+            residual_reason = "multiple exact windows selected"
             result = runtime.generate(prompt, generation_config)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         residual_reason = str(exc)
@@ -397,13 +455,14 @@ def run_torch_query_command(
     if store_path is None:
         question_prompt = _render_prompt(
             tokenizer,
-            question=prompt,
-            context_blocks=[],
-            window_keywords=[],
-            mode="plain",
-            system_prompt=system_prompt,
-            use_chat_template=not no_chat_template,
-        )
+        question=prompt,
+        context_blocks=[],
+        window_keywords=[],
+        mode="plain",
+        system_prompt=system_prompt,
+        use_chat_template=not no_chat_template,
+        no_chat_template=no_chat_template,
+    )
         result = runtime.generate(
             question_prompt,
             GenerationConfig(max_new_tokens=max_new_tokens, temperature=temperature, top_p=1.0),
