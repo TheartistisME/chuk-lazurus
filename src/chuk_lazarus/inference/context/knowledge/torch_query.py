@@ -137,8 +137,11 @@ def _render_prompt(
     window_keywords: list[str],
     mode: str,
     history: list[dict[str, str]] | None = None,
+    system_prompt: str | None = None,
+    use_chat_template: bool = True,
 ) -> str:
-    messages: list[dict[str, str]] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    system_text = system_prompt or _SYSTEM_PROMPT
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_text}]
     if history:
         messages.extend(history)
 
@@ -151,7 +154,7 @@ def _render_prompt(
     user_sections.append(f"Question: {question}")
     messages.append({"role": "user", "content": "\n\n".join(user_sections)})
 
-    if callable(getattr(tokenizer, "apply_chat_template", None)):
+    if use_chat_template and callable(getattr(tokenizer, "apply_chat_template", None)):
         try:
             return tokenizer.apply_chat_template(
                 messages,
@@ -232,6 +235,8 @@ def _prepare_store_response(
     temperature: float,
     top_k: int,
     history: list[dict[str, str]] | None = None,
+    system_prompt: str | None = None,
+    no_chat_template: bool = False,
 ) -> TorchKnowledgeResponse:
     generation_config = GenerationConfig(
         max_new_tokens=max_new_tokens,
@@ -256,6 +261,8 @@ def _prepare_store_response(
             window_keywords=[],
             mode="plain",
             history=history,
+            system_prompt=system_prompt,
+            use_chat_template=not no_chat_template,
         )
         result = runtime.generate(prompt, generation_config)
         return TorchKnowledgeResponse(
@@ -282,6 +289,8 @@ def _prepare_store_response(
         window_keywords=window_keywords,
         mode=prompt_mode,
         history=history,
+        system_prompt=system_prompt,
+        use_chat_template=not no_chat_template,
     )
 
     try:
@@ -303,6 +312,8 @@ def _prepare_store_response(
                 window_keywords=window_keywords,
                 mode=prompt_mode,
                 history=history,
+                system_prompt=system_prompt,
+                use_chat_template=not no_chat_template,
             )
             residual_state = ResidualState(
                 backend=LazarusBackend.CUDA,
@@ -350,6 +361,8 @@ def run_torch_query_command(
     top_k: int,
     device: str | None = None,
     store_path: str | Path | None = None,
+    system_prompt: str | None = None,
+    no_chat_template: bool = False,
     stdout=sys.stdout,
     stderr=sys.stderr,
 ) -> TorchKnowledgeResponse:
@@ -361,6 +374,8 @@ def run_torch_query_command(
             context_blocks=[],
             window_keywords=[],
             mode="plain",
+            system_prompt=system_prompt,
+            use_chat_template=not no_chat_template,
         )
         result = runtime.generate(
             question_prompt,
@@ -392,6 +407,8 @@ def run_torch_query_command(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        system_prompt=system_prompt,
+        no_chat_template=no_chat_template,
     )
     elapsed_ms = (time.monotonic() - start_time) * 1000
 

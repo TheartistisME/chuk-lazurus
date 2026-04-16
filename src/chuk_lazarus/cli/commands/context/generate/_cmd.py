@@ -84,12 +84,31 @@ async def context_generate_cmd(args: Namespace) -> None:
         name=getattr(args, "backend", None),
         device=getattr(args, "device", None),
     )
-    if str(backend.name).lower() == "torch":
-        raise NotImplementedError(
-            "context generate (mode7/probes/unified/.mlxckpt replay) is MLX-only "
-            "in Epic 2. Tracked for Epic 3: "
-            "docs/refactor/dual-backend-cuda-epic3/00-scope.md#context-generate"
+    resolved_backend_name = str(backend.name).lower()
+    resolved_device = getattr(backend, "device", None) or getattr(args, "device", None)
+
+    config = GenerateConfig.from_args(args)
+
+    # ------------------------------------------------------------------
+    # 0. Plain generation (no checkpoint)
+    # ------------------------------------------------------------------
+    if config.checkpoint is None:
+        from ._plain import _plain_generate
+
+        result = _plain_generate(
+            config,
+            args,
+            backend_name=resolved_backend_name,
+            device=resolved_device,
         )
+        print(result.to_display())
+        return
+
+    if resolved_backend_name == "torch":
+        from ._torch import run_torch_checkpoint_generate
+
+        run_torch_checkpoint_generate(config, args, device=resolved_device)
+        return
 
     import mlx.core as mx
 
@@ -102,18 +121,6 @@ async def context_generate_cmd(args: Namespace) -> None:
     from ._probe_driven import _probe_driven_generate
     from ._resolve import _resolve_replay
     from ._unified import _unified_generate
-
-    config = GenerateConfig.from_args(args)
-
-    # ------------------------------------------------------------------
-    # 0. Plain generation (no checkpoint)
-    # ------------------------------------------------------------------
-    if config.checkpoint is None:
-        from ._plain import _plain_generate
-
-        result = _plain_generate(config, args)
-        print(result.to_display())
-        return
 
     # ------------------------------------------------------------------
     # 1. Load library

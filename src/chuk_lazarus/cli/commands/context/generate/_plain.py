@@ -8,9 +8,16 @@ from argparse import Namespace
 from .._types import GenerateConfig, GenerateResult
 
 
-def _plain_generate(config: GenerateConfig, args: Namespace) -> GenerateResult:
+def _plain_generate(
+    config: GenerateConfig,
+    args: Namespace,
+    *,
+    backend_name: str | None = None,
+    device: str | None = None,
+) -> GenerateResult:
     """Generate text from a model without any checkpoint context."""
-    from .....inference import UnifiedPipeline
+    from .....inference import UnifiedPipeline, UnifiedPipelineConfig
+    from .....inference.backends import LazarusBackend
 
     prompt_text = config.prompt_text
     if not prompt_text:
@@ -19,7 +26,19 @@ def _plain_generate(config: GenerateConfig, args: Namespace) -> GenerateResult:
 
     # Load model
     print(f"Loading model: {config.model}", file=sys.stderr)
-    pipeline = UnifiedPipeline.from_pretrained(config.model, verbose=False)
+    pipeline_kwargs = {"verbose": False}
+    pipeline_config_kwargs: dict[str, object] = {}
+    if backend_name is not None:
+        pipeline_config_kwargs["backend_name"] = backend_name
+        pipeline_config_kwargs["backend"] = (
+            LazarusBackend.CUDA if backend_name == "torch" else LazarusBackend.MLX
+        )
+    if device is not None:
+        pipeline_config_kwargs["device"] = device
+    if pipeline_config_kwargs:
+        pipeline_kwargs["pipeline_config"] = UnifiedPipelineConfig(**pipeline_config_kwargs)
+
+    pipeline = UnifiedPipeline.from_pretrained(config.model, **pipeline_kwargs)
 
     no_chat = getattr(args, "no_chat_template", False)
     system_prompt = getattr(args, "system_prompt", None)
