@@ -39,6 +39,9 @@ class AblationStudy:
         cls,
         model_id: str,
         model_family: str | None = None,
+        *,
+        backend: str | None = None,
+        device: str | None = None,
     ) -> AblationStudy:
         """
         Load a model for ablation study.
@@ -50,24 +53,14 @@ class AblationStudy:
         Returns:
             AblationStudy instance
         """
-        from huggingface_hub import snapshot_download
-        from transformers import AutoTokenizer
+        del model_family  # UnifiedPipeline owns family detection for this path.
+        from .loader import load_model_for_ablation
 
-        # Download model
-        model_path = snapshot_download(
+        adapter = load_model_for_ablation(
             model_id,
-            allow_patterns=["*.json", "*.safetensors", "tokenizer*", "*.jinja"],
+            backend=backend,
+            device=device,
         )
-
-        # Detect model family from config if not specified
-        if model_family is None:
-            model_family = cls._detect_family(model_path)
-
-        # Load model based on family
-        model, config = cls._load_model(model_path, model_family)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-
-        adapter = ModelAdapter(model, tokenizer, config)
         return cls(adapter)
 
     @staticmethod
@@ -241,10 +234,6 @@ class AblationStudy:
         if config is None:
             config = AblationConfig()
 
-        # Tokenize
-        input_ids = self.adapter.tokenizer.encode(prompt, return_tensors="np")
-        input_ids = mx.array(input_ids)
-
         # Store original weights
         original_weights = {}
 
@@ -257,8 +246,8 @@ class AblationStudy:
                 ComponentType.MLP_DOWN,
             ]:
                 orig = self.adapter.get_mlp_down_weight(layer_idx)
-                original_weights[layer_idx]["mlp_down"] = mx.array(orig)
-                self.adapter.set_mlp_down_weight(layer_idx, mx.zeros_like(orig))
+                original_weights[layer_idx]["mlp_down"] = self.adapter.clone_weight(orig)
+                self.adapter.set_mlp_down_weight(layer_idx, self.adapter.zeros_like(orig))
 
             if component in [
                 ComponentType.ATTENTION,
@@ -266,24 +255,21 @@ class AblationStudy:
                 ComponentType.ATTN_O,
             ]:
                 orig = self.adapter.get_attn_o_weight(layer_idx)
-                original_weights[layer_idx]["attn_o"] = mx.array(orig)
-                self.adapter.set_attn_o_weight(layer_idx, mx.zeros_like(orig))
+                original_weights[layer_idx]["attn_o"] = self.adapter.clone_weight(orig)
+                self.adapter.set_attn_o_weight(layer_idx, self.adapter.zeros_like(orig))
 
-        # Generate
-        output = self.adapter.generate(
-            input_ids,
-            max_new_tokens=config.max_new_tokens,
-            temperature=config.temperature,
-        )
-
-        # Restore weights
-        for layer_idx, weights in original_weights.items():
-            if "mlp_down" in weights:
-                self.adapter.set_mlp_down_weight(layer_idx, weights["mlp_down"])
-            if "attn_o" in weights:
-                self.adapter.set_attn_o_weight(layer_idx, weights["attn_o"])
-
-        return output
+        try:
+            return self.adapter.generate(
+                prompt,
+                max_new_tokens=config.max_new_tokens,
+                temperature=config.temperature,
+            )
+        finally:
+            for layer_idx, weights in original_weights.items():
+                if "mlp_down" in weights:
+                    self.adapter.set_mlp_down_weight(layer_idx, weights["mlp_down"])
+                if "attn_o" in weights:
+                    self.adapter.set_attn_o_weight(layer_idx, weights["attn_o"])
 
     def run_layer_sweep(
         self,
@@ -315,10 +301,8 @@ class AblationStudy:
             layers = list(range(self.adapter.num_layers))
 
         # Get original output
-        input_ids = self.adapter.tokenizer.encode(prompt, return_tensors="np")
-        input_ids = mx.array(input_ids)
         original_output = self.adapter.generate(
-            input_ids,
+            prompt,
             max_new_tokens=config.max_new_tokens,
             temperature=config.temperature,
         )

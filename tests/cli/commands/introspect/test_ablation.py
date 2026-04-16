@@ -77,6 +77,8 @@ class TestAblationConfig:
 
         args = Namespace(
             model="test-model",
+            backend="torch",
+            device="cuda:1",
             prompt="2+2=",
             prompts=None,
             criterion="4",
@@ -92,6 +94,8 @@ class TestAblationConfig:
         config = AblationConfig.from_args(args)
 
         assert config.model == "test-model"
+        assert config.backend == "torch"
+        assert config.device == "cuda:1"
         assert config.prompt == "2+2="
         assert config.criterion == "4"
         assert config.component == "mlp"
@@ -844,6 +848,55 @@ class TestAsyncIntrospectAblate:
         ):
             await _async_introspect_ablate(args)
 
+    @pytest.mark.asyncio
+    async def test_threads_backend_device_and_reuses_loaded_study(self):
+        """Test CLI threads backend/device and reuses the initially loaded study."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from chuk_lazarus.cli.commands.introspect.ablation import (
+            _async_introspect_ablate,
+        )
+
+        args = Namespace(
+            model="test-model",
+            backend="torch",
+            device="cuda:1",
+            prompt="2+2=",
+            prompts=None,
+            criterion="4",
+            layers="20,21",
+            component="mlp",
+            multi=False,
+            raw=False,
+            max_tokens=50,
+            verbose=False,
+            output=None,
+        )
+
+        mock_study = MagicMock()
+        mock_study.adapter.num_layers = 24
+        mock_result = MagicMock()
+
+        with (
+            patch(
+                "chuk_lazarus.introspection.ablation.AblationStudy.from_pretrained",
+                return_value=mock_study,
+            ) as mock_from_pretrained,
+            patch(
+                "chuk_lazarus.introspection.ablation.AblationService.run_ablation_sweep",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ) as mock_run_ablation_sweep,
+        ):
+            await _async_introspect_ablate(args)
+
+        mock_from_pretrained.assert_called_once_with(
+            "test-model",
+            backend="torch",
+            device="cuda:1",
+        )
+        assert mock_run_ablation_sweep.await_args.kwargs["study"] is mock_study
+
 
 class TestIntrospectWeightDiff:
     """Tests for introspect_weight_diff command."""
@@ -856,9 +909,15 @@ class TestIntrospectWeightDiff:
 
         args = Namespace(base="test/base", finetuned="test/ft", output=None)
 
-        with patch("chuk_lazarus.cli.commands.introspect.ablation.asyncio") as mock_asyncio:
+        def close_coro(coro):
+            coro.close()
+
+        with patch(
+            "chuk_lazarus.cli.commands.introspect.ablation.asyncio.run",
+            side_effect=close_coro,
+        ) as mock_run:
             introspect_weight_diff(args)
-            mock_asyncio.run.assert_called_once()
+            mock_run.assert_called_once()
 
 
 class TestIntrospectActivationDiff:
@@ -874,6 +933,12 @@ class TestIntrospectActivationDiff:
 
         args = Namespace(base="test/base", finetuned="test/ft", prompts="test", output=None)
 
-        with patch("chuk_lazarus.cli.commands.introspect.ablation.asyncio") as mock_asyncio:
+        def close_coro(coro):
+            coro.close()
+
+        with patch(
+            "chuk_lazarus.cli.commands.introspect.ablation.asyncio.run",
+            side_effect=close_coro,
+        ) as mock_run:
             introspect_activation_diff(args)
-            mock_asyncio.run.assert_called_once()
+            mock_run.assert_called_once()

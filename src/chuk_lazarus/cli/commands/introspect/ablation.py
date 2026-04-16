@@ -50,7 +50,11 @@ async def _async_introspect_ablate(args: Namespace) -> None:
         raise ValueError("--criterion/-c is required when using --prompt/-p")
 
     print(f"Loading model: {config.model}")
-    study = AblationStudy.from_pretrained(config.model)
+    study = AblationStudy.from_pretrained(
+        config.model,
+        backend=config.backend,
+        device=config.device,
+    )
 
     # Parse layers
     layers = parse_layers(config.layers) if config.layers else list(range(study.adapter.num_layers))
@@ -93,6 +97,7 @@ async def _async_introspect_ablate(args: Namespace) -> None:
             component=component,
             max_tokens=config.max_tokens,
             multi_mode=config.multi,
+            study=study,
         )
 
         # Display results
@@ -111,6 +116,7 @@ async def _async_introspect_ablate(args: Namespace) -> None:
             criterion=config.criterion,
             component=component,
             max_tokens=config.max_tokens,
+            study=study,
         )
 
         _print_multi_ablation_results(config.prompt, config.criterion, layers, baseline, ablated)
@@ -126,6 +132,7 @@ async def _async_introspect_ablate(args: Namespace) -> None:
             layers=layers,
             component=component,
             max_tokens=config.max_tokens,
+            study=study,
         )
 
         # Print results using framework

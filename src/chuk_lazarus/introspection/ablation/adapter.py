@@ -23,28 +23,96 @@ class ModelAdapter:
     - Running generation
     """
 
-    def __init__(self, model: nn.Module, tokenizer: Any, config: Any):
+    def __init__(
+        self,
+        model: nn.Module,
+        tokenizer: Any,
+        config: Any,
+        runtime: Any | None = None,
+        pipeline: Any | None = None,
+    ):
         self.model = model
         self.tokenizer = tokenizer
         self.config = config
+        self.runtime = runtime
+        self.pipeline = pipeline
         self._detect_architecture()
 
     def _detect_architecture(self):
         """Detect model architecture and set accessors."""
-        # Try different common patterns
-        if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
-            self._layers = self.model.model.layers
-            self._backbone = self.model.model
-        elif hasattr(self.model, "layers"):
-            self._layers = self.model.layers
-            self._backbone = self.model
-        elif hasattr(self.model, "transformer") and hasattr(self.model.transformer, "h"):
-            self._layers = self.model.transformer.h
-            self._backbone = self.model.transformer
-        else:
-            raise ValueError(
-                "Cannot detect model architecture. Expected model.model.layers, model.layers, or model.transformer.h"
-            )
+        candidates = [
+            ("model", "language_model", "layers"),
+            ("model", "language_model", "model", "layers"),
+            ("language_model", "model", "layers"),
+            ("language_model", "layers"),
+            ("model", "layers"),
+            ("transformer", "h"),
+            ("layers",),
+        ]
+
+        for path in candidates:
+            target = self.model
+            for step in path[:-1]:
+                target = getattr(target, step, None)
+                if target is None:
+                    break
+            if target is None:
+                continue
+
+            layers = getattr(target, path[-1], None)
+            if layers is None:
+                continue
+            self._layers = layers
+            self._backbone = target
+            return
+
+        raise ValueError(
+            "Cannot detect model architecture. Expected model.model.layers, "
+            "model.language_model.model.layers, model.language_model.layers, "
+            "model.layers, or model.transformer.h"
+        )
+
+    def _runtime_backend_name(self) -> str | None:
+        backend = getattr(self.runtime, "backend", None)
+        if backend is None:
+            return None
+        name = str(backend).lower()
+        if name == "cuda":
+            return "torch"
+        if name == "mlx":
+            return "mlx"
+        return name
+
+    @staticmethod
+    def _is_torch_tensor(value: Any) -> bool:
+        return type(value).__module__.startswith("torch")
+
+    def clone_weight(self, weight: Any) -> Any:
+        if self._is_torch_tensor(weight):
+            return weight.detach().clone()
+        return mx.array(weight)
+
+    def zeros_like(self, weight: Any) -> Any:
+        if self._is_torch_tensor(weight):
+            import torch
+
+            return torch.zeros_like(weight)
+        return mx.zeros_like(weight)
+
+    def _assign_weight(self, module: Any, attr: str, weight: Any) -> None:
+        current = getattr(module, attr)
+        if self._is_torch_tensor(current):
+            import torch
+
+            source = weight.detach() if isinstance(weight, torch.Tensor) else torch.as_tensor(weight)
+            source = source.to(device=current.device, dtype=current.dtype, non_blocking=True)
+            with torch.no_grad():
+                target = current.data if hasattr(current, "data") else current
+                target.copy_(source)
+            return
+
+        setattr(module, attr, weight)
+        mx.eval(weight)
 
     @property
     def num_layers(self) -> int:
@@ -77,7 +145,7 @@ class ModelAdapter:
                 return True
         return False
 
-    def get_mlp_down_weight(self, layer_idx: int) -> mx.array:
+    def get_mlp_down_weight(self, layer_idx: int) -> Any:
         """Get MLP down projection weight.
 
         For MoE layers, returns the router weight instead.
@@ -107,7 +175,7 @@ class ModelAdapter:
 
         raise ValueError(f"Cannot find MLP down projection in layer {layer_idx}")
 
-    def set_mlp_down_weight(self, layer_idx: int, weight: mx.array):
+    def set_mlp_down_weight(self, layer_idx: int, weight: Any):
         """Set MLP down projection weight.
 
         For MoE layers, sets the router weight instead.
@@ -119,32 +187,29 @@ class ModelAdapter:
             # MoE: set router weight
             if hasattr(mlp, "router"):
                 if hasattr(mlp.router, "weight"):
-                    mlp.router.weight = weight
-                    mx.eval(weight)
+                    self._assign_weight(mlp.router, "weight", weight)
                     return
             # Dense MLP patterns
             if hasattr(mlp, "down_proj"):
-                mlp.down_proj.weight = weight
+                self._assign_weight(mlp.down_proj, "weight", weight)
             elif hasattr(mlp, "c_proj"):
-                mlp.c_proj.weight = weight
+                self._assign_weight(mlp.c_proj, "weight", weight)
             elif hasattr(mlp, "w2"):
-                mlp.w2.weight = weight
+                self._assign_weight(mlp.w2, "weight", weight)
             else:
                 raise ValueError(f"Cannot find MLP down projection in layer {layer_idx}")
         elif hasattr(layer, "feed_forward"):
             ff = layer.feed_forward
             if hasattr(ff, "down_proj"):
-                ff.down_proj.weight = weight
+                self._assign_weight(ff.down_proj, "weight", weight)
             elif hasattr(ff, "w2"):
-                ff.w2.weight = weight
+                self._assign_weight(ff.w2, "weight", weight)
             else:
                 raise ValueError(f"Cannot find MLP down projection in layer {layer_idx}")
         else:
             raise ValueError(f"Cannot find MLP in layer {layer_idx}")
 
-        mx.eval(weight)
-
-    def get_attn_o_weight(self, layer_idx: int) -> mx.array:
+    def get_attn_o_weight(self, layer_idx: int) -> Any:
         """Get attention output projection weight."""
         layer = self.get_layer(layer_idx)
 
@@ -164,38 +229,56 @@ class ModelAdapter:
 
         raise ValueError(f"Cannot find attention output projection in layer {layer_idx}")
 
-    def set_attn_o_weight(self, layer_idx: int, weight: mx.array):
+    def set_attn_o_weight(self, layer_idx: int, weight: Any):
         """Set attention output projection weight."""
         layer = self.get_layer(layer_idx)
 
         if hasattr(layer, "self_attn"):
             attn = layer.self_attn
             if hasattr(attn, "o_proj"):
-                attn.o_proj.weight = weight
+                self._assign_weight(attn.o_proj, "weight", weight)
             elif hasattr(attn, "out_proj"):
-                attn.out_proj.weight = weight
+                self._assign_weight(attn.out_proj, "weight", weight)
             else:
                 raise ValueError(f"Cannot find attention output projection in layer {layer_idx}")
         elif hasattr(layer, "attention"):
             attn = layer.attention
             if hasattr(attn, "o_proj"):
-                attn.o_proj.weight = weight
+                self._assign_weight(attn.o_proj, "weight", weight)
             elif hasattr(attn, "wo"):
-                attn.wo.weight = weight
+                self._assign_weight(attn.wo, "weight", weight)
             else:
                 raise ValueError(f"Cannot find attention output projection in layer {layer_idx}")
         else:
             raise ValueError(f"Cannot find attention in layer {layer_idx}")
 
-        mx.eval(weight)
-
     def generate(
         self,
-        input_ids: mx.array,
+        prompt_or_input_ids: Any,
         max_new_tokens: int = 60,
         temperature: float = 0.0,
     ) -> str:
-        """Generate text from input IDs."""
+        """Generate text from a prompt or pre-tokenized MLX input IDs."""
+        if isinstance(prompt_or_input_ids, str):
+            prompt = prompt_or_input_ids
+            if self.runtime is not None:
+                from ...inference import GenerationConfig
+
+                result = self.runtime.generate(
+                    prompt,
+                    GenerationConfig(
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                    ),
+                )
+                return result.text
+
+            input_ids = mx.array(self.tokenizer.encode(prompt, return_tensors="np"))
+        else:
+            input_ids = prompt_or_input_ids
+            if self._runtime_backend_name() == "torch":
+                raise TypeError("Torch-backed ablation generation requires a prompt string.")
+
         # Use model's generate method if available
         if hasattr(self.model, "generate"):
             stop_tokens = []

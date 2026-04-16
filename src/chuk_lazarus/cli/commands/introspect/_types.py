@@ -161,6 +161,8 @@ class AblationConfig(CommandConfig):
     """Configuration for ablation CLI commands."""
 
     model: str = Field(..., description="Model path or name")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Runtime device override")
     prompt: str | None = Field(default=None, description="Single prompt")
     prompts: str | None = Field(default=None, description="Multiple prompts with expected values")
     criterion: str | None = Field(default=None, description="Criterion for evaluation")
@@ -177,6 +179,8 @@ class AblationConfig(CommandConfig):
         """Create config from argparse Namespace."""
         return cls(
             model=args.model,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
             prompt=getattr(args, "prompt", None),
             prompts=getattr(args, "prompts", None),
             criterion=getattr(args, "criterion", None),

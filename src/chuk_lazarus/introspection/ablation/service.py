@@ -68,6 +68,8 @@ class AblationServiceConfig(BaseModel):
     max_tokens: int = Field(default=50, description="Max tokens to generate")
     multi_mode: bool = Field(default=False, description="Ablate all layers together")
     use_raw: bool = Field(default=False, description="Use raw mode (no chat template)")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Runtime device override")
 
 
 class SingleAblationResult(BaseModel):
@@ -158,6 +160,9 @@ class AblationService:
         layers: list[int] | None = None,
         component: ComponentType = ComponentType.MLP,
         max_tokens: int = 50,
+        backend: str | None = None,
+        device: str | None = None,
+        study: AblationStudy | None = None,
     ) -> AblationSweepResult:
         """Run ablation sweep across layers.
 
@@ -172,7 +177,11 @@ class AblationService:
         Returns:
             AblationSweepResult with results for each layer.
         """
-        study = AblationStudy.from_pretrained(model)
+        study = study or AblationStudy.from_pretrained(
+            model,
+            backend=backend,
+            device=device,
+        )
 
         if layers is None:
             layers = list(range(study.adapter.num_layers))
@@ -225,6 +234,9 @@ class AblationService:
         criterion: str | Callable[[str], bool],
         component: ComponentType = ComponentType.MLP,
         max_tokens: int = 50,
+        backend: str | None = None,
+        device: str | None = None,
+        study: AblationStudy | None = None,
     ) -> tuple[SingleAblationResult, SingleAblationResult]:
         """Run multi-layer ablation (all layers together).
 
@@ -239,7 +251,11 @@ class AblationService:
         Returns:
             Tuple of (baseline_result, ablated_result).
         """
-        study = AblationStudy.from_pretrained(model)
+        study = study or AblationStudy.from_pretrained(
+            model,
+            backend=backend,
+            device=device,
+        )
 
         # Get criterion function
         if isinstance(criterion, str):
@@ -287,6 +303,9 @@ class AblationService:
         component: ComponentType = ComponentType.MLP,
         max_tokens: int = 50,
         multi_mode: bool = False,
+        backend: str | None = None,
+        device: str | None = None,
+        study: AblationStudy | None = None,
     ) -> list[MultiPromptAblationResult]:
         """Run ablation test on multiple prompts.
 
@@ -301,7 +320,11 @@ class AblationService:
         Returns:
             List of results per ablation setting.
         """
-        study = AblationStudy.from_pretrained(model)
+        study = study or AblationStudy.from_pretrained(
+            model,
+            backend=backend,
+            device=device,
+        )
 
         if layers is None:
             layers = list(range(study.adapter.num_layers))
