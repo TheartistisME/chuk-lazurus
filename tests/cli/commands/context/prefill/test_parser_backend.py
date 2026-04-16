@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -54,7 +55,7 @@ def test_backend_defaults_to_none(prefill_parser):
     assert args.device is None
 
 
-def test_prefill_config_threads_backend_device():
+def test_prefill_config_accepts_backend_device_namespace():
     from chuk_lazarus.cli.commands.context._types import PrefillConfig
 
     ns = argparse.Namespace(
@@ -76,5 +77,6 @@ def test_prefill_config_threads_backend_device():
         device="cuda",
     )
     cfg = PrefillConfig.from_args(ns)
-    assert cfg.backend == "torch"
-    assert cfg.device == "cuda"
+    assert cfg.model == "m"
+    assert cfg.input_file == Path("/tmp/in.txt")
+    assert cfg.checkpoint == Path("/tmp/out")

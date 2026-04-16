@@ -13,7 +13,7 @@ import time
 from argparse import Namespace
 from datetime import datetime, timezone
 
-from .._types import PrefillConfig, PrefillResult, ResidualMode
+from .._types import PrefillConfig, PrefillPhase, PrefillResult, ResidualMode
 from ._progress import progress_line
 from ._restore import restore_engine
 from ._save import SavePhases, save_library
@@ -31,11 +31,68 @@ async def context_prefill_cmd(args: Namespace) -> None:
         os.environ["CHUK_DEVICE"] = device_name
 
     backend = get_backend()
+    config = PrefillConfig.from_args(args)
+
     if str(backend.name).lower() == "torch":
+        from ._torch_sidecar import run_torch_prefill_sidecar
+
+        if not config.input_file.exists():
+            print(f"Error: input file not found: {config.input_file}", file=sys.stderr)
+            return
+
+        source_text = config.input_file.read_text(errors="replace")
+        lib_name = config.name or config.input_file.stem.replace("_", " ").title()
+
+        requested_non_window_phases = any(
+            phase not in {PrefillPhase.ALL, PrefillPhase.WINDOWS} for phase in config.phases
+        )
+
+        print(f"Loading model: {config.model}", file=sys.stderr)
         print(
-            "context prefill is MLX backend only in Epic 2; torch prefill is not wired yet.",
+            "Torch prefill writes the torch sidecar contract only "
+            "(torch_prefill.json + torch_store/ Apollo v12).",
             file=sys.stderr,
         )
+        start_wall = time.monotonic()
+        artifacts = run_torch_prefill_sidecar(
+            checkpoint_path=config.checkpoint,
+            model_id=config.model,
+            input_path=config.input_file,
+            raw_text=source_text,
+            name=lib_name,
+            window_size=config.window_size,
+            max_tokens=config.max_tokens,
+            requested_device=device_name,
+            requested_phases=sorted(phase.value for phase in config.phases),
+            residual_mode=config.residual_mode.value,
+            store_pages_requested=config.store_pages,
+            store_kv_full_requested=config.store_kv_full,
+            export_mode=config.export_mode,
+            resume=config.resume,
+        )
+        if artifacts.reused:
+            print("Reusing existing torch prefill sidecar.", file=sys.stderr)
+        elif (
+            config.store_pages
+            or config.store_kv_full
+            or config.residual_mode != ResidualMode.INTERVAL
+            or requested_non_window_phases
+            or config.export_mode
+        ):
+            print(
+                "Torch prefill ignores MLX-only extraction artifacts and records the "
+                "requested options in torch_prefill.json for downstream workers.",
+                file=sys.stderr,
+            )
+        elapsed = time.monotonic() - start_wall
+        result = PrefillResult(
+            checkpoint=str(config.checkpoint),
+            tokens_prefilled=artifacts.num_tokens,
+            num_windows=artifacts.num_windows,
+            status="complete",
+            elapsed_seconds=elapsed,
+        )
+        print(result.to_display())
         return
 
     import mlx.core as mx
@@ -46,8 +103,6 @@ async def context_prefill_cmd(args: Namespace) -> None:
     )
     from .....inference.context.sparse_engine import SparseIndexEngine
     from .....inference.context.unlimited_engine import UnlimitedContextEngine
-
-    config = PrefillConfig.from_args(args)
 
     frame_bank_data = None
     if config.residual_mode == ResidualMode.DARKSPACE and config.frame_bank is not None:
