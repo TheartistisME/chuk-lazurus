@@ -7,7 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from chuk_lazarus.inference.backends.types import LazarusBackend
 from chuk_lazarus.server.engine import ModelEngine
+from chuk_lazarus.server.schemas.internal import (
+    FinishReason,
+    InternalMessage,
+    InternalRequest,
+    MessageRole,
+)
 
 
 @pytest.fixture
@@ -70,3 +77,36 @@ def test_load_async_threads_backend_kwarg(mock_from_pretrained, fake_pipeline):
     cfg = mock_from_pretrained.call_args.kwargs["pipeline_config"]
     assert cfg.backend_name == "torch"
     assert cfg.device == "cuda"
+
+
+@pytest.mark.asyncio
+async def test_astream_uses_torch_runtime_stream(monkeypatch, fake_pipeline):
+    from chuk_lazarus.server import engine as engine_module
+
+    runtime = MagicMock()
+    runtime.backend = LazarusBackend.CUDA
+    fake_pipeline.runtime = runtime
+
+    monkeypatch.setattr(engine_module, "_apply_template", lambda tokenizer, request: "prompt")
+
+    def fake_stream(runtime_obj, prompt, config):
+        assert runtime_obj is runtime
+        assert prompt == "prompt"
+        assert config.max_new_tokens == 8
+        yield "hello"
+        yield " world"
+
+    monkeypatch.setattr(engine_module, "_stream_tokens_torch", fake_stream)
+
+    engine = ModelEngine(fake_pipeline, "fake/model")
+    request = InternalRequest(
+        model="fake/model",
+        max_tokens=8,
+        messages=[InternalMessage(role=MessageRole.USER, content="hi")],
+    )
+
+    chunks = [chunk async for chunk in engine.astream(request)]
+
+    assert [chunk.content for chunk in chunks[:-1]] == ["hello", " world"]
+    assert chunks[-1].content is None
+    assert chunks[-1].finish_reason == FinishReason.STOP

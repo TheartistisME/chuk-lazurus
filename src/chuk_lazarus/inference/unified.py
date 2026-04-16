@@ -46,9 +46,10 @@ from chuk_lazarus.models_v2.families import (
     get_family_info,
 )
 
+from .backends import InferenceRuntime, MLXInferenceRuntime, TorchInferenceRuntime
 from .backends.types import LazarusBackend
 from .chat import ChatHistory, format_chat_prompt, format_history
-from .generation import GenerationConfig, GenerationResult, generate
+from .generation import GenerationConfig, GenerationResult
 from .loader import DType, HFLoader
 
 
@@ -104,6 +105,14 @@ class UnifiedPipelineConfig(BaseModel):
 
     @model_validator(mode="after")
     def _bridge_backend_name(self) -> UnifiedPipelineConfig:
+        if self.backend is None and self.backend_name is not None:
+            normalized = self.backend_name.strip().lower()
+            if normalized == "torch":
+                self.backend = LazarusBackend.CUDA
+                self.backend_name = "torch"
+            elif normalized == "mlx":
+                self.backend = LazarusBackend.MLX
+                self.backend_name = "mlx"
         if self.backend_name is None and self.backend is not None:
             self.backend_name = "torch" if self.backend == LazarusBackend.CUDA else "mlx"
         return self
@@ -164,6 +173,7 @@ class UnifiedPipeline:
         family_info: FamilyInfo,
         pipeline_config: UnifiedPipelineConfig | None = None,
         state: UnifiedPipelineState | None = None,
+        runtime: InferenceRuntime | None = None,
     ):
         self._model = model
         self._tokenizer = tokenizer
@@ -171,9 +181,29 @@ class UnifiedPipeline:
         self._family_info = family_info
         self._pipeline_config = pipeline_config or UnifiedPipelineConfig()
         self._state = state
+        self._runtime = runtime or self._select_runtime(
+            model,
+            tokenizer,
+            self._pipeline_config,
+        )
 
         # Introspection hooks (mutable state for capturing)
         self._introspection_data: IntrospectionResult | None = None
+
+    @staticmethod
+    def _select_runtime(
+        model: Any,
+        tokenizer: PreTrainedTokenizer,
+        pipeline_config: UnifiedPipelineConfig,
+    ) -> InferenceRuntime:
+        """Choose the runtime that matches the configured backend."""
+        if pipeline_config.backend == LazarusBackend.CUDA:
+            return TorchInferenceRuntime(
+                model,
+                tokenizer,
+                device=pipeline_config.device or "cuda",
+            )
+        return MLXInferenceRuntime(model, tokenizer)
 
     @property
     def model(self) -> Any:
@@ -199,6 +229,11 @@ class UnifiedPipeline:
     def family_type(self) -> ModelFamilyType:
         """Get the model family type."""
         return self._family_info.family_type
+
+    @property
+    def runtime(self) -> InferenceRuntime:
+        """Access the backend-specific runtime."""
+        return self._runtime
 
     @classmethod
     def from_pretrained(
@@ -244,6 +279,16 @@ class UnifiedPipeline:
             raise ValueError(
                 f"Unable to detect model family. model_type={model_type}, "
                 f"architectures={archs}. Model may not be supported yet."
+            )
+
+        if pipeline_config.backend == LazarusBackend.CUDA:
+            return cls._from_pretrained_torch(
+                model_id=model_id,
+                model_path=result.model_path,
+                hf_config=hf_config,
+                family_type=family_type,
+                pipeline_config=pipeline_config,
+                verbose=verbose,
             )
 
         family_info = get_family_info(family_type)
@@ -315,6 +360,95 @@ class UnifiedPipeline:
             family_info=family_info,
             pipeline_config=pipeline_config,
             state=state,
+            runtime=MLXInferenceRuntime(model, tokenizer),
+        )
+
+    @classmethod
+    def _from_pretrained_torch(
+        cls,
+        model_id: str,
+        model_path: Path,
+        hf_config: dict[str, Any],
+        family_type: ModelFamilyType,
+        pipeline_config: UnifiedPipelineConfig,
+        verbose: bool = True,
+    ) -> UnifiedPipeline:
+        """Load a Hugging Face torch runtime for CUDA/CPU/MPS inference."""
+        import torch
+        from transformers import AutoConfig, AutoModelForCausalLM
+
+        family_info = get_family_info(family_type)
+        if family_info is None:
+            raise ValueError(f"No family info registered for {family_type}")
+
+        resolved_device = pipeline_config.device or "cuda"
+        if resolved_device.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError("CUDA device requested but torch.cuda.is_available() is false")
+
+        def log(msg: str) -> None:
+            if verbose:
+                print(msg)
+
+        log(f"Loading {model_id}...")
+        log("=" * 60)
+        log("\n2. Detecting model family...")
+        log(f"   Detected: {family_type.value}")
+        log("\n3. Loading configuration...")
+        model_config = AutoConfig.from_pretrained(str(model_path))
+        hidden_size = getattr(model_config, "hidden_size", "unknown")
+        layer_count = getattr(model_config, "num_hidden_layers", "unknown")
+        log(f"   Hidden: {hidden_size}, Layers: {layer_count}")
+        log("\n4. Loading tokenizer...")
+        tokenizer = HFLoader.load_tokenizer(model_path)
+        log(f"   Vocab size: {len(tokenizer)}")
+        log("\n5. Loading torch model...")
+
+        if resolved_device.startswith("cuda"):
+            if pipeline_config.dtype == DType.FLOAT32:
+                torch_dtype = torch.float32
+            elif pipeline_config.dtype == DType.FLOAT16:
+                torch_dtype = torch.float16
+            else:
+                torch_dtype = (
+                    torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+                )
+        elif resolved_device == "mps":
+            torch_dtype = torch.float32 if pipeline_config.dtype == DType.FLOAT32 else torch.float16
+        else:
+            torch_dtype = torch.float32
+
+        model = AutoModelForCausalLM.from_pretrained(
+            str(model_path),
+            dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+        )
+
+        to_kwargs = {"non_blocking": True} if resolved_device.startswith("cuda") else {}
+        model = model.to(resolved_device, **to_kwargs)
+        model.eval()
+
+        runtime = TorchInferenceRuntime(model, tokenizer, device=resolved_device)
+        param_count = sum(int(param.numel()) for param in model.parameters())
+
+        log("\n" + "=" * 60)
+        log(f"Model loaded successfully! ({family_type.value})")
+
+        state = UnifiedPipelineState(
+            model_id=model_id,
+            model_path=model_path,
+            family_type=family_type,
+            tensor_count=param_count,
+            is_loaded=True,
+        )
+
+        return cls(
+            model=model,
+            tokenizer=tokenizer,
+            model_config=model_config,
+            family_info=family_info,
+            pipeline_config=pipeline_config,
+            state=state,
+            runtime=runtime,
         )
 
     @classmethod
@@ -364,7 +498,7 @@ class UnifiedPipeline:
             else self._pipeline_config.default_temperature,
         )
 
-        return generate(self._model, self._tokenizer, prompt, config)
+        return self._runtime.generate(prompt, config)
 
     def chat_with_history(
         self,
@@ -393,7 +527,7 @@ class UnifiedPipeline:
             else self._pipeline_config.default_temperature,
         )
 
-        return generate(self._model, self._tokenizer, prompt, config)
+        return self._runtime.generate(prompt, config)
 
     def generate(
         self,
@@ -423,7 +557,7 @@ class UnifiedPipeline:
                 else self._pipeline_config.default_temperature,
             )
 
-        return generate(self._model, self._tokenizer, prompt, config)
+        return self._runtime.generate(prompt, config)
 
     def make_engine(self):
         """

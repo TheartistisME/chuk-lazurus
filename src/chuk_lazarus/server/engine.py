@@ -132,6 +132,43 @@ def _stream_tokens(model, tokenizer, prompt: str, config):
         mx.eval(output.logits)
 
 
+def _stream_tokens_torch(runtime, prompt: str, config):
+    """Token streamer for the torch runtime using Hugging Face's text streamer."""
+    from transformers import TextIteratorStreamer
+
+    model_inputs = runtime._tokenize_prompt(prompt)
+    input_ids = model_inputs["input_ids"]
+    generation_kwargs = runtime._generation_kwargs(config, model_inputs, use_cache=True)
+    streamer = TextIteratorStreamer(
+        runtime._tokenizer,
+        skip_prompt=True,
+        skip_special_tokens=True,
+    )
+    generation_kwargs["streamer"] = streamer
+
+    errors: list[BaseException] = []
+    total_window_tokens = int(input_ids.shape[1]) + config.max_new_tokens
+
+    def _run_generate() -> None:
+        try:
+            with runtime._torch.inference_mode(), runtime._generation_context(total_window_tokens):
+                runtime._model.generate(input_ids=input_ids, **generation_kwargs)
+        except BaseException as exc:
+            errors.append(exc)
+            streamer.on_finalized_text("", stream_end=True)
+
+    thread = threading.Thread(target=_run_generate, daemon=True)
+    thread.start()
+
+    for text in streamer:
+        if text:
+            yield text
+
+    thread.join()
+    if errors:
+        raise errors[0]
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -366,12 +403,18 @@ class ModelEngine:
 
         def _run_sync() -> None:
             try:
-                for text in _stream_tokens(
-                    self._pipeline.model,
-                    self._pipeline.tokenizer,
-                    prompt,
-                    config,
-                ):
+                runtime = self._pipeline.runtime
+                if runtime.backend.value == "cuda":
+                    token_stream = _stream_tokens_torch(runtime, prompt, config)
+                else:
+                    token_stream = _stream_tokens(
+                        self._pipeline.model,
+                        self._pipeline.tokenizer,
+                        prompt,
+                        config,
+                    )
+
+                for text in token_stream:
                     loop.call_soon_threadsafe(queue.put_nowait, InternalChunk(content=text))
             except BaseException as exc:
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
