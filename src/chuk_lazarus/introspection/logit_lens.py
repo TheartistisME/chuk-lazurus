@@ -23,6 +23,7 @@ Example:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -37,9 +38,9 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker only
     from .hooks import ModelHooks
 
 
-def _to_numpy(x: Any) -> np.ndarray:
+def _to_numpy(x: Any, backend: Any | None = None) -> np.ndarray:
     """Convert backend tensors to numpy for backend-neutral analysis math."""
-    return np.asarray(from_backend_tensor(x))
+    return np.asarray(from_backend_tensor(x, backend=backend))
 
 
 def _get_backend():
@@ -92,9 +93,22 @@ def _get_num_layers(model: Any, config: Any | None = None) -> int:
     return 32
 
 
-def _softmax_numpy(logits: Any) -> np.ndarray:
+@contextmanager
+def _using_backend(backend: Any):
+    """Temporarily pin the active backend for nested hook/logit-lens helpers."""
+    from chuk_lazarus.models_v2.core import backend as backend_mod
+
+    previous = getattr(backend_mod, "_current_backend", None)
+    backend_mod._current_backend = backend
+    try:
+        yield
+    finally:
+        backend_mod._current_backend = previous
+
+
+def _softmax_numpy(logits: Any, backend: Any | None = None) -> np.ndarray:
     """Stable softmax over the final axis."""
-    logits_np = _to_numpy(logits).astype(np.float64, copy=False)
+    logits_np = _to_numpy(logits, backend=backend).astype(np.float64, copy=False)
     shifted = logits_np - np.max(logits_np, axis=-1, keepdims=True)
     exp = np.exp(shifted)
     return exp / np.sum(exp, axis=-1, keepdims=True)
@@ -207,6 +221,7 @@ class LogitLens:
         self,
         hooks: ModelHooks,
         tokenizer: Any | None = None,
+        backend: Any | None = None,
     ):
         """
         Initialize logit lens.
@@ -214,9 +229,11 @@ class LogitLens:
         Args:
             hooks: ModelHooks with captured states
             tokenizer: Tokenizer for decoding
+            backend: Optional concrete backend for backend-neutral tensor conversion
         """
         self.hooks = hooks
         self.tokenizer = tokenizer
+        self.backend = backend
 
     def get_layer_predictions(
         self,
@@ -248,7 +265,7 @@ class LogitLens:
             else:
                 pos_logits = logits[position, :]  # [vocab]
 
-            probs = _softmax_numpy(pos_logits)
+            probs = _softmax_numpy(pos_logits, backend=self.backend)
             top_ids = np.argsort(probs)[::-1][:top_k].tolist()
             top_probs = probs[top_ids].astype(float).tolist()
 
@@ -343,7 +360,7 @@ class LogitLens:
             else:
                 pos_logits = logits[position, :]
 
-            probs = _softmax_numpy(pos_logits)
+            probs = _softmax_numpy(pos_logits, backend=self.backend)
 
             # Get probability of target token
             target_prob = float(probs[token_id])
@@ -510,7 +527,7 @@ def run_logit_lens(
     hooks.forward(input_ids)
 
     # Analyze
-    lens = LogitLens(hooks, tokenizer)
+    lens = LogitLens(hooks, tokenizer, backend=_get_backend())
     result = lens.to_dict(top_k=top_k)
 
     # Track specific token if requested
@@ -640,54 +657,54 @@ class LogitLensService:
                 layers.append(num_layers - 1)
 
         # Tokenize
-        input_ids = to_backend_tensor(
-            np.asarray(tokenizer.encode(config.prompt), dtype=np.int64)[None, :],
-            backend=resolved_backend,
-        )
-
-        # Setup hooks
-        hooks = ModelHooks(model, model_config=pipeline.config)
-        hooks.configure(
-            CaptureConfig(
-                layers=layers,
-                capture_hidden_states=True,
-                positions="last",
+        with _using_backend(resolved_backend):
+            input_ids = to_backend_tensor(
+                np.asarray(tokenizer.encode(config.prompt), dtype=np.int64)[None, :],
+                backend=resolved_backend,
             )
-        )
-        hooks.forward(input_ids)
+            # Setup hooks
+            hooks = ModelHooks(model, model_config=pipeline.config)
+            hooks.configure(
+                CaptureConfig(
+                    layers=layers,
+                    capture_hidden_states=True,
+                    positions="last",
+                )
+            )
+            hooks.forward(input_ids)
 
-        # Analyze
-        lens = LogitLens(hooks, tokenizer)
-        layer_preds = lens.get_layer_predictions(top_k=config.top_k)
+            # Analyze
+            lens = LogitLens(hooks, tokenizer, backend=resolved_backend)
+            layer_preds = lens.get_layer_predictions(top_k=config.top_k)
 
-        # Build predictions dict
-        predictions = {}
-        for pred in layer_preds:
-            predictions[pred.layer_idx] = list(zip(pred.top_tokens, pred.top_probs))
-
-        # Track tokens if specified
-        tracked = None
-        if config.track_tokens:
-            tracked = {}
-            for token in config.track_tokens:
-                try:
-                    tracked[token] = lens.track_token(token)
-                except ValueError:
-                    pass  # Token not in vocabulary
-
-        # Find final prediction and decision layer
-        final_pred = ""
-        decision_layer = None
-        if layer_preds:
-            last_pred = layer_preds[-1]
-            final_pred = last_pred.top_tokens[0] if last_pred.top_tokens else ""
-
-            # Find where prediction became confident (> 0.5)
+            # Build predictions dict
+            predictions = {}
             for pred in layer_preds:
-                if pred.top_probs and pred.top_probs[0] > 0.5:
-                    if pred.top_tokens[0] == final_pred:
-                        decision_layer = pred.layer_idx
-                        break
+                predictions[pred.layer_idx] = list(zip(pred.top_tokens, pred.top_probs))
+
+            # Track tokens if specified
+            tracked = None
+            if config.track_tokens:
+                tracked = {}
+                for token in config.track_tokens:
+                    try:
+                        tracked[token] = lens.track_token(token)
+                    except ValueError:
+                        pass  # Token not in vocabulary
+
+            # Find final prediction and decision layer
+            final_pred = ""
+            decision_layer = None
+            if layer_preds:
+                last_pred = layer_preds[-1]
+                final_pred = last_pred.top_tokens[0] if last_pred.top_tokens else ""
+
+                # Find where prediction became confident (> 0.5)
+                for pred in layer_preds:
+                    if pred.top_probs and pred.top_probs[0] > 0.5:
+                        if pred.top_tokens[0] == final_pred:
+                            decision_layer = pred.layer_idx
+                            break
 
         return LogitLensResult(
             prompt=config.prompt,
