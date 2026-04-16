@@ -32,6 +32,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 if TYPE_CHECKING:  # pragma: no cover - type-checker only
     import mlx.core as mx  # noqa: F401
     import mlx.nn as nn  # noqa: F401
@@ -42,6 +44,88 @@ def _mx():
     import mlx.core as mx  # noqa: PLC0415
 
     return mx
+
+
+def _build_pipeline_config(
+    *,
+    backend: str | None = None,
+    device: str | None = None,
+):
+    """Construct a ``UnifiedPipelineConfig`` without importing torch/MLX eagerly."""
+    if backend is None and device is None:
+        return None
+
+    from ..inference import UnifiedPipelineConfig
+
+    fields = getattr(UnifiedPipelineConfig, "model_fields", {})
+    kwargs: dict[str, object] = {}
+
+    if backend is not None:
+        if "backend_name" in fields:
+            kwargs["backend_name"] = backend
+        if "backend" in fields:
+            from ..inference.backends import LazarusBackend
+
+            kwargs["backend"] = LazarusBackend.CUDA if backend == "torch" else LazarusBackend.MLX
+
+    if device is not None and "device" in fields:
+        kwargs["device"] = device
+
+    if not kwargs:
+        return None
+
+    return UnifiedPipelineConfig(**kwargs)
+
+
+def _load_pipeline(
+    model_id: str,
+    *,
+    backend: str | None = None,
+    device: str | None = None,
+    verbose: bool = False,
+):
+    """Load a backend-aware ``UnifiedPipeline`` for introspection."""
+    from ..inference import UnifiedPipeline
+
+    kwargs: dict[str, object] = {"verbose": verbose}
+    pipeline_config = _build_pipeline_config(backend=backend, device=device)
+    if pipeline_config is not None:
+        kwargs["pipeline_config"] = pipeline_config
+    return UnifiedPipeline.from_pretrained(model_id, **kwargs)
+
+
+def _runtime_backend_name(runtime: Any | None) -> str | None:
+    """Normalize the runtime backend enum/string to ``mlx`` or ``torch``."""
+    backend = getattr(runtime, "backend", None)
+    if backend is None:
+        return None
+
+    name = str(backend).lower()
+    if name == "cuda":
+        return "torch"
+    if name == "mlx":
+        return "mlx"
+    return name
+
+
+def _activate_backend(backend: str | None, device: str | None = None) -> Any:
+    """Ensure the shared backend registry matches the active runtime."""
+    from ..models_v2.core import backend as backend_mod
+
+    if backend == "torch":
+        return backend_mod.get_backend(name="torch", device=device)
+    if backend == "mlx":
+        return backend_mod.get_backend(name="mlx")
+    return backend_mod.get_backend()
+
+
+def _to_numpy(tensor: Any, *, backend: str | None = None, device: str | None = None) -> np.ndarray:
+    """Convert a backend tensor to ``numpy`` without forcing MLX at import time."""
+    from ._backend_dispatch import from_backend_tensor
+
+    active_backend = _activate_backend(backend, device)
+    array = from_backend_tensor(tensor, backend=active_backend)
+    return np.asarray(array)
 
 
 @dataclass
@@ -162,11 +246,51 @@ class LayerAnalyzer:
         tokenizer: Any,
         model_id: str = "unknown",
         config: Any | None = None,
+        *,
+        backend: str | None = None,
+        device: str | None = None,
     ):
         self._model = model
         self._tokenizer = tokenizer
         self._model_id = model_id
         self._config = config
+        self._backend = backend or "mlx"
+        self._device = device
+
+    @classmethod
+    def from_pipeline(cls, pipeline: Any, model_id: str | None = None) -> LayerAnalyzer:
+        """Wrap an already-loaded ``UnifiedPipeline``."""
+        runtime_backend = _runtime_backend_name(getattr(pipeline, "runtime", None))
+        runtime_device = getattr(getattr(pipeline, "runtime", None), "_device", None)
+        if runtime_device is not None:
+            runtime_device = str(runtime_device)
+
+        return cls(
+            pipeline.model,
+            pipeline.tokenizer,
+            model_id or getattr(getattr(pipeline, "_state", None), "model_id", "unknown"),
+            pipeline.config,
+            backend=runtime_backend,
+            device=runtime_device,
+        )
+
+    @classmethod
+    def load(
+        cls,
+        model_id: str,
+        *,
+        backend: str | None = None,
+        device: str | None = None,
+        verbose: bool = False,
+    ) -> LayerAnalyzer:
+        """Load a backend-aware analyzer via ``UnifiedPipeline``."""
+        pipeline = _load_pipeline(
+            model_id,
+            backend=backend,
+            device=device,
+            verbose=verbose,
+        )
+        return cls.from_pipeline(pipeline, model_id=model_id)
 
     @classmethod
     def from_pretrained(cls, model_id: str) -> LayerAnalyzer:
@@ -205,15 +329,32 @@ class LayerAnalyzer:
         print(f"  Layers: {config.num_hidden_layers}")
         print(f"  Hidden size: {config.hidden_size}")
 
-        return cls(model, tokenizer, model_id, config)
+        return cls(model, tokenizer, model_id, config, backend="mlx")
+
+    def _ensure_backend(self) -> Any:
+        """Resolve and pin the backend before tensor creation or hooks."""
+        return _activate_backend(self._backend, self._device)
+
+    def _encode_prompt(self, prompt: str) -> Any:
+        """Tokenize *prompt* and materialize IDs on the active backend."""
+        from ._backend_dispatch import to_backend_tensor
+
+        token_ids = np.asarray(self._tokenizer.encode(prompt), dtype=np.int64)
+        return to_backend_tensor(token_ids[None, :], backend=self._ensure_backend())
 
     @property
     def num_layers(self) -> int:
         """Get number of layers."""
         if self._config:
-            return self._config.num_hidden_layers
+            if hasattr(self._config, "num_hidden_layers"):
+                return int(self._config.num_hidden_layers)
+            text_config = getattr(self._config, "text_config", None)
+            if text_config is not None and hasattr(text_config, "num_hidden_layers"):
+                return int(text_config.num_hidden_layers)
         if hasattr(self._model, "model") and hasattr(self._model.model, "layers"):
             return len(self._model.model.layers)
+        if hasattr(self._model, "layers"):
+            return len(self._model.layers)
         return 32
 
     def analyze_representations(
@@ -236,8 +377,6 @@ class LayerAnalyzer:
             LayerAnalysisResult with similarity matrices per layer
         """
         from .hooks import CaptureConfig, ModelHooks, PositionSelection
-
-        mx = _mx()
         if layers is None:
             # Default: analyze key layers
             n = self.num_layers
@@ -251,9 +390,9 @@ class LayerAnalyzer:
         prompt_reps: dict[int, dict[str, mx.array]] = {layer: {} for layer in layers}
 
         for prompt in prompts:
-            input_ids = mx.array(self._tokenizer.encode(prompt))[None, :]
+            input_ids = self._encode_prompt(prompt)
 
-            hooks = ModelHooks(self._model)
+            hooks = ModelHooks(self._model, model_config=self._config)
             hooks.configure(
                 CaptureConfig(
                     layers=layers,
@@ -289,7 +428,9 @@ class LayerAnalyzer:
 
             # Compute clustering if labels provided
             if labels and clusters is not None:
-                clusters[layer_idx] = self._compute_clustering(prompts, labels, sim_matrix)
+                cluster = self._compute_clustering(prompts, labels, sim_matrix)
+                cluster.layer_idx = layer_idx
+                clusters[layer_idx] = cluster
 
         return LayerAnalysisResult(
             prompts=prompts,
@@ -315,8 +456,6 @@ class LayerAnalyzer:
             Dict mapping layer -> prompt -> AttentionResult
         """
         from .hooks import CaptureConfig, ModelHooks, PositionSelection
-
-        mx = _mx()
         if layers is None:
             n = self.num_layers
             layers = [n // 4, n // 2]  # Default to quarter and half
@@ -324,10 +463,11 @@ class LayerAnalyzer:
         results: dict[int, dict[str, AttentionResult]] = {layer: {} for layer in layers}
 
         for prompt in prompts:
-            input_ids = mx.array(self._tokenizer.encode(prompt))[None, :]
-            tokens = [self._tokenizer.decode([tid]) for tid in input_ids[0].tolist()]
+            input_ids = self._encode_prompt(prompt)
+            token_ids = _to_numpy(input_ids, backend=self._backend, device=self._device)[0].tolist()
+            tokens = [self._tokenizer.decode([int(tid)]) for tid in token_ids]
 
-            hooks = ModelHooks(self._model)
+            hooks = ModelHooks(self._model, model_config=self._config)
             hooks.configure(
                 CaptureConfig(
                     layers=layers,
@@ -361,20 +501,27 @@ class LayerAnalyzer:
         representations: dict[str, mx.array],
     ) -> list[list[float]]:
         """Compute cosine similarity between all prompt pairs."""
-        mx = _mx()
         n = len(prompts)
         matrix = [[0.0] * n for _ in range(n)]
 
         for i, p1 in enumerate(prompts):
             for j, p2 in enumerate(prompts):
                 if i <= j:
-                    rep1 = representations[p1]
-                    rep2 = representations[p2]
+                    rep1 = _to_numpy(
+                        representations[p1],
+                        backend=self._backend,
+                        device=self._device,
+                    ).astype(np.float32, copy=False)
+                    rep2 = _to_numpy(
+                        representations[p2],
+                        backend=self._backend,
+                        device=self._device,
+                    ).astype(np.float32, copy=False)
 
                     # Cosine similarity
-                    dot = float(mx.sum(rep1 * rep2))
-                    norm1 = float(mx.sqrt(mx.sum(rep1 * rep1)))
-                    norm2 = float(mx.sqrt(mx.sum(rep2 * rep2)))
+                    dot = float(np.dot(rep1, rep2))
+                    norm1 = float(np.linalg.norm(rep1))
+                    norm2 = float(np.linalg.norm(rep2))
                     sim = dot / (norm1 * norm2 + 1e-8)
 
                     matrix[i][j] = sim
@@ -515,11 +662,14 @@ class LayerAnalyzer:
             print(f"Attention from position {focus_idx} ({tokens[focus_idx]!r}):")
 
             # Average attention across heads
-            mx = _mx()
-            attn = result.attention_weights[:, focus_idx, :]  # [heads, seq_len]
-            avg_attn = mx.mean(attn, axis=0)  # [seq_len]
+            attn = _to_numpy(
+                result.attention_weights,
+                backend=self._backend,
+                device=self._device,
+            )[:, focus_idx, :]
+            avg_attn = np.mean(attn, axis=0)
 
-            for i, (tok, weight) in enumerate(zip(tokens, avg_attn.tolist())):
+            for i, (tok, weight) in enumerate(zip(tokens, avg_attn.tolist(), strict=False)):
                 bar = "#" * int(weight * 50)
                 marker = " <--" if i == focus_idx else ""
                 print(f"  {i:2d} {tok!r:15s}: {weight:.4f} {bar}{marker}")
@@ -530,6 +680,9 @@ def analyze_format_sensitivity(
     model_id: str,
     base_prompts: list[str],
     layers: list[int] | None = None,
+    *,
+    backend: str | None = None,
+    device: str | None = None,
 ) -> LayerAnalysisResult:
     """
     Convenience function to analyze format sensitivity.
@@ -545,7 +698,10 @@ def analyze_format_sensitivity(
     Returns:
         LayerAnalysisResult with working/broken labels
     """
-    analyzer = LayerAnalyzer.from_pretrained(model_id)
+    if backend is not None or device is not None:
+        analyzer = LayerAnalyzer.load(model_id, backend=backend, device=device, verbose=False)
+    else:
+        analyzer = LayerAnalyzer.from_pretrained(model_id)
 
     prompts = []
     labels = []

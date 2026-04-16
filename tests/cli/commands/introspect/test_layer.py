@@ -1,10 +1,45 @@
 """Tests for introspect layer CLI commands."""
 
+import sys
 import tempfile
 from argparse import Namespace
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_backend_dispatch_module():
+    """Expose the backend-dispatch shim under the mocked introspection package."""
+    module_name = "chuk_lazarus.introspection._backend_dispatch"
+    original_module = sys.modules.get(module_name)
+    intro_module = sys.modules.get("chuk_lazarus.introspection")
+    original_path = getattr(intro_module, "__path__", None) if intro_module is not None else None
+
+    if intro_module is not None:
+        intro_module.__path__ = []
+
+    backend_dispatch = ModuleType(module_name)
+    backend_dispatch.from_backend_tensor = MagicMock()
+    backend_dispatch.to_backend_tensor = MagicMock()
+    sys.modules[module_name] = backend_dispatch
+
+    yield
+
+    if intro_module is not None:
+        if original_path is None:
+            try:
+                delattr(intro_module, "__path__")
+            except AttributeError:
+                pass
+        else:
+            intro_module.__path__ = original_path
+
+    if original_module is not None:
+        sys.modules[module_name] = original_module
+    else:
+        sys.modules.pop(module_name, None)
 
 
 class TestIntrospectLayer:
@@ -252,6 +287,33 @@ class TestIntrospectLayer:
                 assert "similarity_matrices" in data
                 assert "clusters" in data
 
+    def test_layer_threads_backend_and_device_to_runtime_loader(self, layer_args):
+        """Test torch backend/device use the runtime-aware analyzer loader."""
+        from chuk_lazarus.cli.commands.introspect import introspect_layer
+
+        layer_args.backend = "torch"
+        layer_args.device = "cuda:2"
+
+        with patch("chuk_lazarus.introspection.LayerAnalyzer") as mock_cls:
+            mock_analyzer = MagicMock()
+            mock_cls.load.return_value = mock_analyzer
+
+            mock_result = MagicMock()
+            mock_result.layers = [0]
+            mock_result.representations = {}
+            mock_result.clusters = None
+            mock_analyzer.analyze_representations.return_value = mock_result
+
+            introspect_layer(layer_args)
+
+            mock_cls.load.assert_called_once_with(
+                "test-model",
+                backend="torch",
+                device="cuda:2",
+                verbose=False,
+            )
+            mock_cls.from_pretrained.assert_not_called()
+
 
 class TestIntrospectFormatSensitivity:
     """Tests for introspect_format_sensitivity command."""
@@ -323,3 +385,22 @@ class TestIntrospectFormatSensitivity:
             # Check prompts were loaded from file (stripped of trailing space)
             call_args = mock_fn.call_args
             assert call_args[1]["base_prompts"] == ["prompt1", "prompt2"]
+
+    def test_format_sensitivity_threads_backend_and_device(self, format_args):
+        """Test backend/device are forwarded into the layer-analysis helper."""
+        from chuk_lazarus.cli.commands.introspect import introspect_format_sensitivity
+
+        format_args.backend = "torch"
+        format_args.device = "cuda:1"
+
+        with patch("chuk_lazarus.introspection.analyze_format_sensitivity") as mock_fn:
+            mock_result = MagicMock()
+            mock_result.layers = [0]
+            mock_result.clusters = {}
+            mock_fn.return_value = mock_result
+
+            introspect_format_sensitivity(format_args)
+
+            call_args = mock_fn.call_args
+            assert call_args[1]["backend"] == "torch"
+            assert call_args[1]["device"] == "cuda:1"

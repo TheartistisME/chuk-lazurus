@@ -1,8 +1,11 @@
 """Tests for introspect embedding CLI commands."""
 
+import importlib.util
+import sys
 import tempfile
 from argparse import Namespace
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -10,7 +13,44 @@ import pytest
 
 from .conftest import requires_sklearn
 
+MLX_AVAILABLE = importlib.util.find_spec("mlx") is not None
+requires_mlx = pytest.mark.skipif(not MLX_AVAILABLE, reason="mlx not available")
 
+
+@pytest.fixture(autouse=True)
+def mock_backend_dispatch_module():
+    """Expose the backend-dispatch shim under the mocked introspection package."""
+    module_name = "chuk_lazarus.introspection._backend_dispatch"
+    original_module = sys.modules.get(module_name)
+    intro_module = sys.modules.get("chuk_lazarus.introspection")
+    original_path = getattr(intro_module, "__path__", None) if intro_module is not None else None
+
+    if intro_module is not None:
+        intro_module.__path__ = []
+
+    backend_dispatch = ModuleType(module_name)
+    backend_dispatch.from_backend_tensor = MagicMock()
+    backend_dispatch.to_backend_tensor = MagicMock()
+    sys.modules[module_name] = backend_dispatch
+
+    yield
+
+    if intro_module is not None:
+        if original_path is None:
+            try:
+                delattr(intro_module, "__path__")
+            except AttributeError:
+                pass
+        else:
+            intro_module.__path__ = original_path
+
+    if original_module is not None:
+        sys.modules[module_name] = original_module
+    else:
+        sys.modules.pop(module_name, None)
+
+
+@requires_mlx
 @requires_sklearn
 class TestIntrospectEmbedding:
     """Tests for introspect_embedding command."""
@@ -208,6 +248,7 @@ class TestIntrospectEmbedding:
                                 assert "results" in data
 
 
+@requires_mlx
 @requires_sklearn
 class TestIntrospectEarlyLayers:
     """Tests for introspect_early_layers command."""
@@ -481,6 +522,7 @@ class TestIntrospectEarlyLayers:
                             assert "probe_results" in data
 
 
+@requires_mlx
 @requires_sklearn
 class TestIntrospectEmbeddingEdgeCases:
     """Additional tests for edge cases and error handling."""
@@ -783,3 +825,161 @@ class TestIntrospectEmbeddingEdgeCases:
 
                     captured = capsys.readouterr()
                     assert "REPRESENTATION SIMILARITY" in captured.out
+
+
+@requires_sklearn
+class TestTorchRuntimeEmbeddingPaths:
+    """Backend-aware regression tests for the torch runtime path."""
+
+    @pytest.fixture
+    def embedding_args(self):
+        return Namespace(
+            model="test-model",
+            layers=None,
+            operation=None,
+            output=None,
+            backend="torch",
+            device="cpu",
+        )
+
+    @pytest.fixture
+    def early_layers_args(self):
+        return Namespace(
+            model="test-model",
+            layers=None,
+            operations=None,
+            digits=None,
+            analyze_positions=False,
+            output=None,
+            backend="torch",
+            device="cpu",
+        )
+
+    def test_embedding_uses_pipeline_for_torch_backend(
+        self, embedding_args, mock_ablation_study, capsys
+    ):
+        """Test embedding switches to UnifiedPipeline when backend=torch."""
+        from chuk_lazarus.cli.commands.introspect import introspect_embedding
+
+        mock_ablation_study.from_pretrained.side_effect = AssertionError(
+            "AblationStudy.from_pretrained should not run for torch backend"
+        )
+
+        embedding_dim = 8
+        fake_embedding = MagicMock(
+            side_effect=lambda ids: np.zeros((1, ids.shape[1], embedding_dim), dtype=np.float32)
+        )
+        fake_model = MagicMock()
+        fake_model.get_input_embeddings.return_value = fake_embedding
+        fake_pipeline = SimpleNamespace(
+            model=fake_model,
+            tokenizer=MagicMock(),
+            config=SimpleNamespace(num_hidden_layers=12),
+            runtime=SimpleNamespace(backend="cuda", _device="cpu"),
+        )
+
+        with (
+            patch(
+                "chuk_lazarus.cli.commands.introspect.embedding._load_pipeline",
+                return_value=fake_pipeline,
+            ) as mock_load,
+            patch("chuk_lazarus.cli.commands.introspect.embedding._to_backend_input") as mock_input,
+            patch(
+                "chuk_lazarus.cli.commands.introspect.embedding._to_numpy",
+                side_effect=lambda tensor, **_: np.asarray(tensor),
+            ),
+            patch("chuk_lazarus.introspection.ModelHooks") as mock_hooks_cls,
+            patch("sklearn.linear_model.LogisticRegression") as mock_lr,
+            patch("sklearn.linear_model.LinearRegression") as mock_lin,
+            patch("sklearn.model_selection.cross_val_score") as mock_cv,
+        ):
+            mock_input.return_value = np.ones((1, 3), dtype=np.int64)
+
+            mock_hooks = MagicMock()
+            mock_hooks.state.hidden_states = {
+                0: np.zeros((1, 1, embedding_dim), dtype=np.float32),
+                1: np.zeros((1, 1, embedding_dim), dtype=np.float32),
+                2: np.zeros((1, 1, embedding_dim), dtype=np.float32),
+            }
+            mock_hooks_cls.return_value = mock_hooks
+
+            mock_probe = MagicMock()
+            mock_probe.fit.return_value = mock_probe
+            mock_probe.score.return_value = 0.95
+            mock_lr.return_value = mock_probe
+
+            mock_reg = MagicMock()
+            mock_reg.fit.return_value = mock_reg
+            mock_reg.predict.side_effect = lambda X: np.ones(len(X)) * 5
+            mock_lin.return_value = mock_reg
+
+            mock_cv.return_value = np.array([0.9, 0.95, 0.92])
+
+            introspect_embedding(embedding_args)
+
+            captured = capsys.readouterr()
+            assert "Loading model" in captured.out
+            mock_load.assert_called_once_with("test-model", backend="torch", device="cpu")
+
+    def test_early_layers_uses_pipeline_for_torch_backend(
+        self, early_layers_args, mock_ablation_study, capsys
+    ):
+        """Test early-layers switches to UnifiedPipeline when backend=torch."""
+        from chuk_lazarus.cli.commands.introspect import introspect_early_layers
+
+        mock_ablation_study.from_pretrained.side_effect = AssertionError(
+            "AblationStudy.from_pretrained should not run for torch backend"
+        )
+
+        embedding_dim = 8
+        fake_pipeline = SimpleNamespace(
+            model=MagicMock(),
+            tokenizer=MagicMock(
+                encode=MagicMock(return_value=[1, 2, 3]),
+                decode=MagicMock(side_effect=lambda ids: "tok"),
+            ),
+            config=SimpleNamespace(num_hidden_layers=12),
+            runtime=SimpleNamespace(backend="cuda", _device="cpu"),
+        )
+
+        with (
+            patch(
+                "chuk_lazarus.cli.commands.introspect.embedding._load_pipeline",
+                return_value=fake_pipeline,
+            ) as mock_load,
+            patch("chuk_lazarus.cli.commands.introspect.embedding._to_backend_input") as mock_input,
+            patch(
+                "chuk_lazarus.cli.commands.introspect.embedding._to_numpy",
+                side_effect=lambda tensor, **_: np.asarray(tensor),
+            ),
+            patch("chuk_lazarus.introspection.ModelHooks") as mock_hooks_cls,
+            patch("sklearn.linear_model.LogisticRegression") as mock_lr,
+            patch("sklearn.linear_model.Ridge") as mock_ridge,
+        ):
+            mock_input.return_value = np.ones((1, 3), dtype=np.int64)
+
+            mock_hooks = MagicMock()
+            mock_hooks.state.hidden_states = {
+                0: np.zeros((1, 1, embedding_dim), dtype=np.float32),
+                1: np.zeros((1, 1, embedding_dim), dtype=np.float32),
+                2: np.zeros((1, 1, embedding_dim), dtype=np.float32),
+                4: np.zeros((1, 1, embedding_dim), dtype=np.float32),
+                8: np.zeros((1, 1, embedding_dim), dtype=np.float32),
+            }
+            mock_hooks_cls.return_value = mock_hooks
+
+            mock_probe = MagicMock()
+            mock_probe.fit.return_value = mock_probe
+            mock_probe.score.return_value = 0.95
+            mock_lr.return_value = mock_probe
+
+            mock_reg = MagicMock()
+            mock_reg.fit.return_value = mock_reg
+            mock_reg.predict.side_effect = lambda X: np.ones(len(X)) * 5
+            mock_ridge.return_value = mock_reg
+
+            introspect_early_layers(early_layers_args)
+
+            captured = capsys.readouterr()
+            assert "Loading model" in captured.out
+            mock_load.assert_called_once_with("test-model", backend="torch", device="cpu")

@@ -5,9 +5,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import mlx.core as mx
-import mlx.nn as nn
 import pytest
+
+mx = pytest.importorskip("mlx.core")
+nn = pytest.importorskip("mlx.nn")
 
 from chuk_lazarus.introspection.layer_analysis import (
     AttentionResult,

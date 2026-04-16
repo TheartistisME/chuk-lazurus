@@ -7,6 +7,148 @@ and in early layers.
 import json
 
 
+def _build_pipeline_config(
+    *,
+    backend: str | None = None,
+    device: str | None = None,
+):
+    """Construct a ``UnifiedPipelineConfig`` only when runtime overrides are requested."""
+    if backend is None and device is None:
+        return None
+
+    from ....inference import UnifiedPipelineConfig
+
+    fields = getattr(UnifiedPipelineConfig, "model_fields", {})
+    kwargs: dict[str, object] = {}
+
+    if backend is not None:
+        if "backend_name" in fields:
+            kwargs["backend_name"] = backend
+        if "backend" in fields:
+            from ....inference.backends import LazarusBackend
+
+            kwargs["backend"] = LazarusBackend.CUDA if backend == "torch" else LazarusBackend.MLX
+
+    if device is not None and "device" in fields:
+        kwargs["device"] = device
+
+    if not kwargs:
+        return None
+
+    return UnifiedPipelineConfig(**kwargs)
+
+
+def _load_pipeline(
+    model_id: str,
+    *,
+    backend: str | None = None,
+    device: str | None = None,
+):
+    """Load ``UnifiedPipeline`` for runtime-backed introspection commands."""
+    from ....inference import UnifiedPipeline
+
+    kwargs: dict[str, object] = {"verbose": False}
+    pipeline_config = _build_pipeline_config(backend=backend, device=device)
+    if pipeline_config is not None:
+        kwargs["pipeline_config"] = pipeline_config
+    return UnifiedPipeline.from_pretrained(model_id, **kwargs)
+
+
+def _runtime_backend_name(runtime) -> str | None:
+    """Normalize the pipeline runtime backend to the shared CLI names."""
+    backend = getattr(runtime, "backend", None)
+    if backend is None:
+        return None
+    name = str(backend).lower()
+    if name == "cuda":
+        return "torch"
+    if name == "mlx":
+        return "mlx"
+    return name
+
+
+def _activate_backend(backend: str, device: str | None = None):
+    """Ensure tensor conversion and hooks use the expected backend registry entry."""
+    from ....models_v2.core import backend as backend_mod
+
+    if backend == "torch":
+        return backend_mod.get_backend(name="torch", device=device)
+    return backend_mod.get_backend(name="mlx")
+
+
+def _to_backend_input(tokenizer, prompt: str, *, backend: str, device: str | None = None):
+    """Tokenize to a backend-native ``[1, seq]`` tensor."""
+    import numpy as np
+
+    from ....introspection._backend_dispatch import to_backend_tensor
+
+    token_ids = np.asarray(tokenizer.encode(prompt), dtype=np.int64)
+    active_backend = _activate_backend(backend, device)
+    return to_backend_tensor(token_ids[None, :], backend=active_backend)
+
+
+def _to_numpy(tensor, *, backend: str, device: str | None = None):
+    """Convert a backend tensor to ``numpy``."""
+    import numpy as np
+
+    from ....introspection._backend_dispatch import from_backend_tensor
+
+    active_backend = _activate_backend(backend, device)
+    return np.asarray(from_backend_tensor(tensor, backend=active_backend))
+
+
+def _get_embedding_layer(model):
+    """Return the model's token embedding module across MLX and torch runtimes."""
+    getter = getattr(model, "get_input_embeddings", None)
+    if callable(getter):
+        embedding = getter()
+        if embedding is not None:
+            return embedding
+
+    if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
+        return model.model.embed_tokens
+    if hasattr(model, "embed_tokens"):
+        return model.embed_tokens
+    return None
+
+
+def _resolve_runtime(args):
+    """Resolve ``(model, tokenizer, config, num_layers, backend, device)`` for this command."""
+    backend = getattr(args, "backend", None)
+    device = getattr(args, "device", None)
+
+    if backend == "torch":
+        pipeline = _load_pipeline(args.model, backend=backend, device=device)
+        runtime = getattr(pipeline, "runtime", None)
+        runtime_backend = _runtime_backend_name(runtime) or "torch"
+        runtime_device = getattr(runtime, "_device", None)
+        if runtime_device is not None:
+            runtime_device = str(runtime_device)
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
+        config = pipeline.config
+        num_layers = getattr(config, "num_hidden_layers", None)
+        if num_layers is None:
+            num_layers = getattr(getattr(config, "text_config", None), "num_hidden_layers", None)
+        if num_layers is None and hasattr(model, "model") and hasattr(model.model, "layers"):
+            num_layers = len(model.model.layers)
+        if num_layers is None and hasattr(model, "layers"):
+            num_layers = len(model.layers)
+        return model, tokenizer, config, int(num_layers or 32), runtime_backend, runtime_device
+
+    from ....introspection.ablation import AblationStudy
+
+    study = AblationStudy.from_pretrained(args.model)
+    return (
+        study.adapter.model,
+        study.adapter.tokenizer,
+        study.adapter.config,
+        study.adapter.num_layers,
+        "mlx",
+        None,
+    )
+
+
 def introspect_embedding(args):
     """Analyze what information is encoded at the embedding level vs after layers.
 
@@ -19,19 +161,14 @@ def introspect_embedding(args):
     2. Operation type detection (mult vs add) from embeddings
     3. Answer correlation with embeddings vs after layers
     """
-    import mlx.core as mx
     import numpy as np
     from sklearn.linear_model import LinearRegression, LogisticRegression
     from sklearn.model_selection import cross_val_score
 
     from ....introspection import CaptureConfig, ModelHooks, PositionSelection
-    from ....introspection.ablation import AblationStudy
 
     print(f"Loading model: {args.model}")
-    study = AblationStudy.from_pretrained(args.model)
-    model = study.adapter.model
-    tokenizer = study.adapter.tokenizer
-    config = study.adapter.config
+    model, tokenizer, config, _num_layers, backend_name, runtime_device = _resolve_runtime(args)
 
     # Generate test prompts
     # Arithmetic prompts
@@ -72,19 +209,23 @@ def introspect_embedding(args):
 
     def get_embeddings_and_hidden(prompt, layers_to_capture):
         """Get embedding and hidden states at specified layers."""
-        # Get raw embeddings (before any layer)
-        input_ids = tokenizer.encode(prompt, return_tensors="np")
-        input_ids_mx = mx.array(input_ids)
+        input_ids = _to_backend_input(
+            tokenizer,
+            prompt,
+            backend=backend_name,
+            device=runtime_device,
+        )
 
-        # Access embedding layer directly
-        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
-            embed = model.model.embed_tokens(input_ids_mx)
-        elif hasattr(model, "embed_tokens"):
-            embed = model.embed_tokens(input_ids_mx)
-        else:
+        embed_layer = _get_embedding_layer(model)
+        if embed_layer is None:
             raise AttributeError("Cannot find embedding layer")
 
-        embedding = np.array(embed[0, -1, :].astype(mx.float32), copy=False)
+        embed = embed_layer(input_ids)
+        embedding = _to_numpy(
+            embed[0, -1, :],
+            backend=backend_name,
+            device=runtime_device,
+        ).astype(np.float32, copy=False)
 
         # Get hidden states at specified layers
         hooks = ModelHooks(model, model_config=config)
@@ -95,12 +236,16 @@ def introspect_embedding(args):
                 positions=PositionSelection.LAST,
             )
         )
-        hooks.forward(input_ids_mx)
+        hooks.forward(input_ids)
 
         hidden_states = {}
         for layer in layers_to_capture:
             h = hooks.state.hidden_states[layer][0, 0, :]
-            hidden_states[layer] = np.array(h.astype(mx.float32), copy=False)
+            hidden_states[layer] = _to_numpy(
+                h,
+                backend=backend_name,
+                device=runtime_device,
+            ).astype(np.float32, copy=False)
 
         return embedding, hidden_states
 
@@ -288,25 +433,19 @@ def introspect_early_layers(args):
     - Whether computation happens in early layers (answer extractable early)
     - The difference between "representation similarity" and "information content"
     """
-    import mlx.core as mx
     import numpy as np
     from sklearn.linear_model import LogisticRegression, Ridge
 
     from ....introspection import CaptureConfig, ModelHooks, PositionSelection
-    from ....introspection.ablation import AblationStudy
 
     print(f"Loading model: {args.model}")
-    study = AblationStudy.from_pretrained(args.model)
-    model = study.adapter.model
-    tokenizer = study.adapter.tokenizer
-    config = study.adapter.config
+    model, tokenizer, config, num_layers, backend_name, runtime_device = _resolve_runtime(args)
 
     # Parse layers
     if args.layers:
         layers = [int(layer.strip()) for layer in args.layers.split(",")]
     else:
         # Default: first few layers
-        num_layers = study.adapter.num_layers
         layers = [0, 1, 2, 4, min(8, num_layers - 1)]
 
     # Parse operations
@@ -363,10 +502,19 @@ def introspect_early_layers(args):
                 positions=PositionSelection.LAST,
             )
         )
-        input_ids = tokenizer.encode(prompt, return_tensors="np")
-        hooks.forward(mx.array(input_ids))
+        input_ids = _to_backend_input(
+            tokenizer,
+            prompt,
+            backend=backend_name,
+            device=runtime_device,
+        )
+        hooks.forward(input_ids)
         h = hooks.state.hidden_states[layer_idx][0, 0, :]
-        return np.array(h.astype(mx.float32), copy=False)
+        return _to_numpy(
+            h,
+            backend=backend_name,
+            device=runtime_device,
+        ).astype(np.float32, copy=False)
 
     # Part 1: Cross-expression similarity at '=' position
     print(f"\n{'=' * 70}")
@@ -487,8 +635,19 @@ def introspect_early_layers(args):
                     positions=PositionSelection.ALL,
                 )
             )
-            hooks.forward(mx.array(tokens)[None, :])
-            h = np.array(hooks.state.hidden_states[layer].astype(mx.float32))[0]
+            hooks.forward(
+                _to_backend_input(
+                    tokenizer,
+                    sample_prompt,
+                    backend=backend_name,
+                    device=runtime_device,
+                )
+            )
+            h = _to_numpy(
+                hooks.state.hidden_states[layer],
+                backend=backend_name,
+                device=runtime_device,
+            )[0].astype(np.float32, copy=False)
 
             # Print similarity matrix
             print(f"{'':10}", end="")

@@ -11,7 +11,17 @@ def introspect_layer(args):
     from ....introspection import LayerAnalyzer
 
     print(f"Loading model: {args.model}")
-    analyzer = LayerAnalyzer.from_pretrained(args.model)
+    backend = getattr(args, "backend", None)
+    device = getattr(args, "device", None)
+    if backend is not None or device is not None:
+        analyzer = LayerAnalyzer.load(
+            args.model,
+            backend=backend,
+            device=device,
+            verbose=False,
+        )
+    else:
+        analyzer = LayerAnalyzer.from_pretrained(args.model)
 
     # Parse prompts
     if args.prompts.startswith("@"):
@@ -135,6 +145,8 @@ def introspect_format_sensitivity(args):
         model_id=args.model,
         base_prompts=base_prompts,
         layers=layers,
+        backend=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
     )
 
     # Find where format matters
