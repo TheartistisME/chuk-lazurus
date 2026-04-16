@@ -1,8 +1,45 @@
 """Tests for introspect ablation CLI commands."""
 
+import asyncio
+import sys
 from argparse import Namespace
+from types import ModuleType, SimpleNamespace
+
+import numpy as np
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_backend_dispatch_module():
+    """Make the introspection mock package expose the backend-dispatch submodule."""
+    intro = sys.modules.get("chuk_lazarus.introspection")
+    original_dispatch = sys.modules.get("chuk_lazarus.introspection._backend_dispatch")
+    original_path = intro.__dict__.get("__path__") if intro is not None else None
+
+    backend_dispatch = ModuleType("chuk_lazarus.introspection._backend_dispatch")
+    backend_dispatch.from_backend_tensor = lambda tensor, backend=None: tensor
+    backend_dispatch.to_backend_tensor = lambda tensor, backend=None: tensor
+
+    if intro is not None:
+        intro.__dict__["__path__"] = []
+        intro._backend_dispatch = backend_dispatch
+
+    sys.modules["chuk_lazarus.introspection._backend_dispatch"] = backend_dispatch
+
+    yield
+
+    if original_dispatch is None:
+        sys.modules.pop("chuk_lazarus.introspection._backend_dispatch", None)
+    else:
+        sys.modules["chuk_lazarus.introspection._backend_dispatch"] = original_dispatch
+
+    if intro is not None:
+        if original_path is None:
+            intro.__dict__.pop("__path__", None)
+        else:
+            intro.__dict__["__path__"] = original_path
+        intro._backend_dispatch = original_dispatch
 
 
 class TestIntrospectAblate:
@@ -919,6 +956,103 @@ class TestIntrospectWeightDiff:
             introspect_weight_diff(args)
             mock_run.assert_called_once()
 
+    @pytest.mark.parametrize(
+        ("backend_name", "device"),
+        [
+            ("torch", "cuda:1"),
+            ("mlx", None),
+        ],
+    )
+    def test_uses_backend_safe_loader(
+        self,
+        backend_name,
+        device,
+        capsys,
+    ):
+        """Test weight diff loads both models through the runtime-safe ablation seam."""
+        from unittest.mock import MagicMock, call, patch
+
+        from chuk_lazarus.cli.commands.introspect.ablation import (
+            _async_introspect_weight_diff,
+        )
+
+        args = Namespace(
+            base="test/base",
+            finetuned="test/ft",
+            backend=backend_name,
+            device=device,
+            output=None,
+        )
+        resolved_backend = SimpleNamespace(name=backend_name, device=device)
+
+        def make_study(mlp_weights, attn_weights):
+            adapter = MagicMock()
+            adapter.num_layers = len(mlp_weights)
+            adapter.get_mlp_down_weight.side_effect = lambda layer: mlp_weights[layer]
+            adapter.get_attn_o_weight.side_effect = lambda layer: attn_weights[layer]
+            study = MagicMock()
+            study.adapter = adapter
+            return study
+
+        base_study = make_study(
+            [
+                np.array([1.0, 0.0]),
+                np.array([0.5, 0.5]),
+            ],
+            [
+                np.array([0.0, 1.0]),
+                np.array([1.0, 1.0]),
+            ],
+        )
+        ft_study = make_study(
+            [
+                np.array([1.2, 0.0]),
+                np.array([0.5, 0.8]),
+            ],
+            [
+                np.array([0.0, 1.3]),
+                np.array([0.7, 1.0]),
+            ],
+        )
+
+        with (
+            patch(
+                "chuk_lazarus.models_v2.core.backend.get_backend",
+                return_value=resolved_backend,
+            ),
+            patch(
+                "chuk_lazarus.introspection.ablation.AblationStudy.from_pretrained",
+                side_effect=[base_study, ft_study],
+            ) as mock_from_pretrained,
+            patch(
+                "chuk_lazarus.introspection._backend_dispatch.from_backend_tensor",
+                side_effect=lambda tensor, backend=None: tensor,
+            ) as mock_from_backend_tensor,
+        ):
+            asyncio.run(_async_introspect_weight_diff(args))
+
+        expected_device = device if backend_name == "torch" else None
+        mock_from_pretrained.assert_has_calls(
+            [
+                call(
+                    "test/base",
+                    backend=backend_name,
+                    device=expected_device,
+                ),
+                call(
+                    "test/ft",
+                    backend=backend_name,
+                    device=expected_device,
+                ),
+            ]
+        )
+        assert mock_from_backend_tensor.call_count == 8
+
+        captured = capsys.readouterr()
+        assert "Comparing 2 layers" in captured.out
+        assert "mlp_down" in captured.out
+        assert "attn_o" in captured.out
+
 
 class TestIntrospectActivationDiff:
     """Tests for introspect_activation_diff command."""
@@ -942,3 +1076,121 @@ class TestIntrospectActivationDiff:
         ) as mock_run:
             introspect_activation_diff(args)
             mock_run.assert_called_once()
+
+    def test_threads_backend_and_tensor_conversion_through_hooks(self, capsys):
+        """Test activation diff uses backend-aware loading and tensor conversion."""
+        from unittest.mock import MagicMock, call, patch
+
+        from chuk_lazarus.cli.commands.introspect.ablation import (
+            _async_introspect_activation_diff,
+        )
+
+        args = Namespace(
+            base="test/base",
+            finetuned="test/ft",
+            prompts="alpha,beta",
+            backend="torch",
+            device="cuda:1",
+            output=None,
+        )
+        resolved_backend = SimpleNamespace(name="torch", device="cuda:1")
+        backend_input = object()
+        hook_instances = []
+
+        tokenizer = MagicMock()
+        tokenizer.encode.side_effect = lambda prompt, return_tensors="np": np.array(
+            [[len(prompt), 1]],
+            dtype=np.int64,
+        )
+
+        base_model = SimpleNamespace(
+            hidden_by_layer={
+                0: np.array([[[1.0, 0.0]]], dtype=np.float32),
+                1: np.array([[[1.0, 1.0]]], dtype=np.float32),
+            }
+        )
+        ft_model = SimpleNamespace(
+            hidden_by_layer={
+                0: np.array([[[0.0, 1.0]]], dtype=np.float32),
+                1: np.array([[[1.0, 1.0]]], dtype=np.float32),
+            }
+        )
+
+        def make_study(model, config_name):
+            adapter = MagicMock()
+            adapter.model = model
+            adapter.config = SimpleNamespace(name=config_name)
+            adapter.num_layers = 2
+            adapter.tokenizer = tokenizer
+            study = MagicMock()
+            study.adapter = adapter
+            return study
+
+        class FakeHooks:
+            def __init__(self, model, model_config=None):
+                self.model = model
+                self.model_config = model_config
+                self.state = SimpleNamespace(hidden_states={})
+                hook_instances.append(self)
+
+            def configure(self, config):
+                self.config = config
+                return self
+
+            def forward(self, input_ids):
+                self.forward_input_ids = input_ids
+                self.state.hidden_states = dict(self.model.hidden_by_layer)
+                return None
+
+        base_study = make_study(base_model, "base-config")
+        ft_study = make_study(ft_model, "ft-config")
+
+        with (
+            patch(
+                "chuk_lazarus.models_v2.core.backend.get_backend",
+                return_value=resolved_backend,
+            ),
+            patch(
+                "chuk_lazarus.introspection.ablation.AblationStudy.from_pretrained",
+                side_effect=[base_study, ft_study],
+            ) as mock_from_pretrained,
+            patch(
+                "chuk_lazarus.introspection.ModelHooks",
+                FakeHooks,
+            ),
+            patch(
+                "chuk_lazarus.introspection._backend_dispatch.to_backend_tensor",
+                return_value=backend_input,
+            ) as mock_to_backend_tensor,
+            patch(
+                "chuk_lazarus.introspection._backend_dispatch.from_backend_tensor",
+                side_effect=lambda tensor, backend=None: tensor,
+            ),
+        ):
+            asyncio.run(_async_introspect_activation_diff(args))
+
+        mock_from_pretrained.assert_has_calls(
+            [
+                call(
+                    "test/base",
+                    backend="torch",
+                    device="cuda:1",
+                ),
+                call(
+                    "test/ft",
+                    backend="torch",
+                    device="cuda:1",
+                ),
+            ]
+        )
+        assert mock_to_backend_tensor.call_count == 2
+        assert all(
+            hook.forward_input_ids is backend_input
+            for hook in hook_instances
+        )
+        assert tokenizer.encode.call_count == 2
+
+        captured = capsys.readouterr()
+        assert "Testing 2 prompts" in captured.out
+        assert "Avg Cos Sim" in captured.out
+        assert "1.0000" in captured.out

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 from argparse import Namespace
+from contextlib import contextmanager
+from typing import Any
 
 from ._types import AblationConfig
 from ._utils import parse_layers
@@ -224,6 +226,84 @@ def _print_multi_ablation_results(
         print("\n=> BASELINE FAILS: Original doesn't pass criterion")
 
 
+def _resolve_runtime_request(
+    backend: str | None,
+    device: str | None,
+) -> tuple[Any, str, str | None]:
+    """Resolve the concrete runtime backend/device for introspection helpers."""
+    from ....models_v2.core.backend import get_backend
+
+    resolved_backend = get_backend(name=backend, device=device)
+    backend_name = str(resolved_backend.name).lower()
+    resolved_device = getattr(resolved_backend, "device", None) if backend_name == "torch" else None
+    return resolved_backend, backend_name, resolved_device
+
+
+@contextmanager
+def _using_backend(backend: Any):
+    """Temporarily pin the active backend for nested hook helpers."""
+    from ....models_v2.core import backend as backend_mod
+
+    previous = getattr(backend_mod, "_current_backend", None)
+    backend_mod._current_backend = backend
+    try:
+        yield
+    finally:
+        backend_mod._current_backend = previous
+
+
+def _tensor_to_numpy(tensor: Any, *, backend: Any):
+    """Convert a backend tensor to float64 numpy for backend-neutral math."""
+    import numpy as np
+
+    from ....introspection._backend_dispatch import from_backend_tensor
+
+    return np.asarray(from_backend_tensor(tensor, backend=backend), dtype=np.float64)
+
+
+def _relative_diff(base_weight: Any, other_weight: Any, *, backend: Any) -> float:
+    """Compute ||other-base|| / ||base|| using backend-neutral numpy math."""
+    import numpy as np
+
+    base_np = _tensor_to_numpy(base_weight, backend=backend)
+    other_np = _tensor_to_numpy(other_weight, backend=backend)
+    diff_np = other_np - base_np
+    base_norm = float(np.linalg.norm(base_np.ravel()))
+    diff_norm = float(np.linalg.norm(diff_np.ravel()))
+    return diff_norm / (base_norm + 1e-8)
+
+
+def _last_hidden_vector(hidden_state: Any, *, backend: Any):
+    """Extract the final token vector from a captured hidden-state tensor."""
+    hidden_np = _tensor_to_numpy(hidden_state, backend=backend)
+    if hidden_np.ndim >= 3:
+        return hidden_np[0, -1]
+    if hidden_np.ndim == 2:
+        return hidden_np[-1]
+    return hidden_np.reshape(-1)
+
+
+def _cosine_similarity(left: Any, right: Any, *, backend: Any) -> float:
+    """Cosine similarity between two backend tensors."""
+    import numpy as np
+
+    left_vec = _last_hidden_vector(left, backend=backend)
+    right_vec = _last_hidden_vector(right, backend=backend)
+    dot = float(np.dot(left_vec, right_vec))
+    norm_left = float(np.linalg.norm(left_vec))
+    norm_right = float(np.linalg.norm(right_vec))
+    return dot / (norm_left * norm_right + 1e-8)
+
+
+def _parse_activation_prompts(prompts_arg: str) -> list[str]:
+    """Parse activation-diff prompts from @file, comma, or pipe-separated input."""
+    from ._utils import parse_prompts
+
+    if prompts_arg.startswith("@") or "|" in prompts_arg:
+        return [prompt for prompt in parse_prompts(prompts_arg) if prompt]
+    return [prompt.strip() for prompt in prompts_arg.split(",") if prompt.strip()]
+
+
 def introspect_weight_diff(args: Namespace) -> None:
     """Compare weight divergence between two models."""
     asyncio.run(_async_introspect_weight_diff(args))
@@ -233,47 +313,52 @@ async def _async_introspect_weight_diff(args: Namespace) -> None:
     """Async implementation of weight diff command."""
     import json
 
-    import mlx.core as mx
-    from huggingface_hub import snapshot_download
+    from ....introspection.ablation import AblationStudy
 
-    from ....introspection.ablation import AblationStudy, ModelAdapter
+    resolved_backend, backend_name, resolved_device = _resolve_runtime_request(
+        getattr(args, "backend", None),
+        getattr(args, "device", None),
+    )
 
     print(f"Loading base model: {args.base}")
-    base_path = snapshot_download(args.base, allow_patterns=["*.json", "*.safetensors"])
+    base_study = AblationStudy.from_pretrained(
+        args.base,
+        backend=backend_name,
+        device=resolved_device,
+    )
 
     print(f"Loading fine-tuned model: {args.finetuned}")
-    ft_path = snapshot_download(args.finetuned, allow_patterns=["*.json", "*.safetensors"])
+    ft_study = AblationStudy.from_pretrained(
+        args.finetuned,
+        backend=backend_name,
+        device=resolved_device,
+    )
 
-    # Detect family and load
-    family = AblationStudy._detect_family(base_path)
-    print(f"Detected model family: {family}")
+    base_adapter = base_study.adapter
+    ft_adapter = ft_study.adapter
+    common_layers = min(base_adapter.num_layers, ft_adapter.num_layers)
 
-    base_model, base_config = AblationStudy._load_model(base_path, family)
-    ft_model, ft_config = AblationStudy._load_model(ft_path, family)
+    if base_adapter.num_layers != ft_adapter.num_layers:
+        print(
+            "Warning: layer count mismatch between models; "
+            f"comparing first {common_layers} shared layers."
+        )
 
-    # Compare weights
-    base_adapter = ModelAdapter(base_model, None, base_config)
-    ft_adapter = ModelAdapter(ft_model, None, ft_config)
-
-    print(f"\nComparing {base_adapter.num_layers} layers...")
+    print(f"\nComparing {common_layers} layers...")
 
     results = []
-    for layer_idx in range(base_adapter.num_layers):
+    for layer_idx in range(common_layers):
         # Compare MLP
         try:
-            base_mlp = base_adapter.get_mlp_down_weight(layer_idx)
-            ft_mlp = ft_adapter.get_mlp_down_weight(layer_idx)
-
-            diff = ft_mlp - base_mlp
-            base_norm = float(mx.sqrt(mx.sum(base_mlp * base_mlp)))
-            diff_norm = float(mx.sqrt(mx.sum(diff * diff)))
-            rel_diff = diff_norm / (base_norm + 1e-8)
-
             results.append(
                 {
                     "layer": layer_idx,
                     "component": "mlp_down",
-                    "relative_diff": rel_diff,
+                    "relative_diff": _relative_diff(
+                        base_adapter.get_mlp_down_weight(layer_idx),
+                        ft_adapter.get_mlp_down_weight(layer_idx),
+                        backend=resolved_backend,
+                    ),
                 }
             )
         except Exception:
@@ -281,19 +366,15 @@ async def _async_introspect_weight_diff(args: Namespace) -> None:
 
         # Compare attention
         try:
-            base_attn = base_adapter.get_attn_o_weight(layer_idx)
-            ft_attn = ft_adapter.get_attn_o_weight(layer_idx)
-
-            diff = ft_attn - base_attn
-            base_norm = float(mx.sqrt(mx.sum(base_attn * base_attn)))
-            diff_norm = float(mx.sqrt(mx.sum(diff * diff)))
-            rel_diff = diff_norm / (base_norm + 1e-8)
-
             results.append(
                 {
                     "layer": layer_idx,
                     "component": "attn_o",
-                    "relative_diff": rel_diff,
+                    "relative_diff": _relative_diff(
+                        base_adapter.get_attn_o_weight(layer_idx),
+                        ft_adapter.get_attn_o_weight(layer_idx),
+                        backend=resolved_backend,
+                    ),
                 }
             )
         except Exception:
@@ -327,75 +408,96 @@ async def _async_introspect_activation_diff(args: Namespace) -> None:
     """Async implementation of activation diff command."""
     import json
 
-    import mlx.core as mx
-
     from ....introspection import CaptureConfig, ModelHooks, PositionSelection
+    from ....introspection._backend_dispatch import to_backend_tensor
     from ....introspection.ablation import AblationStudy
-    from ._utils import parse_prompts
+
+    resolved_backend, backend_name, resolved_device = _resolve_runtime_request(
+        getattr(args, "backend", None),
+        getattr(args, "device", None),
+    )
 
     # Parse prompts
-    prompts = parse_prompts(args.prompts, delimiter=",")
+    prompts = _parse_activation_prompts(args.prompts)
     print(f"Testing {len(prompts)} prompts")
 
     # Load models
     print(f"Loading base model: {args.base}")
-    base_study = AblationStudy.from_pretrained(args.base)
+    base_study = AblationStudy.from_pretrained(
+        args.base,
+        backend=backend_name,
+        device=resolved_device,
+    )
 
     print(f"Loading fine-tuned model: {args.finetuned}")
-    ft_study = AblationStudy.from_pretrained(args.finetuned)
+    ft_study = AblationStudy.from_pretrained(
+        args.finetuned,
+        backend=backend_name,
+        device=resolved_device,
+    )
 
     tokenizer = base_study.adapter.tokenizer
+    common_layers = min(base_study.adapter.num_layers, ft_study.adapter.num_layers)
+
+    if base_study.adapter.num_layers != ft_study.adapter.num_layers:
+        print(
+            "Warning: layer count mismatch between models; "
+            f"comparing first {common_layers} shared layers."
+        )
 
     results = []
-    for prompt in prompts:
-        print(f"\nPrompt: {prompt[:50]}...")
-        input_ids = tokenizer.encode(prompt, return_tensors="np")
-        input_ids = mx.array(input_ids)
-
-        # Get activations from both models
-        base_hooks = ModelHooks(base_study.adapter.model)
-        base_hooks.configure(
-            CaptureConfig(
-                capture_hidden_states=True,
-                positions=PositionSelection.LAST,
+    with _using_backend(resolved_backend):
+        for prompt in prompts:
+            print(f"\nPrompt: {prompt[:50]}...")
+            input_ids = to_backend_tensor(
+                tokenizer.encode(prompt, return_tensors="np"),
+                backend=resolved_backend,
             )
-        )
-        base_hooks.forward(input_ids)
 
-        ft_hooks = ModelHooks(ft_study.adapter.model)
-        ft_hooks.configure(
-            CaptureConfig(
-                capture_hidden_states=True,
-                positions=PositionSelection.LAST,
+            # Get activations from both models
+            base_hooks = ModelHooks(
+                base_study.adapter.model,
+                model_config=base_study.adapter.config,
             )
-        )
-        ft_hooks.forward(input_ids)
-
-        # Compare
-        for layer_idx in range(base_study.adapter.num_layers):
-            base_h = base_hooks.state.hidden_states.get(layer_idx)
-            ft_h = ft_hooks.state.hidden_states.get(layer_idx)
-
-            if base_h is None or ft_h is None:
-                continue
-
-            # Flatten to last position
-            base_h = base_h[0, -1] if base_h.ndim == 3 else base_h[-1]
-            ft_h = ft_h[0, -1] if ft_h.ndim == 3 else ft_h[-1]
-
-            # Cosine similarity
-            dot = float(mx.sum(base_h * ft_h))
-            norm_base = float(mx.sqrt(mx.sum(base_h * base_h)))
-            norm_ft = float(mx.sqrt(mx.sum(ft_h * ft_h)))
-            cos_sim = dot / (norm_base * norm_ft + 1e-8)
-
-            results.append(
-                {
-                    "prompt": prompt[:50],
-                    "layer": layer_idx,
-                    "cosine_similarity": cos_sim,
-                }
+            base_hooks.configure(
+                CaptureConfig(
+                    capture_hidden_states=True,
+                    positions=PositionSelection.LAST,
+                )
             )
+            base_hooks.forward(input_ids)
+
+            ft_hooks = ModelHooks(
+                ft_study.adapter.model,
+                model_config=ft_study.adapter.config,
+            )
+            ft_hooks.configure(
+                CaptureConfig(
+                    capture_hidden_states=True,
+                    positions=PositionSelection.LAST,
+                )
+            )
+            ft_hooks.forward(input_ids)
+
+            # Compare
+            for layer_idx in range(common_layers):
+                base_h = base_hooks.state.hidden_states.get(layer_idx)
+                ft_h = ft_hooks.state.hidden_states.get(layer_idx)
+
+                if base_h is None or ft_h is None:
+                    continue
+
+                results.append(
+                    {
+                        "prompt": prompt[:50],
+                        "layer": layer_idx,
+                        "cosine_similarity": _cosine_similarity(
+                            base_h,
+                            ft_h,
+                            backend=resolved_backend,
+                        ),
+                    }
+                )
 
     # Aggregate by layer
     layer_avg: dict[int, list[float]] = {}
