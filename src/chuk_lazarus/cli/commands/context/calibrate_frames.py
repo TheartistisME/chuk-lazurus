@@ -140,6 +140,86 @@ PROBE_CATEGORIES: dict[str, list[int]] = {
 }
 
 
+def _build_pipeline_config(backend_name: str | None, device: str | None):
+    """Create a UnifiedPipelineConfig when backend selection is explicit."""
+    if backend_name is None and device is None:
+        return None
+
+    from ....inference import UnifiedPipelineConfig
+
+    fields = getattr(UnifiedPipelineConfig, "model_fields", {})
+    kwargs: dict[str, object] = {}
+
+    if backend_name is not None and "backend_name" in fields:
+        kwargs["backend_name"] = backend_name
+    if device is not None and "device" in fields:
+        kwargs["device"] = device
+
+    if not kwargs:
+        return None
+
+    return UnifiedPipelineConfig(**kwargs)
+
+
+def _warm_mlx_pipeline(pipeline, mx) -> None:
+    """Preserve the legacy MLX warm-up path without touching torch hosts."""
+    from ....inference.context.kv_generator import make_kv_generator
+
+    kv_gen = make_kv_generator(pipeline.model, pipeline.config)
+    _warm = mx.array([[1, 2, 3]])
+    _ = kv_gen.prefill(_warm)
+    mx.eval()
+
+
+def _residual_state_to_numpy(residual_state):
+    """Normalize backend-specific residual tensors into a 1D float32 NumPy vector."""
+    import numpy as np
+
+    residual = residual_state.tensor
+    if hasattr(residual, "detach"):
+        residual = residual.detach()
+    if hasattr(residual, "cpu"):
+        residual = residual.cpu()
+
+    if hasattr(residual, "numpy"):
+        array = residual.numpy()
+    elif hasattr(residual, "tolist"):
+        array = np.asarray(residual.tolist())
+    else:
+        array = np.asarray(residual)
+
+    array = np.asarray(array, dtype=np.float32)
+    if array.ndim == 2 and array.shape[0] == 1:
+        return array[0]
+    return array.reshape(-1)
+
+
+def _save_frame_bank(
+    output_path: Path,
+    *,
+    frame_bank,
+    compass_layer: int,
+    total_dims: int,
+    mx=None,
+) -> None:
+    """Write a darkspace frame bank artifact compatible with context prefill."""
+    import numpy as np
+
+    save_dict = {
+        "frame_bank": np.asarray(frame_bank, dtype=np.float32),
+        "compass_layer": np.asarray(compass_layer, dtype=np.int32),
+        "n_categories": np.asarray(0, dtype=np.int32),
+        "dims_per_frame": np.asarray(total_dims, dtype=np.int32),
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if mx is not None:
+        mx.savez(str(output_path), **{key: mx.array(value) for key, value in save_dict.items()})
+        return
+
+    np.savez(str(output_path), **save_dict)
+
+
 async def context_calibrate_frames_cmd(args: Namespace) -> None:
     """CLI entry point: discover dark space coordinate frames for a model."""
     from ....models_v2.core.backend import get_backend
@@ -148,18 +228,17 @@ async def context_calibrate_frames_cmd(args: Namespace) -> None:
         name=getattr(args, "backend", None),
         device=getattr(args, "device", None),
     )
-    if str(backend.name).lower() == "torch":
-        raise NotImplementedError(
-            "context calibrate-frames is MLX-only in Epic 2 (emits .mlxckpt "
-            "frame bank via mx.savez). Tracked for Epic 3: "
-            "docs/refactor/dual-backend-cuda-epic3/00-scope.md#context-calibrate-frames"
-        )
-
-    import mlx.core as mx
     import numpy as np
 
     from ....inference import UnifiedPipeline
-    from ....inference.context.kv_generator import make_kv_generator
+
+    backend_name = str(backend.name).lower()
+    resolved_device = getattr(backend, "device", None) if backend_name == "torch" else None
+    pipeline_config = _build_pipeline_config(backend_name, resolved_device)
+
+    mx = None
+    if backend_name == "mlx":
+        import mlx.core as mx
 
     output_path = Path(args.output)
     n_dims = getattr(args, "dims_per_frame", 64)
@@ -170,17 +249,16 @@ async def context_calibrate_frames_cmd(args: Namespace) -> None:
     # 1. Load model
     # ------------------------------------------------------------------
     print(f"Loading model: {args.model}", file=sys.stderr)
-    pipeline = UnifiedPipeline.from_pretrained(args.model, verbose=False)
-    tokenizer = pipeline.tokenizer
-    kv_gen = make_kv_generator(pipeline.model, pipeline.config)
+    pipeline_kwargs = {"verbose": False}
+    if pipeline_config is not None:
+        pipeline_kwargs["pipeline_config"] = pipeline_config
+    pipeline = UnifiedPipeline.from_pretrained(args.model, **pipeline_kwargs)
 
     num_layers = pipeline.config.num_hidden_layers
     compass_layer = round(num_layers * target_layer_frac)
 
-    # Warm up
-    _warm = mx.array([[1, 2, 3]])
-    _, _kv = kv_gen.prefill(_warm)
-    mx.eval()
+    if mx is not None:
+        _warm_mlx_pipeline(pipeline, mx)
 
     print(
         f"Model: {args.model}  |  {num_layers} layers  |  "
@@ -189,23 +267,21 @@ async def context_calibrate_frames_cmd(args: Namespace) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 2. Extract L26 residuals for all probes
+    # 2. Extract commitment-layer residuals for all probes
     # ------------------------------------------------------------------
     t0 = time.monotonic()
     all_residuals: list[np.ndarray] = []
 
     for prompt in PROBE_PROMPTS:
-        token_ids = tokenizer.encode(prompt, add_special_tokens=False)
-        input_ids = mx.array(token_ids)[None]
-        h = kv_gen.prefill_to_layer(input_ids, target_layer=compass_layer)
-        vec = h[0, -1, :]
-        all_residuals.append(np.array(vec.tolist(), dtype=np.float32))
+        residual_state = pipeline.runtime.extract_residual_state(prompt, layer_index=compass_layer)
+        all_residuals.append(_residual_state_to_numpy(residual_state))
 
     elapsed = time.monotonic() - t0
     total_probes = len(PROBE_PROMPTS)
+    rate = total_probes / elapsed if elapsed > 0 else 0.0
     print(
         f"  Extracted {total_probes} probe residuals in {elapsed:.1f}s "
-        f"({total_probes / elapsed:.0f} probes/s)",
+        f"({rate:.0f} probes/s)",
         file=sys.stderr,
     )
 
@@ -222,15 +298,13 @@ async def context_calibrate_frames_cmd(args: Namespace) -> None:
     # ------------------------------------------------------------------
     # 4. Save frame bank
     # ------------------------------------------------------------------
-    save_dict = {
-        "frame_bank": mx.array(all_frames),
-        "compass_layer": mx.array(compass_layer),
-        "n_categories": mx.array(0),  # 0 = model-driven, no categories
-        "dims_per_frame": mx.array(total_dims),
-    }
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    mx.savez(str(output_path), **save_dict)
+    _save_frame_bank(
+        output_path,
+        frame_bank=all_frames,
+        compass_layer=compass_layer,
+        total_dims=total_dims,
+        mx=mx,
+    )
 
     file_size = output_path.stat().st_size
     print(
