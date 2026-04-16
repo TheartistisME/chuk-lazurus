@@ -339,6 +339,8 @@ class TestIntrospectLogitLens:
             layer_step=4,
             top_k=5,
             track=None,
+            backend=None,
+            device=None,
         )
 
     @pytest.mark.asyncio
@@ -449,3 +451,31 @@ class TestIntrospectLogitLens:
             call_args = mock_analyze.call_args[0]
             config = call_args[0]
             assert config.prompt == "3*3="
+
+    @pytest.mark.asyncio
+    async def test_logit_lens_threads_backend_and_device(self, logit_lens_args, capsys):
+        """Test backend/device flow into standalone logit-lens config."""
+        from chuk_lazarus.cli.commands.introspect.classifier import (
+            introspect_logit_lens,
+        )
+
+        logit_lens_args.backend = "torch"
+        logit_lens_args.device = "cuda:1"
+
+        mock_result = MagicMock()
+        mock_result.to_display.return_value = "LOGIT LENS RESULTS"
+
+        with patch(
+            "chuk_lazarus.introspection.logit_lens.LogitLensService.analyze",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_analyze, patch(
+            "chuk_lazarus.introspection.logit_lens.LogitLensConfig",
+            side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+        ):
+            await introspect_logit_lens(logit_lens_args)
+
+            call_args = mock_analyze.call_args[0]
+            config = call_args[0]
+            assert config.backend == "torch"
+            assert config.device == "cuda:1"

@@ -133,6 +133,8 @@ async def introspect_logit_lens(args: Namespace) -> None:
         layer_step=getattr(args, "layer_step", 4),
         top_k=getattr(args, "top_k", AnalysisDefaults.TOP_K),
         track_tokens=track_tokens,
+        backend=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
     )
 
     # Run logit lens - all logic is in the service

@@ -52,6 +52,46 @@ def _get_backend():
     return backend_mod.get_backend()
 
 
+def _load_pipeline(
+    model_id: str,
+    *,
+    backend: str | None = None,
+    device: str | None = None,
+):
+    """Load a backend-aware inference pipeline for standalone logit lens."""
+    from ..inference import UnifiedPipeline, UnifiedPipelineConfig
+    from ..models_v2.core.backend import get_backend
+
+    resolved_backend = get_backend(name=backend, device=device)
+    backend_name = str(resolved_backend.name).lower()
+    resolved_device = getattr(resolved_backend, "device", None) if backend_name == "torch" else None
+
+    pipeline = UnifiedPipeline.from_pretrained(
+        model_id,
+        pipeline_config=UnifiedPipelineConfig(
+            backend_name=backend_name,
+            device=resolved_device,
+        ),
+        verbose=False,
+    )
+    return pipeline, resolved_backend
+
+
+def _get_num_layers(model: Any, config: Any | None = None) -> int:
+    """Infer transformer depth from config first, then model structure."""
+    if config is not None:
+        if hasattr(config, "num_hidden_layers"):
+            return int(config.num_hidden_layers)
+        if hasattr(config, "num_layers"):
+            return int(config.num_layers)
+
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return len(model.model.layers)
+    if hasattr(model, "layers"):
+        return len(model.layers)
+    return 32
+
+
 def _softmax_numpy(logits: Any) -> np.ndarray:
     """Stable softmax over the final axis."""
     logits_np = _to_numpy(logits).astype(np.float64, copy=False)
@@ -503,6 +543,12 @@ class LogitLensConfig:
     track_tokens: list[str] | None = None
     """Tokens to specifically track through layers."""
 
+    backend: str | None = None
+    """Optional runtime backend override."""
+
+    device: str | None = None
+    """Optional runtime device override."""
+
 
 @dataclass
 class LogitLensResult:
@@ -573,16 +619,18 @@ class LogitLensService:
         Returns:
             LogitLensResult with predictions per layer
         """
-        from ..models_v2.loader import load_model
         from .hooks import CaptureConfig, ModelHooks
 
-        # Load model
-        loaded = load_model(config.model)
-        model = loaded.model
-        tokenizer = loaded.tokenizer
+        pipeline, resolved_backend = _load_pipeline(
+            config.model,
+            backend=config.backend,
+            device=config.device,
+        )
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
 
         # Determine layers
-        num_layers = loaded.config.num_hidden_layers
+        num_layers = _get_num_layers(model, pipeline.config)
         if config.layers is not None:
             layers = config.layers
         else:
@@ -594,11 +642,11 @@ class LogitLensService:
         # Tokenize
         input_ids = to_backend_tensor(
             np.asarray(tokenizer.encode(config.prompt), dtype=np.int64)[None, :],
-            backend=_get_backend(),
+            backend=resolved_backend,
         )
 
         # Setup hooks
-        hooks = ModelHooks(model)
+        hooks = ModelHooks(model, model_config=pipeline.config)
         hooks.configure(
             CaptureConfig(
                 layers=layers,
