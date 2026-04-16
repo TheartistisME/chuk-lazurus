@@ -51,6 +51,8 @@ class TestAsyncWeights:
         args = Namespace(
             model="test/model",
             prompt="Hello world",
+            backend="torch",
+            device="cuda:0",
         )
 
         mock_weights = [
@@ -79,6 +81,11 @@ class TestAsyncWeights:
             MockRouter.from_pretrained = AsyncMock(return_value=mock_router)
 
             await _async_weights(args)
+            MockRouter.from_pretrained.assert_awaited_once_with(
+                "test/model",
+                backend="torch",
+                device="cuda:0",
+            )
 
             captured = capsys.readouterr()
             assert "ROUTER WEIGHTS" in captured.out

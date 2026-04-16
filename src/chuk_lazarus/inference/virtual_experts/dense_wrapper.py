@@ -19,6 +19,8 @@ With CoT rewriting enabled:
 from __future__ import annotations
 
 import asyncio
+import threading
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -32,6 +34,95 @@ from .base import (
 from .cot_rewriter import CoTRewriter, VirtualExpertAction
 from .plugins.math import MathExpertPlugin
 from .registry import VirtualExpertRegistry, get_default_registry
+
+
+@dataclass(frozen=True)
+class _RoutingCalibration:
+    """Backend-neutral routing parameters for torch/CUDA execution."""
+
+    direction: np.ndarray
+    threshold: float
+
+
+def _runtime_backend_name(runtime: Any | None) -> str | None:
+    backend = getattr(runtime, "backend", None)
+    if backend is None:
+        return None
+
+    name = str(backend).lower()
+    if name == "cuda":
+        return "torch"
+    if name == "mlx":
+        return "mlx"
+    return name
+
+
+def _vector_to_numpy(vector: Any) -> np.ndarray:
+    if isinstance(vector, np.ndarray):
+        return vector.astype(np.float32, copy=False).reshape(-1)
+
+    module_name = type(vector).__module__
+    if module_name.startswith("torch"):
+        return vector.detach().cpu().numpy().astype(np.float32, copy=False).reshape(-1)
+
+    return np.asarray(vector, dtype=np.float32).reshape(-1)
+
+
+def _build_routing_calibration(
+    positive_activations: list[Any],
+    negative_activations: list[Any],
+) -> _RoutingCalibration | None:
+    if not positive_activations or not negative_activations:
+        return None
+
+    pos_stack = np.stack([_vector_to_numpy(v) for v in positive_activations], axis=0)
+    neg_stack = np.stack([_vector_to_numpy(v) for v in negative_activations], axis=0)
+
+    direction = pos_stack.mean(axis=0) - neg_stack.mean(axis=0)
+    norm = float(np.linalg.norm(direction))
+    if norm <= 1e-10:
+        return None
+
+    direction = direction / norm
+    pos_proj = pos_stack @ direction
+    neg_proj = neg_stack @ direction
+    threshold = float((pos_proj.mean() + neg_proj.mean()) / 2)
+    return _RoutingCalibration(direction=direction.astype(np.float32, copy=False), threshold=threshold)
+
+
+def _routing_score(hidden_state: Any, calibration: _RoutingCalibration | None) -> float:
+    if calibration is None:
+        return 0.0
+
+    projection = float(np.dot(_vector_to_numpy(hidden_state), calibration.direction))
+    threshold = calibration.threshold
+    score = (projection - threshold) / (abs(threshold) + 1.0)
+    return max(0.0, min(1.0, (score + 1.0) / 2.0))
+
+
+def _run_sync(coro):
+    """Run an async expert call from sync code, even under an active event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # pragma: no cover - surfaced to caller below
+            error["value"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if "value" in error:
+        raise error["value"]
+    return result.get("value")
 
 
 def _mx():
@@ -186,6 +277,8 @@ class VirtualDenseWrapper:
         target_layer: int | None = None,
         routing_threshold: float = 0.5,
         cot_rewriter: CoTRewriter | None = None,
+        runtime: Any | None = None,
+        pipeline: Any | None = None,
     ):
         """
         Initialize the wrapper.
@@ -205,6 +298,11 @@ class VirtualDenseWrapper:
         self.registry = registry or get_default_registry()
         self.routing_threshold = routing_threshold
         self.cot_rewriter = cot_rewriter
+        self.runtime = runtime
+        self.pipeline = pipeline
+        self._runtime_backend = _runtime_backend_name(runtime)
+        self._use_runtime_routing = self._runtime_backend not in (None, "mlx")
+        self._routing_params: dict[int, _RoutingCalibration] = {}
 
         # Detect model structure
         self._detect_structure()
@@ -215,9 +313,12 @@ class VirtualDenseWrapper:
         self.target_layer = target_layer
 
         # Create virtual router
-        num_plugins = max(1, len(self.registry))
-        router_cls = _get_virtual_dense_router()
-        self.router = router_cls(self.hidden_size, num_plugins)
+        if self._use_runtime_routing:
+            self.router = None
+        else:
+            num_plugins = max(1, len(self.registry))
+            router_cls = _get_virtual_dense_router()
+            self.router = router_cls(self.hidden_size, num_plugins)
 
         self._calibrated = False
         self._use_cot_calibration = False  # Set True when calibrated with action JSONs
@@ -234,6 +335,9 @@ class VirtualDenseWrapper:
         elif hasattr(self.model, "layers"):
             self._backbone = self.model
             self._layers = list(self.model.layers)
+        elif self.runtime is not None and hasattr(self.runtime, "_resolve_layers"):
+            self._backbone = getattr(self.model, "model", self.model)
+            self._layers = list(self.runtime._resolve_layers())
         else:
             raise ValueError("Cannot detect model structure")
 
@@ -259,10 +363,12 @@ class VirtualDenseWrapper:
     def register_plugin(self, plugin: VirtualExpertPlugin) -> None:
         """Register a new virtual expert plugin."""
         self.registry.register(plugin)
-        # Rebuild router
-        num_plugins = len(self.registry)
-        router_cls = _get_virtual_dense_router()
-        self.router = router_cls(self.hidden_size, num_plugins)
+        if self._use_runtime_routing:
+            self._routing_params = {}
+        else:
+            num_plugins = len(self.registry)
+            router_cls = _get_virtual_dense_router()
+            self.router = router_cls(self.hidden_size, num_plugins)
         self._calibrated = False
 
     def set_cot_rewriter(self, rewriter: CoTRewriter) -> None:
@@ -305,6 +411,13 @@ class VirtualDenseWrapper:
 
     def _get_hidden_state(self, prompt: str) -> mx.array:
         """Get hidden state at target layer for last position."""
+        if self.runtime is not None:
+            residual_state = self.runtime.extract_residual_state(prompt, layer_index=self.target_layer)
+            tensor = residual_state.tensor
+            if getattr(tensor, "ndim", 0) > 1:
+                return tensor[0]
+            return tensor
+
         mx = _mx()
         nn = _nn()
         input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
@@ -366,12 +479,29 @@ class VirtualDenseWrapper:
                 neg_activations = [self._get_hidden_state(p) for p in neg_prompts]
 
             if pos_activations and neg_activations:
-                self.router.calibrate_expert(plugin_idx, pos_activations, neg_activations)
+                if self._use_runtime_routing:
+                    calibration = _build_routing_calibration(pos_activations, neg_activations)
+                    if calibration is not None:
+                        self._routing_params[plugin_idx] = calibration
+                else:
+                    self.router.calibrate_expert(plugin_idx, pos_activations, neg_activations)
 
         self._calibrated = True
 
     def _generate_direct(self, prompt: str, max_tokens: int = 20) -> str:
         """Generate directly without virtual experts."""
+        if self.runtime is not None:
+            from ..generation import GenerationConfig
+
+            result = self.runtime.generate(
+                prompt,
+                GenerationConfig(
+                    max_new_tokens=max_tokens,
+                    temperature=0.0,
+                ),
+            )
+            return result.text.strip()
+
         mx = _mx()
         input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
         generated = []
@@ -405,6 +535,7 @@ class VirtualDenseWrapper:
         prompt: str,
         max_tokens: int = 20,
         action: VirtualExpertAction | None = None,
+        verbose: bool = False,
     ) -> InferenceResult:
         """
         Solve a problem, using virtual experts when appropriate.
@@ -454,7 +585,10 @@ class VirtualDenseWrapper:
             hidden = self._get_hidden_state(routing_input)
 
             for plugin_idx, plugin in enumerate(plugins):
-                score = self.router.get_routing_score(hidden[None, None, :], plugin_idx)
+                if self._use_runtime_routing:
+                    score = _routing_score(hidden, self._routing_params.get(plugin_idx))
+                else:
+                    score = self.router.get_routing_score(hidden[None, None, :], plugin_idx)
                 if score > self.routing_threshold and score > best_score:
                     # With CoT action: match by expert name
                     # Without CoT: only plugins supporting extract_and_evaluate
@@ -489,7 +623,7 @@ class VirtualDenseWrapper:
                     parameters={"text": prompt},
                 )
 
-            result = asyncio.run(best_plugin.execute(ve_action))
+            result = _run_sync(best_plugin.execute(ve_action))
 
             if result.success and result.data:
                 data = result.data
@@ -527,8 +661,9 @@ class VirtualDenseWrapper:
             total_tokens=1,
         )
 
-    def compare(self, prompt: str) -> None:
+    def compare(self, prompt: str, verbose: bool = False) -> InferenceResult:
         """Compare model-only vs virtual expert on a single prompt."""
+        del verbose
         plugin = self.registry.find_handler(prompt)
         correct = None
         if plugin and isinstance(plugin, MathExpertPlugin):
@@ -548,6 +683,7 @@ class VirtualDenseWrapper:
         print(f"Routing score:    {result.routing_score:.3f}")
         print(f"Correct:          {result.is_correct}")
         print(f"{'=' * 60}")
+        return result
 
     def benchmark(self, problems: list[str]) -> VirtualExpertAnalysis:
         """Run benchmark on a list of problems."""

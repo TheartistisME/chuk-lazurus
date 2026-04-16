@@ -42,10 +42,16 @@ async def _async_chat(args: Namespace) -> None:
     temperature = getattr(args, "temperature", 0.0)
     apply_template = not getattr(args, "raw", False)
     verbose = getattr(args, "verbose", False)
+    backend = getattr(args, "backend", None)
+    device = getattr(args, "device", None)
 
     print(f"Loading model: {model_id}")
 
-    async with await ExpertRouter.from_pretrained(model_id) as router:
+    async with await ExpertRouter.from_pretrained(
+        model_id,
+        backend=backend,
+        device=device,
+    ) as router:
         result = await router.chat_with_expert(
             prompt,
             expert_idx,

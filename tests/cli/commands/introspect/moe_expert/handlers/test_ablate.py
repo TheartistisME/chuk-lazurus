@@ -1,7 +1,7 @@
 """Tests for ablate handler."""
 
 from argparse import Namespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -89,6 +89,42 @@ class TestAsyncAblate:
             # The handler will raise the exception from from_pretrained
             with pytest.raises(Exception, match="Test bypass"):
                 await _async_ablate(args)
+
+    @pytest.mark.asyncio
+    async def test_successful_ablate_threads_backend_device(self, capsys):
+        """Test successful ablation threads backend/device to ExpertRouter."""
+        args = Namespace(
+            model="test/model",
+            expert=6,
+            prompt="Test",
+            benchmark=False,
+            max_tokens=100,
+            backend="torch",
+            device="cuda:0",
+        )
+
+        mock_router = AsyncMock()
+        mock_router._generate_normal_sync = MagicMock(return_value="normal output")
+        mock_router.generate_with_ablation = AsyncMock(return_value=("ablated output", MagicMock()))
+        mock_router.__aenter__ = AsyncMock(return_value=mock_router)
+        mock_router.__aexit__ = AsyncMock(return_value=None)
+
+        with patch(
+            "chuk_lazarus.cli.commands.introspect.moe_expert.handlers.ablate.ExpertRouter"
+        ) as MockRouter:
+            MockRouter.from_pretrained = AsyncMock(return_value=mock_router)
+
+            await _async_ablate(args)
+            MockRouter.from_pretrained.assert_awaited_once_with(
+                "test/model",
+                backend="torch",
+                device="cuda:0",
+            )
+
+            captured = capsys.readouterr()
+            assert "ABLATION - Expert(s) 6" in captured.out
+            assert "normal output" in captured.out
+            assert "ablated output" in captured.out
 
 
 class TestAblationBenchmarkService:

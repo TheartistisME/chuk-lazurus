@@ -71,6 +71,8 @@ class TestAsyncChat:
             temperature=0.0,
             raw=False,
             verbose=False,
+            backend="torch",
+            device="cuda:0",
         )
 
         mock_stats = GenerationStats(
@@ -98,6 +100,11 @@ class TestAsyncChat:
             MockRouter.from_pretrained = AsyncMock(return_value=mock_router)
 
             await _async_chat(args)
+            MockRouter.from_pretrained.assert_awaited_once_with(
+                "test/model",
+                backend="torch",
+                device="cuda:0",
+            )
 
             captured = capsys.readouterr()
             assert "CHAT WITH EXPERT 6" in captured.out

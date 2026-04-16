@@ -20,6 +20,8 @@ class TestIntrospectVirtualExpert:
             model="test/model",
             action="solve",
             prompt="2+2=",
+            backend="torch",
+            device="cuda:0",
             layer=None,
             expert=None,
         )
@@ -36,6 +38,9 @@ class TestIntrospectVirtualExpert:
             await introspect_virtual_expert(basic_args)
 
             MockService.solve.assert_called_once()
+            config = MockService.solve.await_args.args[0]
+            assert config.backend == "torch"
+            assert config.device == "cuda:0"
             captured = capsys.readouterr()
             assert "Result: 4" in captured.out
 
@@ -128,6 +133,8 @@ class TestIntrospectVirtualExpert:
         args = Namespace(
             model="test/model",
             prompt="2+2=",
+            backend=None,
+            device=None,
             layer=None,
             expert=None,
             # No action specified
@@ -185,9 +192,13 @@ class TestVirtualExpertConfig:
 
         config = VirtualExpertConfig(
             model="test/model",
+            backend="torch",
+            device="cuda:1",
             prompt="2+2=",
         )
         assert config.model == "test/model"
+        assert config.backend == "torch"
+        assert config.device == "cuda:1"
         assert config.prompt == "2+2="
 
     def test_config_optional_fields(self):

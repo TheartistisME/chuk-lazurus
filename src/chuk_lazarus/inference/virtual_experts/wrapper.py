@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -23,6 +25,95 @@ from .cot_rewriter import VirtualExpertAction
 from .plugins.math import MathExpertPlugin
 from .registry import VirtualExpertRegistry, get_default_registry
 from . import router as router_module
+
+
+@dataclass(frozen=True)
+class _RoutingCalibration:
+    """Backend-neutral routing parameters for non-MLX execution."""
+
+    direction: np.ndarray
+    threshold: float
+
+
+def _runtime_backend_name(runtime: Any | None) -> str | None:
+    backend = getattr(runtime, "backend", None)
+    if backend is None:
+        return None
+
+    name = str(backend).lower()
+    if name == "cuda":
+        return "torch"
+    if name == "mlx":
+        return "mlx"
+    return name
+
+
+def _vector_to_numpy(vector: Any) -> np.ndarray:
+    if isinstance(vector, np.ndarray):
+        return vector.astype(np.float32, copy=False).reshape(-1)
+
+    module_name = type(vector).__module__
+    if module_name.startswith("torch"):
+        return vector.detach().cpu().numpy().astype(np.float32, copy=False).reshape(-1)
+
+    return np.asarray(vector, dtype=np.float32).reshape(-1)
+
+
+def _build_routing_calibration(
+    positive_activations: list[Any],
+    negative_activations: list[Any],
+) -> _RoutingCalibration | None:
+    if not positive_activations or not negative_activations:
+        return None
+
+    pos_stack = np.stack([_vector_to_numpy(v) for v in positive_activations], axis=0)
+    neg_stack = np.stack([_vector_to_numpy(v) for v in negative_activations], axis=0)
+
+    direction = pos_stack.mean(axis=0) - neg_stack.mean(axis=0)
+    norm = float(np.linalg.norm(direction))
+    if norm <= 1e-10:
+        return None
+
+    direction = direction / norm
+    pos_proj = pos_stack @ direction
+    neg_proj = neg_stack @ direction
+    threshold = float((pos_proj.mean() + neg_proj.mean()) / 2)
+    return _RoutingCalibration(direction=direction.astype(np.float32, copy=False), threshold=threshold)
+
+
+def _routing_score(hidden_state: Any, calibration: _RoutingCalibration | None) -> float:
+    if calibration is None:
+        return 0.0
+
+    projection = float(np.dot(_vector_to_numpy(hidden_state), calibration.direction))
+    threshold = calibration.threshold
+    score = (projection - threshold) / (abs(threshold) + 1.0)
+    return max(0.0, min(1.0, (score + 1.0) / 2.0))
+
+
+def _run_sync(coro):
+    """Run an async expert call from sync code, even under an active event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # pragma: no cover - surfaced to caller below
+            error["value"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if "value" in error:
+        raise error["value"]
+    return result.get("value")
 
 
 def _mx():
@@ -63,6 +154,8 @@ class VirtualMoEWrapper:
         model_id: str = "unknown",
         registry: VirtualExpertRegistry | None = None,
         target_layers: list[int] | None = None,
+        runtime: Any | None = None,
+        pipeline: Any | None = None,
     ):
         """
         Initialize the wrapper.
@@ -78,6 +171,10 @@ class VirtualMoEWrapper:
         self.tokenizer = tokenizer
         self.model_id = model_id
         self.registry = registry or get_default_registry()
+        self.runtime = runtime
+        self.pipeline = pipeline
+        self._runtime_backend = _runtime_backend_name(runtime)
+        self._use_runtime_routing = self._runtime_backend not in (None, "mlx")
 
         # Detect model structure
         self._detect_structure()
@@ -96,8 +193,10 @@ class VirtualMoEWrapper:
         # Create virtual routers
         self.virtual_routers: dict[int, Any] = {}
         self.original_moe_layers: dict[int, Any] = {}
+        self._routing_params: dict[int, dict[int, _RoutingCalibration]] = {}
 
-        self._setup_virtual_layers()
+        if not self._use_runtime_routing:
+            self._setup_virtual_layers()
         self._calibrated = False
 
     def _detect_structure(self):
@@ -108,6 +207,9 @@ class VirtualMoEWrapper:
         elif hasattr(self.model, "layers"):
             self._backbone = self.model
             self._layers = list(self.model.layers)
+        elif self.runtime is not None and hasattr(self.runtime, "_resolve_layers"):
+            self._backbone = getattr(self.model, "model", self.model)
+            self._layers = list(self.runtime._resolve_layers())
         else:
             raise ValueError("Cannot detect model structure")
 
@@ -164,12 +266,22 @@ class VirtualMoEWrapper:
         After registering, you must call calibrate() again.
         """
         self.registry.register(plugin)
-        # Rebuild virtual routers to include new plugin
-        self._setup_virtual_layers()
+        if self._use_runtime_routing:
+            self._routing_params = {}
+        else:
+            # Rebuild virtual routers to include new plugin
+            self._setup_virtual_layers()
         self._calibrated = False
 
     def _get_hidden_state(self, prompt: str, layer_idx: int) -> mx.array:
         """Get hidden state at a specific layer for last position."""
+        if self.runtime is not None:
+            residual_state = self.runtime.extract_residual_state(prompt, layer_index=layer_idx)
+            tensor = residual_state.tensor
+            if getattr(tensor, "ndim", 0) > 1:
+                return tensor[0]
+            return tensor
+
         mx = _mx()
         nn = _nn()
         input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
@@ -224,6 +336,14 @@ class VirtualMoEWrapper:
 
                 virtual_router.calibrate_expert(plugin_idx, pos_activations, neg_activations)
 
+            if self._use_runtime_routing:
+                for layer_idx in self.target_layers:
+                    pos_activations = [self._get_hidden_state(p, layer_idx) for p in pos_prompts]
+                    neg_activations = [self._get_hidden_state(p, layer_idx) for p in neg_prompts]
+                    calibration = _build_routing_calibration(pos_activations, neg_activations)
+                    if calibration is not None:
+                        self._routing_params.setdefault(layer_idx, {})[plugin_idx] = calibration
+
             # Store calibration data
             self.registry.set_calibration_data(
                 plugin.name,
@@ -245,6 +365,13 @@ class VirtualMoEWrapper:
         Returns:
             (text, used_virtual, virtual_count, total_tokens, score, plugin_name, trace)
         """
+        if self._use_runtime_routing:
+            return self._generate_with_runtime_routing(
+                prompt,
+                max_tokens=max_tokens,
+                collect_trace=collect_trace,
+            )
+
         mx = _mx()
         nn = _nn()
         input_ids = self.tokenizer.encode(prompt)
@@ -398,8 +525,70 @@ class VirtualMoEWrapper:
             return "power"
         return "arithmetic"
 
+    def _generate_with_runtime_routing(
+        self,
+        prompt: str,
+        max_tokens: int = 20,
+        collect_trace: bool = False,
+    ) -> tuple[str, bool, int, int, float, str | None, RoutingTrace | None]:
+        """Approximate routing on non-MLX backends using residual captures."""
+        plugins = self.registry.get_all()
+        trace = RoutingTrace() if collect_trace else None
+        task_type = self._detect_task_type(prompt) if collect_trace else None
+
+        used_virtual = False
+        best_score = 0.0
+        best_plugin_name: str | None = None
+
+        for layer_idx in self.target_layers:
+            hidden = self._get_hidden_state(prompt, layer_idx)
+            layer_best_score = 0.0
+            layer_selected = False
+
+            for plugin_idx, plugin in enumerate(plugins):
+                score = _routing_score(hidden, self._routing_params.get(layer_idx, {}).get(plugin_idx))
+                if score > layer_best_score:
+                    layer_best_score = score
+                if score > best_score:
+                    best_score = score
+                    best_plugin_name = plugin.name
+
+            layer_selected = layer_best_score > 0.5
+            used_virtual = used_virtual or layer_selected
+
+            if trace is not None:
+                trace.add_decision(
+                    layer=layer_idx,
+                    confidence=layer_best_score,
+                    selected=layer_selected,
+                    task=task_type,
+                )
+
+        text = self._generate_direct(prompt, max_tokens=max_tokens)
+        return (
+            text,
+            used_virtual,
+            1 if used_virtual else 0,
+            1,
+            best_score,
+            best_plugin_name if used_virtual else None,
+            trace,
+        )
+
     def _generate_direct(self, prompt: str, max_tokens: int = 20) -> str:
         """Generate directly without virtual experts."""
+        if self.runtime is not None:
+            from ..generation import GenerationConfig
+
+            result = self.runtime.generate(
+                prompt,
+                GenerationConfig(
+                    max_new_tokens=max_tokens,
+                    temperature=0.0,
+                ),
+            )
+            return result.text.strip()
+
         mx = _mx()
         input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
         generated = []
@@ -463,7 +652,7 @@ class VirtualMoEWrapper:
         if action and action.expert != "none":
             plugin = self.registry.get(action.expert)
             if plugin:
-                ve_result = asyncio.run(plugin.execute(action))
+                ve_result = _run_sync(plugin.execute(action))
                 if ve_result.success and ve_result.data:
                     data = ve_result.data
                     if isinstance(data, dict):
@@ -511,7 +700,7 @@ class VirtualMoEWrapper:
                 parameters={"text": prompt},
             )
 
-            ve_result = asyncio.run(plugin.execute(ve_action))
+            ve_result = _run_sync(plugin.execute(ve_action))
             if ve_result.success and ve_result.data:
                 data = ve_result.data
                 if isinstance(data, dict):

@@ -264,6 +264,8 @@ class VirtualExpertConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     model: str = Field(..., description="Model path or name")
+    backend: str | None = Field(default=None, description="Runtime backend override")
+    device: str | None = Field(default=None, description="Runtime device override")
     layer: int | None = Field(default=None, description="Target layer")
     expert: int | None = Field(default=None, description="Target expert")
     prompt: str | None = Field(default=None, description="Prompt for solve/compare")
@@ -328,7 +330,31 @@ class VirtualExpertService:
     """Service for virtual expert operations."""
 
     @classmethod
-    def _create_wrapper(cls, model, tokenizer, model_id: str, use_few_shot_rewriter: bool = False):
+    def _load_pipeline(cls, config: VirtualExpertConfig):
+        """Load a backend-aware inference pipeline."""
+        from ..inference import UnifiedPipeline, UnifiedPipelineConfig
+
+        return UnifiedPipeline.from_pretrained(
+            config.model,
+            pipeline_config=UnifiedPipelineConfig(
+                backend_name=config.backend,
+                device=config.device,
+            ),
+            verbose=False,
+        )
+
+    @classmethod
+    def _create_wrapper(
+        cls,
+        model,
+        tokenizer,
+        model_id: str,
+        use_few_shot_rewriter: bool = False,
+        *,
+        layer: int | None = None,
+        runtime: Any | None = None,
+        pipeline: Any | None = None,
+    ):
         """Create the appropriate wrapper based on model type.
 
         Auto-detects MoE vs Dense models and creates the right wrapper.
@@ -341,8 +367,10 @@ class VirtualExpertService:
                                    Use this for models that are NOT CoT-trained.
                                    Default is False (assumes CoT-trained model).
         """
-        from chuk_lazarus.inference.virtual_expert import (  # noqa: PLC0415
+        from chuk_lazarus.inference.virtual_experts.dense_wrapper import (  # noqa: PLC0415
             VirtualDenseWrapper,
+        )
+        from chuk_lazarus.inference.virtual_experts.wrapper import (  # noqa: PLC0415
             VirtualMoEWrapper,
         )
         from chuk_lazarus.inference.virtual_experts.cot_rewriter import (  # noqa: PLC0415
@@ -352,33 +380,51 @@ class VirtualExpertService:
         # Check if model has MoE layers
         has_moe = False
         if hasattr(model, "model") and hasattr(model.model, "layers"):
-            layers = model.model.layers
+            layers = list(model.model.layers)
         elif hasattr(model, "layers"):
-            layers = model.layers
+            layers = list(model.layers)
+        elif runtime is not None and hasattr(runtime, "_resolve_layers"):
+            layers = list(runtime._resolve_layers())
         else:
             layers = []
 
-        for layer in layers:
-            if hasattr(layer, "mlp") and hasattr(layer.mlp, "router"):
+        for model_layer in layers:
+            if hasattr(model_layer, "mlp") and hasattr(model_layer.mlp, "router"):
                 has_moe = True
                 break
 
         if has_moe:
             # Use MoE wrapper for MoE models
-            return VirtualMoEWrapper(model, tokenizer, model_id)
+            target_layers = [layer] if layer is not None else None
+            return VirtualMoEWrapper(
+                model,
+                tokenizer,
+                model_id,
+                target_layers=target_layers,
+                runtime=runtime,
+                pipeline=pipeline,
+            )
         else:
             # Use Dense wrapper for dense models
             rewriter = None
             if use_few_shot_rewriter:
                 # Use FewShotCoTRewriter to normalize queries to VirtualExpertAction format
                 # This is needed for models that are NOT trained on CoT action format
-                rewriter = FewShotCoTRewriter(model, tokenizer, max_examples_per_expert=5)
+                rewriter = FewShotCoTRewriter(
+                    model,
+                    tokenizer,
+                    max_examples_per_expert=5,
+                    runtime=runtime,
+                )
 
             wrapper = VirtualDenseWrapper(
                 model,
                 tokenizer,
                 model_id,
+                target_layer=layer,
                 cot_rewriter=rewriter,
+                runtime=runtime,
+                pipeline=pipeline,
             )
             return wrapper
 
@@ -392,15 +438,20 @@ class VirtualExpertService:
         Returns:
             VirtualExpertServiceResult with analysis.
         """
-        from ..models_v2 import load_model
-
-        # Load model
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
+        pipeline = cls._load_pipeline(config)
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
 
         # Auto-detect MoE vs Dense and use appropriate wrapper
-        wrapper = cls._create_wrapper(model, tokenizer, config.model, config.use_few_shot_rewriter)
+        wrapper = cls._create_wrapper(
+            model,
+            tokenizer,
+            config.model,
+            config.use_few_shot_rewriter,
+            layer=config.layer,
+            runtime=pipeline.runtime,
+            pipeline=pipeline,
+        )
 
         # Default test categories if not provided
         test_categories = config.test_categories or {
@@ -451,21 +502,26 @@ class VirtualExpertService:
         Returns:
             VirtualExpertServiceResult with answer.
         """
-        from ..models_v2 import load_model
-
         if not config.prompt:
             raise ValueError("Prompt required for solve action")
 
-        # Load model
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
+        pipeline = cls._load_pipeline(config)
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
 
         # Auto-detect MoE vs Dense model and use appropriate wrapper
-        wrapper = cls._create_wrapper(model, tokenizer, config.model, config.use_few_shot_rewriter)
+        wrapper = cls._create_wrapper(
+            model,
+            tokenizer,
+            config.model,
+            config.use_few_shot_rewriter,
+            layer=config.layer,
+            runtime=pipeline.runtime,
+            pipeline=pipeline,
+        )
 
         # Solve using virtual expert
-        result = wrapper.solve(config.prompt, max_tokens=30)
+        result = wrapper.solve(config.prompt, max_tokens=30, verbose=config.verbose)
 
         return VirtualExpertServiceResult(
             action="solve",
@@ -491,15 +547,20 @@ class VirtualExpertService:
         Returns:
             VirtualExpertServiceResult with benchmark results.
         """
-        from ..models_v2 import load_model
-
-        # Load model
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
+        pipeline = cls._load_pipeline(config)
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
 
         # Auto-detect MoE vs Dense and use appropriate wrapper
-        wrapper = cls._create_wrapper(model, tokenizer, config.model, config.use_few_shot_rewriter)
+        wrapper = cls._create_wrapper(
+            model,
+            tokenizer,
+            config.model,
+            config.use_few_shot_rewriter,
+            layer=config.layer,
+            runtime=pipeline.runtime,
+            pipeline=pipeline,
+        )
 
         # Default benchmark problems if not provided
         problems = config.benchmark_problems or [
@@ -561,33 +622,24 @@ class VirtualExpertService:
         Returns:
             VirtualExpertServiceResult with comparison.
         """
-        from mlx_lm import generate, load  # noqa: PLC0415
-
-        from chuk_lazarus.inference.virtual_expert import VirtualMoEWrapper  # noqa: PLC0415
-
-        from ..models_v2 import load_model  # noqa: PLC0415
-
         if not config.prompt:
             raise ValueError("Prompt required for compare action")
 
-        # Load model for virtual expert
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
+        pipeline = cls._load_pipeline(config)
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
 
-        # Generate with virtual expert (use compare method which handles everything)
-        wrapper = VirtualMoEWrapper(model, tokenizer, config.model)
-        result = wrapper.compare(config.prompt, verbose=config.verbose)
-
-        # Generate without virtual expert (direct) for comparison
-        direct_model, direct_tokenizer = load(config.model)
-        direct_output = generate(
-            direct_model,
-            direct_tokenizer,
-            prompt=config.prompt,
-            max_tokens=30,
-            verbose=False,
+        wrapper = cls._create_wrapper(
+            model,
+            tokenizer,
+            config.model,
+            config.use_few_shot_rewriter,
+            layer=config.layer,
+            runtime=pipeline.runtime,
+            pipeline=pipeline,
         )
+        result = wrapper.solve(config.prompt, max_tokens=30, verbose=config.verbose)
+        direct_output = wrapper._generate_direct(config.prompt, max_tokens=30)
 
         # Build result with routing trace if verbose
         summary = {

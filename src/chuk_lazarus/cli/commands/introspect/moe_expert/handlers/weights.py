@@ -32,10 +32,16 @@ async def _async_weights(args: Namespace) -> None:
     model_id = args.model
     prompt = args.prompt
     layer = getattr(args, "layer", None)
+    backend = getattr(args, "backend", None)
+    device = getattr(args, "device", None)
 
     print(f"Loading model: {model_id}")
 
-    async with await ExpertRouter.from_pretrained(model_id) as router:
+    async with await ExpertRouter.from_pretrained(
+        model_id,
+        backend=backend,
+        device=device,
+    ) as router:
         layers = [layer] if layer is not None else None
         weights = await router.capture_router_weights(prompt, layers=layers)
 

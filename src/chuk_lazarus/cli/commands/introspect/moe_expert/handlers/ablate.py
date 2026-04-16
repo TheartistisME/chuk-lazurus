@@ -57,10 +57,16 @@ async def _async_ablate(args: Namespace) -> None:
     prompt = args.prompt
     max_tokens = getattr(args, "max_tokens", 100)
     run_benchmark = getattr(args, "benchmark", False)
+    backend = getattr(args, "backend", None)
+    device = getattr(args, "device", None)
 
     print(f"Loading model: {model_id}")
 
-    async with await ExpertRouter.from_pretrained(model_id) as router:
+    async with await ExpertRouter.from_pretrained(
+        model_id,
+        backend=backend,
+        device=device,
+    ) as router:
         # Get normal output first
         normal_output = router._generate_normal_sync(prompt, max_tokens)
 

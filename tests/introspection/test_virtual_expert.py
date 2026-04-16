@@ -1,8 +1,12 @@
 """Tests for virtual_expert introspection module."""
 
-import mlx.nn as nn
 import pytest
-from chuk_virtual_expert import VirtualExpertAction as ExpertAction
+
+try:
+    import mlx.nn as nn
+    from chuk_virtual_expert import VirtualExpertAction as ExpertAction
+except Exception as exc:  # pragma: no cover - host dependency gate
+    pytest.skip(f"virtual-expert MLX tests require optional dependencies: {exc}", allow_module_level=True)
 
 from chuk_lazarus.inference.virtual_experts.registry import reset_default_registry
 from chuk_lazarus.introspection.virtual_expert import (

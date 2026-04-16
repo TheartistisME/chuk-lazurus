@@ -81,6 +81,7 @@ Action:"""
         tokenizer: Any,
         expert_examples: dict[str, list[dict]] | None = None,
         max_examples_per_expert: int = 3,
+        runtime: Any | None = None,
     ):
         """
         Initialize the rewriter.
@@ -96,6 +97,7 @@ Action:"""
         self.expert_examples = expert_examples or {}
         self.max_examples_per_expert = max_examples_per_expert
         self._expert_descriptions: dict[str, str] = {}
+        self.runtime = runtime
 
     def set_expert_info(
         self,
@@ -149,6 +151,19 @@ Action:"""
 
     def rewrite(self, query: str, available_experts: list[str]) -> VirtualExpertAction:
         """Rewrite query to VirtualExpertAction using few-shot prompting."""
+        if self.runtime is not None:
+            from ..generation import GenerationConfig
+
+            prompt = self._build_prompt(query, available_experts)
+            result = self.runtime.generate(
+                prompt,
+                GenerationConfig(
+                    max_new_tokens=200,
+                    temperature=0.0,
+                ),
+            )
+            return self._parse_response(result.text.strip())
+
         import mlx.core as mx
 
         prompt = self._build_prompt(query, available_experts)

@@ -67,6 +67,8 @@ async def introspect_virtual_expert(args: Namespace) -> None:
     # Build config
     config = VirtualExpertConfig(
         model=args.model,
+        backend=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
         layer=getattr(args, "layer", None),
         expert=getattr(args, "expert", None),
         prompt=getattr(args, "prompt", None),
