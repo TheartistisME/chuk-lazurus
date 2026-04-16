@@ -33,26 +33,50 @@ def _infer_model_device(model: Any):
 
 def _resolve_transformer_layers(model: Any) -> list[Any]:
     candidates = [
+        # VLM wrappers — language backbone nested under .language_model.
+        ("model", "language_model", "layers"),
+        ("model", "language_model", "model", "layers"),
+        ("language_model", "model", "layers"),
+        ("language_model", "layers"),
+        # Plain causal-LM shapes.
         ("model", "layers"),
         ("transformer", "h"),
         ("gpt_neox", "layers"),
         (None, "layers"),
     ]
 
-    for outer_name, inner_name in candidates:
+    for path in candidates:
         target = model
-        if outer_name is not None:
-            target = getattr(target, outer_name, None)
-        if target is None:
+        *outer, inner_name = path
+        ok = True
+        for step in outer:
+            if step is None:
+                continue
+            target = getattr(target, step, None)
+            if target is None:
+                ok = False
+                break
+        if not ok:
             continue
 
         layers = getattr(target, inner_name, None)
-        if layers is not None:
-            return list(layers)
+        if layers is None:
+            continue
+        if not hasattr(layers, "__iter__") or not hasattr(layers, "__len__"):
+            continue
+        try:
+            length = len(layers)
+        except TypeError:
+            continue
+        if length == 0:
+            continue
+        return list(layers)
 
     raise ValueError(
         "Cannot resolve transformer layers for residual capture. "
-        "Expected model.model.layers, model.transformer.h, gpt_neox.layers, or model.layers."
+        "Expected model.model.layers, model.model.language_model.layers, "
+        "model.language_model.model.layers, model.transformer.h, "
+        "gpt_neox.layers, or model.layers."
     )
 
 

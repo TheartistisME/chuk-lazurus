@@ -86,9 +86,19 @@ def _as_cpu_torch_tensor(value: Any):
 
 def _infer_model_hidden_size(runtime: TorchInferenceRuntime) -> int | None:
     model = getattr(runtime, "_model", None)
-    candidates = []
-    if model is not None:
-        candidates.extend([getattr(model, "config", None), model])
+    if model is None:
+        return None
+
+    # Build candidate sources. VLM wrappers (e.g. Gemma 4) keep the text-backbone
+    # dimensions under config.text_config, not on the top-level config.
+    candidates: list[Any] = []
+    config = getattr(model, "config", None)
+    candidates.append(config)
+    if config is not None:
+        text_config = getattr(config, "text_config", None)
+        if text_config is not None:
+            candidates.append(text_config)
+    candidates.append(model)
 
     for source in candidates:
         if source is None:
@@ -97,6 +107,23 @@ def _infer_model_hidden_size(runtime: TorchInferenceRuntime) -> int | None:
             value = getattr(source, attr, None)
             if isinstance(value, int) and value > 0:
                 return value
+
+    # Fall back to the embedding matrix if configs hide the value.
+    try:
+        embeddings = model.get_input_embeddings()
+    except (AttributeError, TypeError):
+        embeddings = None
+    if embeddings is not None:
+        dim = getattr(embeddings, "embedding_dim", None)
+        if isinstance(dim, int) and dim > 0:
+            return dim
+        weight = getattr(embeddings, "weight", None)
+        shape = getattr(weight, "shape", None)
+        if shape is not None and len(shape) >= 2:
+            try:
+                return int(shape[-1])
+            except (TypeError, ValueError):
+                pass
     return None
 
 

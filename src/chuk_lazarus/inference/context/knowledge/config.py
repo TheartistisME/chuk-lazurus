@@ -157,9 +157,12 @@ class ArchitectureConfig:
         model_type = str(_cfg_get(resolved, "model_type", "") or "").lower()
         num_layers = _coerce_num_layers(_cfg_get(resolved, "num_hidden_layers", -1))
 
-        # Normalise Gemma variant spellings
+        # Normalise Gemma variant spellings. Gemma 4 gets its own bucket —
+        # its calibration must NOT alias to Gemma 3 values.
         if model_type in ("gemma", "gemma2", "gemma3", "gemma3_text"):
             model_type = "gemma"
+        elif model_type in ("gemma4", "gemma4_text"):
+            model_type = "gemma4"
 
         key = (model_type, num_layers)
         if key in cls._KNOWN:
@@ -367,6 +370,20 @@ ArchitectureConfig._KNOWN[("gemma", 26)] = ArchitectureConfig(
     retrieval_layer=17,
     query_head=0,
     injection_layer=18,
+)
+
+
+# Gemma 4 E2B-IT (35 layers, gemma4_text family) — discovered via
+# calibrate_arch_torch.py on CUDA (2026-04-16).
+# Wrapper config model_type="gemma4" with nested text_config model_type="gemma4_text".
+# L28 H7 is the copy head (score=+0.138, mean Δ=+0.229, 60% coverage across usable probes).
+# Per-probe deltas at L28 H7: [Voltara +0.31, Cerulion +0.01, Dravenport +0.22, Solmere +0.59, endorse +0.01].
+# Injection at L29 (retrieval_layer + 1).
+# Gemma 4 deliberately gets its own registry bucket — it is NOT aliased to Gemma 3 calibration.
+ArchitectureConfig._KNOWN[("gemma4", 35)] = ArchitectureConfig(
+    retrieval_layer=28,
+    query_head=7,
+    injection_layer=29,
 )
 
 

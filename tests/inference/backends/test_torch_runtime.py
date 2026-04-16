@@ -33,6 +33,37 @@ class DummyInnerModel(torch.nn.Module):
         self.layers = torch.nn.ModuleList([DummyBlock(), DummyBlock()])
 
 
+class DummyVLMLanguageModel(torch.nn.Module):
+    """Container mimicking Gemma 4's `model.language_model.layers` structure."""
+
+    def __init__(self, num_layers: int = 2):
+        super().__init__()
+        self.layers = torch.nn.ModuleList([DummyBlock() for _ in range(num_layers)])
+
+
+class DummyVLMInnerModel(torch.nn.Module):
+    """Wrapper mimicking `Gemma4Model` that holds a `language_model` child."""
+
+    def __init__(self, num_layers: int = 2):
+        super().__init__()
+        self.language_model = DummyVLMLanguageModel(num_layers=num_layers)
+
+
+class DummyVLMCausalLM(torch.nn.Module):
+    """Minimal stand-in for `Gemma4ForConditionalGeneration`.
+
+    The real module exposes transformer layers at
+    ``model.model.language_model.layers``. `_resolve_layers` must reach
+    through the VLM wrapper; this dummy checks that contract without
+    needing the real 2 B-parameter Gemma 4 weights on the test host.
+    """
+
+    def __init__(self, head_dim: int = 128, num_layers: int = 2):
+        super().__init__()
+        self.model = DummyVLMInnerModel(num_layers=num_layers)
+        self.config = SimpleNamespace(head_dim=head_dim, text_config=SimpleNamespace(hidden_size=4))
+
+
 class DummyCausalLM(torch.nn.Module):
     """Tiny causal LM that exercises hooks during `generate()`."""
 
@@ -165,6 +196,15 @@ class TestTorchInferenceRuntime:
             GenerationConfig(max_new_tokens=2, temperature=0.0),
         )
         assert result.text == "decoded:7,8"
+
+    def test_resolve_layers_for_vlm_wrapper(self):
+        """Gemma 4-style VLM wrapper exposes layers under
+        ``model.language_model.layers``. The runtime must find them."""
+        model = DummyVLMCausalLM(head_dim=128, num_layers=3).to("cuda").eval()
+        runtime = TorchInferenceRuntime(model, DummyTokenizer(), device="cuda")
+        layers = runtime._resolve_layers()
+        assert len(layers) == 3
+        assert layers[0] is model.model.language_model.layers[0]
 
     def test_clear_cache(self, runtime, monkeypatch):
         calls = {"count": 0}

@@ -395,8 +395,23 @@ class UnifiedPipeline:
         log(f"   Detected: {family_type.value}")
         log("\n3. Loading configuration...")
         model_config = AutoConfig.from_pretrained(str(model_path))
-        hidden_size = getattr(model_config, "hidden_size", "unknown")
-        layer_count = getattr(model_config, "num_hidden_layers", "unknown")
+        # VLM wrappers (Gemma 4, Gemma 3 VLM, PaliGemma, ...) keep the
+        # text-backbone dimensions under `text_config` rather than on the
+        # top-level config. Unwrap for logging so we don't print None.
+        hidden_size = getattr(model_config, "hidden_size", None)
+        layer_count = getattr(model_config, "num_hidden_layers", None)
+        text_config = getattr(model_config, "text_config", None)
+        if (hidden_size is None or layer_count is None) and text_config is not None:
+            hidden_size = hidden_size if hidden_size is not None else getattr(
+                text_config, "hidden_size", "unknown"
+            )
+            layer_count = layer_count if layer_count is not None else getattr(
+                text_config, "num_hidden_layers", "unknown"
+            )
+        if hidden_size is None:
+            hidden_size = "unknown"
+        if layer_count is None:
+            layer_count = "unknown"
         log(f"   Hidden: {hidden_size}, Layers: {layer_count}")
         log("\n4. Loading tokenizer...")
         tokenizer = HFLoader.load_tokenizer(model_path)

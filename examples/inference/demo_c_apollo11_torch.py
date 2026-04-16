@@ -91,45 +91,13 @@ def _as_cpu_torch_tensor(value):
     return tensor.contiguous()
 
 
-def _infer_model_hidden_size(runtime: TorchInferenceRuntime) -> int | None:
-    model = getattr(runtime, "_model", None)
-    candidates = []
-    if model is not None:
-        candidates.extend([getattr(model, "config", None), model])
-
-    for source in candidates:
-        if source is None:
-            continue
-        for attr in ("hidden_size", "n_embd", "d_model", "dim", "hidden_dim"):
-            value = getattr(source, attr, None)
-            if isinstance(value, int) and value > 0:
-                return value
-    return None
-
-
-def _count_model_layers(runtime: TorchInferenceRuntime) -> int | None:
-    try:
-        return len(runtime._resolve_layers())
-    except Exception:
-        return None
-
-
-def _residual_is_compatible(runtime: TorchInferenceRuntime, boundary_tensor, layer_index: int) -> tuple[bool, str]:
-    layer_count = _count_model_layers(runtime)
-    if layer_count is None:
-        return False, "layer count unavailable"
-    if layer_index < 0 or layer_index >= layer_count:
-        return False, f"layer index {layer_index} is outside the model's {layer_count} layers"
-
-    hidden_size = _infer_model_hidden_size(runtime)
-    if hidden_size is None:
-        return False, "model hidden size unavailable"
-
-    width = int(boundary_tensor.shape[-1])
-    if width != hidden_size:
-        return False, f"boundary width {width} does not match model hidden size {hidden_size}"
-
-    return True, "boundary and model shapes are compatible"
+# Use the canonical helpers from torch_query so this demo benefits from the
+# wrapper-config unwrap (Gemma 4 keeps hidden_size under config.text_config).
+from chuk_lazarus.inference.context.knowledge.torch_query import (  # noqa: E402
+    _count_model_layers,
+    _infer_model_hidden_size,
+    _residual_is_compatible,
+)
 
 
 def _render_prompt(tokenizer: Any, question: str, window_text: str, window_keywords: list[str], mode: str) -> str:

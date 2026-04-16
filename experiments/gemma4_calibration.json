@@ -1,0 +1,63 @@
+{
+  "date": "2026-04-16",
+  "script": "examples/inference/calibrate_arch_torch.py",
+  "model": "google/gemma-4-E2B-it",
+  "wrapper_model_type": "gemma4",
+  "text_model_type": "gemma4_text",
+  "registry_model_type": "gemma4",
+  "num_layers": 35,
+  "num_heads": 8,
+  "hidden_size": 1536,
+  "part_a_injection_layer_scan": {
+    "peak_layer": 24,
+    "avg_dot_per_layer": {
+      "20": 1.014, "21": 0.658, "22": 0.493, "23": 0.733, "24": 2.221,
+      "25": 1.401, "26": 1.518, "27": 1.185, "28": 1.298, "29": 1.107,
+      "30": 0.903, "31": 0.444, "32": 0.125, "33": -0.237, "34": -1.381
+    }
+  },
+  "part_b_head_sweep": {
+    "usable_probes": 5,
+    "usable_probe_names": ["Voltara", "Cerulion", "Dravenport", "Solmere", "endorse"],
+    "best_per_layer": {
+      "20": {"head": 0, "mean_delta": 0.037, "coverage": 0.20, "score": 0.0073},
+      "21": {"head": 1, "mean_delta": 0.060, "coverage": 0.20, "score": 0.0120},
+      "22": {"head": 7, "mean_delta": 0.017, "coverage": 0.20, "score": 0.0033},
+      "23": {"head": 1, "mean_delta": 0.053, "coverage": 0.20, "score": 0.0106},
+      "24": {"head": 0, "mean_delta": 0.337, "coverage": 0.40, "score": 0.1350, "deltas": [0.77, 0.0, 0.0, 0.92, 0.0]},
+      "25": {"head": 1, "mean_delta": 0.035, "coverage": 0.20, "score": 0.0071},
+      "26": {"head": 0, "mean_delta": 0.177, "coverage": 0.40, "score": 0.0709},
+      "27": {"head": 3, "mean_delta": 0.035, "coverage": 0.20, "score": 0.0070},
+      "28": {"head": 7, "mean_delta": 0.229, "coverage": 0.60, "score": 0.1376, "deltas": [0.31, 0.01, 0.22, 0.59, 0.01]},
+      "29": {"head": 0, "mean_delta": 0.274, "coverage": 0.40, "score": 0.1097},
+      "30": {"head": 0, "mean_delta": -0.002, "coverage": 0.00, "score": 0.0},
+      "31": {"head": 0, "mean_delta": 0.001, "coverage": 0.00, "score": 0.0},
+      "32": {"head": 1, "mean_delta": 0.010, "coverage": 0.20, "score": 0.0019},
+      "33": {"head": 6, "mean_delta": 0.066, "coverage": 0.40, "score": 0.0266},
+      "34": {"head": 2, "mean_delta": 0.666, "coverage": 1.00, "score": 0.6655, "comment": "output commit head, not a routing head"}
+    }
+  },
+  "selected": {
+    "retrieval_layer": 28,
+    "query_head": 7,
+    "injection_layer": 29,
+    "justification": [
+      "Highest score among non-terminal layers (0.1376 vs 0.1350 at L24 H0 and 0.1097 at L29 H0).",
+      "Highest coverage at 60% (vs 40% for next best) — signal is consistent across diverse entities.",
+      "L28 has 6 downstream layers for the injection to propagate through.",
+      "L34 H2 (score 0.666) rejected: final-layer commit head, leaves no downstream compute for injection."
+    ]
+  },
+  "baselines": {
+    "Voltara": 0.9941,
+    "Cerulion": 0.9997,
+    "Dravenport": 1.0000,
+    "Solmere": 0.9449,
+    "endorse": 0.9990,
+    "sell": 0.0000
+  },
+  "notes": [
+    "'sell' probe had baseline P=0 and was excluded (model does not naturally complete with 'sell' after that cloze).",
+    "Gemma 4 KV-sharing (num_kv_shared_layers=20) means layers 20-34 share KV with earlier layers; causal ablation via o_proj pre-hook is still valid since it zeroes the per-head contribution to that layer's output regardless of KV source."
+  ]
+}

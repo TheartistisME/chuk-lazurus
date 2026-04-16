@@ -165,6 +165,12 @@ MODEL_TYPE_PATTERNS = {
     "gemma3": ModelFamilyType.GEMMA,  # May have nested text_config
     "gemma3_text": ModelFamilyType.GEMMA,
     "gemma-3": ModelFamilyType.GEMMA,
+    # Gemma 4 — VLM-style wrapper (gemma4) with nested text backbone
+    # (gemma4_text). Torch/CUDA backend uses HF AutoModelForCausalLM, so
+    # this mapping is sufficient; the MLX family code still targets Gemma 3.
+    "gemma4": ModelFamilyType.GEMMA,
+    "gemma4_text": ModelFamilyType.GEMMA,
+    "gemma-4": ModelFamilyType.GEMMA,
     # Llama-compatible (last, as catch-all for llama-like models)
     "llama": ModelFamilyType.LLAMA,
     "mistral": ModelFamilyType.LLAMA,
@@ -183,7 +189,10 @@ ARCHITECTURE_PATTERNS = {
     "GemmaForCausalLM": ModelFamilyType.GEMMA,
     "Gemma2ForCausalLM": ModelFamilyType.GEMMA,
     "Gemma3ForCausalLM": ModelFamilyType.GEMMA,
+    "Gemma3ForConditionalGeneration": ModelFamilyType.GEMMA,
     "PaliGemmaForConditionalGeneration": ModelFamilyType.GEMMA,
+    "Gemma4ForCausalLM": ModelFamilyType.GEMMA,
+    "Gemma4ForConditionalGeneration": ModelFamilyType.GEMMA,
     "GraniteForCausalLM": ModelFamilyType.GRANITE,
     "GraniteMoeHybridForCausalLM": ModelFamilyType.GRANITE_HYBRID,
     "JambaForCausalLM": ModelFamilyType.JAMBA,
