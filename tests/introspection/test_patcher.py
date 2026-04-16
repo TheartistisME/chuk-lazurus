@@ -1,9 +1,12 @@
 """Tests for introspection patcher module."""
 
-import mlx.core as mx
-import mlx.nn as nn
+# ruff: noqa: E402
+
 import numpy as np
 import pytest
+
+mx = pytest.importorskip("mlx.core")
+nn = pytest.importorskip("mlx.nn")
 
 from chuk_lazarus.introspection.enums import PatchEffect
 from chuk_lazarus.introspection.patcher import (

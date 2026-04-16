@@ -10,6 +10,20 @@ __all__ = [
 ]
 
 
+def _load_pipeline(model_id: str, *, backend: str | None = None, device: str | None = None):
+    """Load a backend-aware inference pipeline for patching commands."""
+    from ....inference import UnifiedPipeline, UnifiedPipelineConfig
+
+    return UnifiedPipeline.from_pretrained(
+        model_id,
+        pipeline_config=UnifiedPipelineConfig(
+            backend_name=backend,
+            device=device,
+        ),
+        verbose=False,
+    )
+
+
 def introspect_commutativity(args):
     """Test if the model's internal representation respects commutativity (A*B = B*A).
 
@@ -24,14 +38,17 @@ def introspect_commutativity(args):
     import json
 
     from ....introspection import CommutativityAnalyzer
-    from ....introspection.ablation import AblationStudy
 
     async def run():
         print(f"Loading model: {args.model}")
-        study = AblationStudy.from_pretrained(args.model)
-        model = study.adapter.model
-        tokenizer = study.adapter.tokenizer
-        config = study.adapter.config
+        pipeline = _load_pipeline(
+            args.model,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
+        )
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
+        config = pipeline.config
 
         # Parse layers
         layer = args.layer if args.layer else None
@@ -47,7 +64,12 @@ def introspect_commutativity(args):
                 pairs.append((p1.strip(), p2.strip()))
 
         # Use the async-native CommutativityAnalyzer
-        analyzer = CommutativityAnalyzer(model=model, tokenizer=tokenizer, config=config)
+        analyzer = CommutativityAnalyzer(
+            model=model,
+            tokenizer=tokenizer,
+            config=config,
+            runtime=pipeline.runtime,
+        )
         result = await analyzer.analyze(layer=layer, pairs=pairs)
 
         # Print results
@@ -103,14 +125,17 @@ def introspect_patch(args):
         extract_expected_answer,
         parse_layers_arg,
     )
-    from ....introspection.ablation import AblationStudy
 
     async def run():
         print(f"Loading model: {args.model}")
-        study = AblationStudy.from_pretrained(args.model)
-        model = study.adapter.model
-        tokenizer = study.adapter.tokenizer
-        config = study.adapter.config
+        pipeline = _load_pipeline(
+            args.model,
+            backend=getattr(args, "backend", None),
+            device=getattr(args, "device", None),
+        )
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
+        config = pipeline.config
 
         source_prompt = args.source
         target_prompt = args.target
@@ -127,21 +152,26 @@ def introspect_patch(args):
         if target_answer:
             print(f"Target answer: {target_answer}")
 
+        patcher = ActivationPatcher(
+            model=model,
+            tokenizer=tokenizer,
+            config=config,
+            runtime=pipeline.runtime,
+        )
+
         # Parse layers using framework utility
         layers = parse_layers_arg(args.layers if args.layers else None)
         if layers is None and args.layer:
             layers = [args.layer]
         elif layers is None:
             # Sweep key layers
-            num_layers = study.adapter.num_layers
+            num_layers = patcher.num_layers
             layers = list(range(0, num_layers, max(1, num_layers // 10)))
 
         print(f"Patching at layers: {layers}")
 
         blend = args.blend if args.blend else 1.0
 
-        # Use the async-native ActivationPatcher
-        patcher = ActivationPatcher(model=model, tokenizer=tokenizer, config=config)
         result = await patcher.sweep_layers(
             target_prompt=target_prompt,
             source_prompt=source_prompt,

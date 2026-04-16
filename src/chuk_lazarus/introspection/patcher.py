@@ -32,7 +32,277 @@ class LayerPatch(BaseModel):
     position: int = Field(default=-1, description="Token position (-1 for last)")
 
 
-class ActivationPatcher(BaseModel):
+class _RuntimeAwareIntrospector(BaseModel):
+    """Shared backend-aware helpers for patching and commutativity analysis."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    model: Any = Field(description="The neural network model")
+    tokenizer: Any = Field(description="The tokenizer")
+    config: Any = Field(default=None, description="Optional configuration")
+    runtime: Any = Field(default=None, description="Optional inference runtime")
+    _accessor: AsyncModelAccessor = PrivateAttr()
+
+    def model_post_init(self, __context: Any) -> None:
+        """Initialize private attributes after model creation."""
+        self._accessor = AsyncModelAccessor(model=self.model, config=self.config)
+
+    @property
+    def num_layers(self) -> int:
+        """Number of transformer layers exposed by the model."""
+        return self._accessor.num_layers
+
+    def _model_id(self) -> str:
+        """Best-effort model identifier across MLX and torch configs."""
+        return (
+            getattr(self.config, "model_id", None)
+            or getattr(self.config, "_name_or_path", None)
+            or "unknown"
+        )
+
+    def _backend_name(self) -> str:
+        """Infer the active runtime backend without importing MLX on torch hosts."""
+        backend = getattr(self.runtime, "backend", None)
+        if backend is not None:
+            name = str(backend).lower()
+            return "torch" if name == "cuda" else name
+
+        parameters = getattr(self.model, "parameters", None)
+        if callable(parameters):
+            try:
+                first_param = next(parameters())
+            except TypeError:
+                try:
+                    first_param = next(iter(parameters()))
+                except (StopIteration, TypeError):
+                    first_param = None
+            except StopIteration:
+                first_param = None
+
+            if first_param is not None and type(first_param).__module__.startswith("torch"):
+                return "torch"
+
+        return "mlx"
+
+    def _resolve_torch_layers(self) -> list[Any]:
+        """Locate transformer blocks on a torch-backed model."""
+        runtime_layers = getattr(self.runtime, "_resolve_layers", None)
+        if callable(runtime_layers):
+            return list(runtime_layers())
+
+        candidates = [
+            ("model", "language_model", "layers"),
+            ("model", "language_model", "model", "layers"),
+            ("language_model", "model", "layers"),
+            ("language_model", "layers"),
+            ("model", "layers"),
+            ("transformer", "h"),
+            ("gpt_neox", "layers"),
+            ("layers",),
+        ]
+
+        for path in candidates:
+            target = self.model
+            for step in path[:-1]:
+                target = getattr(target, step, None)
+                if target is None:
+                    break
+            if target is None:
+                continue
+
+            layers = getattr(target, path[-1], None)
+            if layers is None or not hasattr(layers, "__iter__") or not hasattr(layers, "__len__"):
+                continue
+            try:
+                length = len(layers)
+            except TypeError:
+                continue
+            if length:
+                return list(layers)
+
+        raise ValueError("Cannot resolve transformer layers for torch activation patching.")
+
+    def _torch_device(self):
+        """Resolve the device for torch tokenization and forward passes."""
+        runtime_device = getattr(self.runtime, "_device", None)
+        if runtime_device is not None:
+            return runtime_device
+
+        import torch
+
+        parameters = getattr(self.model, "parameters", None)
+        if callable(parameters):
+            try:
+                first_param = next(self.model.parameters())
+            except StopIteration:
+                first_param = None
+            if first_param is not None:
+                return first_param.device
+
+        return torch.device("cpu")
+
+    def _tokenize_torch_prompt(self, prompt: str) -> dict[str, Any]:
+        """Tokenize a prompt for torch runtimes, preserving device placement."""
+        runtime_tokenize = getattr(self.runtime, "_tokenize_prompt", None)
+        if callable(runtime_tokenize):
+            return runtime_tokenize(prompt)
+
+        import torch
+
+        device = self._torch_device()
+        non_blocking = getattr(device, "type", "") == "cuda"
+        if callable(self.tokenizer):
+            batch = self.tokenizer(prompt, return_tensors="pt")
+            batch = getattr(batch, "data", batch)
+            return {
+                name: tensor.to(device, non_blocking=non_blocking)
+                if hasattr(tensor, "to")
+                else torch.as_tensor(tensor, device=device)
+                for name, tensor in dict(batch).items()
+            }
+
+        try:
+            input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
+        except TypeError:
+            input_ids = self.tokenizer.encode(prompt)
+        if isinstance(input_ids, list):
+            input_ids = torch.tensor([input_ids], dtype=torch.long, device=device)
+        elif hasattr(input_ids, "ndim") and input_ids.ndim == 1:
+            input_ids = input_ids.unsqueeze(0).to(device, non_blocking=non_blocking)
+        elif hasattr(input_ids, "to"):
+            input_ids = input_ids.to(device, non_blocking=non_blocking)
+        else:
+            input_ids = torch.as_tensor(input_ids, device=device)
+            if input_ids.ndim == 1:
+                input_ids = input_ids.unsqueeze(0)
+
+        return {"input_ids": input_ids}
+
+    @staticmethod
+    def _extract_hidden_states(output: Any) -> Any:
+        """Normalize a layer output into its hidden-state tensor."""
+        if hasattr(output, "hidden_states"):
+            return output.hidden_states
+        if isinstance(output, tuple):
+            return output[0]
+        return output
+
+    @classmethod
+    def _replace_hidden_states(cls, output: Any, hidden_states: Any) -> Any:
+        """Write patched hidden states back into a layer output container."""
+        if hasattr(output, "hidden_states"):
+            output.hidden_states = hidden_states
+            return output
+        if isinstance(output, tuple):
+            return (hidden_states,) + output[1:]
+        return hidden_states
+
+    def _run_model(self, model_inputs: dict[str, Any]) -> Any:
+        """Run a forward pass across the common torch/MLX model signatures."""
+        try:
+            return self.model(**model_inputs, use_cache=False)
+        except TypeError:
+            try:
+                return self.model(**model_inputs)
+            except TypeError:
+                return self.model(model_inputs["input_ids"])
+
+    async def _capture_activation_vector(
+        self,
+        prompt: str,
+        layer: int,
+        position: int = -1,
+    ) -> np.ndarray:
+        """Capture a hidden-state vector from the active backend."""
+        if self._backend_name() == "torch":
+            return self._capture_activation_torch(prompt, layer, position)
+        return await self._capture_activation_mlx(prompt, layer, position)
+
+    async def _capture_activation_mlx(
+        self,
+        prompt: str,
+        layer: int,
+        position: int = -1,
+    ) -> np.ndarray:
+        """Legacy MLX capture path."""
+        import mlx.core as mx
+
+        input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
+        captured = await self._accessor.forward_through_layers(
+            input_ids,
+            layers=[layer],
+            capture_hidden_states=True,
+        )
+
+        h = captured[layer]
+        if position == -1:
+            position = h.shape[1] - 1
+        activation = h[0, position, :]
+        return np.array(activation.astype(mx.float32), copy=False)
+
+    def _capture_activation_torch(
+        self,
+        prompt: str,
+        layer: int,
+        position: int = -1,
+    ) -> np.ndarray:
+        """Torch-native activation capture using forward hooks."""
+        import torch
+
+        layers = self._resolve_torch_layers()
+        block = layers[layer]
+        captured: dict[str, Any] = {}
+
+        def capture_hook(_module, _args, output):
+            hidden = self._extract_hidden_states(output)
+            pos = position if position >= 0 else hidden.shape[1] - 1
+            captured["activation"] = hidden[0, pos, :].detach().to("cpu", dtype=torch.float32)
+
+        handle = block.register_forward_hook(capture_hook)
+        try:
+            model_inputs = self._tokenize_torch_prompt(prompt)
+            with torch.inference_mode():
+                self._run_model(model_inputs)
+        finally:
+            handle.remove()
+
+        activation = captured.get("activation")
+        if activation is None:
+            raise RuntimeError(f"Failed to capture activation for layer {layer}.")
+        return activation.numpy()
+
+    def _predict_top_token(self, prompt: str) -> tuple[str, float]:
+        """Run a single forward pass and return the top next-token prediction."""
+        if self._backend_name() == "torch":
+            return self._predict_top_token_torch(prompt)
+        return self._predict_top_token_mlx(prompt)
+
+    def _predict_top_token_mlx(self, prompt: str) -> tuple[str, float]:
+        """Legacy MLX forward path."""
+        import mlx.core as mx
+
+        input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
+        outputs = self.model(input_ids)
+        logits = outputs.logits if hasattr(outputs, "logits") else outputs
+        probs = mx.softmax(logits[0, -1, :], axis=-1)
+        top_idx = int(mx.argmax(probs))
+        return self.tokenizer.decode([top_idx]), float(probs[top_idx])
+
+    def _predict_top_token_torch(self, prompt: str) -> tuple[str, float]:
+        """Torch-native forward path."""
+        import torch
+
+        model_inputs = self._tokenize_torch_prompt(prompt)
+        with torch.inference_mode():
+            outputs = self._run_model(model_inputs)
+
+        logits = outputs.logits if hasattr(outputs, "logits") else outputs
+        probs = torch.softmax(logits[0, -1, :], dim=-1)
+        top_idx = int(torch.argmax(probs).item())
+        return self.tokenizer.decode([top_idx]), float(probs[top_idx].item())
+
+
+class ActivationPatcher(_RuntimeAwareIntrospector):
     """Activation patching for causal intervention experiments.
 
     Example:
@@ -47,17 +317,6 @@ class ActivationPatcher(BaseModel):
         ...     blend=1.0,
         ... )
     """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    model: Any = Field(description="The neural network model")
-    tokenizer: Any = Field(description="The tokenizer")
-    config: Any = Field(default=None, description="Optional configuration")
-    _accessor: AsyncModelAccessor = PrivateAttr()
-
-    def model_post_init(self, __context: Any) -> None:
-        """Initialize private attributes after model creation."""
-        self._accessor = AsyncModelAccessor(model=self.model, config=self.config)
 
     async def capture_activation(
         self,
@@ -75,20 +334,7 @@ class ActivationPatcher(BaseModel):
         Returns:
             Activation vector as numpy array
         """
-        import mlx.core as mx
-
-        input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
-        captured = await self._accessor.forward_through_layers(
-            input_ids,
-            layers=[layer],
-            capture_hidden_states=True,
-        )
-
-        h = captured[layer]
-        if position == -1:
-            position = h.shape[1] - 1
-        activation = h[0, position, :]
-        return np.array(activation.astype(mx.float32), copy=False)
+        return await self._capture_activation_vector(prompt, layer, position)
 
     def _create_patched_layer(
         self,
@@ -170,6 +416,32 @@ class ActivationPatcher(BaseModel):
         Returns:
             Tuple of (top_token, probability)
         """
+        if self._backend_name() == "torch":
+            return await self._patch_and_predict_torch(
+                target_prompt,
+                source_activation,
+                layer,
+                blend=blend,
+                position=position,
+            )
+
+        return await self._patch_and_predict_mlx(
+            target_prompt,
+            source_activation,
+            layer,
+            blend=blend,
+            position=position,
+        )
+
+    async def _patch_and_predict_mlx(
+        self,
+        target_prompt: str,
+        source_activation: np.ndarray | mx.array,
+        layer: int,
+        blend: float = 1.0,
+        position: int = -1,
+    ) -> tuple[str, float]:
+        """Legacy MLX patch path."""
         import mlx.core as mx
 
         # Convert to mx.array if needed
@@ -202,6 +474,43 @@ class ActivationPatcher(BaseModel):
             # Restore original layer
             self._accessor.set_layer(layer, original_layer)
 
+    async def _patch_and_predict_torch(
+        self,
+        target_prompt: str,
+        source_activation: np.ndarray | Any,
+        layer: int,
+        blend: float = 1.0,
+        position: int = -1,
+    ) -> tuple[str, float]:
+        """Torch-native activation patching using a layer-output hook."""
+        import torch
+
+        layers = self._resolve_torch_layers()
+        block = layers[layer]
+
+        if isinstance(source_activation, np.ndarray):
+            source_tensor = torch.from_numpy(source_activation)
+        elif isinstance(source_activation, torch.Tensor):
+            source_tensor = source_activation
+        else:
+            source_tensor = torch.as_tensor(source_activation)
+
+        def patch_hook(_module, _args, output):
+            hidden = self._extract_hidden_states(output)
+            pos = position if position >= 0 else hidden.shape[1] - 1
+            source = source_tensor.to(device=hidden.device, dtype=hidden.dtype)
+            source = source.reshape(1, -1).expand(hidden.shape[0], -1)
+            patched_hidden = hidden.clone()
+            original = patched_hidden[:, pos, :]
+            patched_hidden[:, pos, :] = (1 - blend) * original + blend * source
+            return self._replace_hidden_states(output, patched_hidden)
+
+        handle = block.register_forward_hook(patch_hook)
+        try:
+            return self._predict_top_token_torch(target_prompt)
+        finally:
+            handle.remove()
+
     async def sweep_layers(
         self,
         target_prompt: str,
@@ -224,29 +533,33 @@ class ActivationPatcher(BaseModel):
         Returns:
             Complete patching result
         """
-        import mlx.core as mx
-
         if layers is None:
-            num_layers = self._accessor.num_layers
+            num_layers = self.num_layers
             layers = list(range(0, num_layers, max(1, num_layers // 10)))
 
         # Get baseline prediction
-        input_ids = mx.array(self.tokenizer.encode(target_prompt))[None, :]
-        outputs = self.model(input_ids)
-        logits = outputs.logits if hasattr(outputs, "logits") else outputs
-        probs = mx.softmax(logits[0, -1, :], axis=-1)
-        baseline_idx = int(mx.argmax(probs))
-        baseline_prob = float(probs[baseline_idx])
-        baseline_token = self.tokenizer.decode([baseline_idx])
+        baseline_token, baseline_prob = self._predict_top_token(target_prompt)
 
         # Capture source activations at all layers
-        source_ids = mx.array(self.tokenizer.encode(source_prompt))[None, :]
-        source_captured = await self._accessor.forward_through_layers(source_ids, layers=layers)
+        source_captured: dict[int, Any]
+        if self._backend_name() == "torch":
+            source_captured = {
+                layer_idx: await self.capture_activation(source_prompt, layer_idx)
+                for layer_idx in layers
+            }
+        else:
+            import mlx.core as mx
+
+            source_ids = mx.array(self.tokenizer.encode(source_prompt))[None, :]
+            source_captured = await self._accessor.forward_through_layers(source_ids, layers=layers)
 
         # Test each layer
         layer_results = []
         for layer in layers:
-            source_activation = source_captured[layer][0, -1, :]
+            if self._backend_name() == "torch":
+                source_activation = source_captured[layer]
+            else:
+                source_activation = source_captured[layer][0, -1, :]
             top_token, top_prob = await self.patch_and_predict(
                 target_prompt,
                 source_activation,
@@ -276,7 +589,7 @@ class ActivationPatcher(BaseModel):
             )
 
         return PatchingResult(
-            model_id=getattr(self.config, "model_id", "unknown"),
+            model_id=self._model_id(),
             source_prompt=source_prompt,
             target_prompt=target_prompt,
             source_answer=source_answer,
@@ -289,7 +602,7 @@ class ActivationPatcher(BaseModel):
         )
 
 
-class CommutativityAnalyzer(BaseModel):
+class CommutativityAnalyzer(_RuntimeAwareIntrospector):
     """Analyze whether representations respect commutativity (A*B = B*A).
 
     Example:
@@ -298,25 +611,9 @@ class CommutativityAnalyzer(BaseModel):
         >>> print(f"Mean similarity: {result.mean_similarity:.4f}")
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    model: Any = Field(description="The neural network model")
-    tokenizer: Any = Field(description="The tokenizer")
-    config: Any = Field(default=None, description="Optional configuration")
-    _accessor: AsyncModelAccessor = PrivateAttr()
-
-    def model_post_init(self, __context: Any) -> None:
-        """Initialize private attributes after model creation."""
-        self._accessor = AsyncModelAccessor(model=self.model, config=self.config)
-
     async def get_activation(self, prompt: str, layer: int) -> np.ndarray:
         """Get last-token hidden state for a prompt at a given layer."""
-        import mlx.core as mx
-
-        input_ids = mx.array(self.tokenizer.encode(prompt))[None, :]
-        captured = await self._accessor.forward_through_layers(input_ids, layers=[layer])
-        h = captured[layer][0, -1, :]
-        return np.array(h.astype(mx.float32), copy=False)
+        return await self._capture_activation_vector(prompt, layer)
 
     async def analyze(
         self,
@@ -335,7 +632,7 @@ class CommutativityAnalyzer(BaseModel):
         from .models.patching import CommutativityPair, CommutativityResult
 
         if layer is None:
-            layer = int(self._accessor.num_layers * 0.6)
+            layer = int(self.num_layers * 0.6)
 
         if pairs is None:
             pairs = []
@@ -366,7 +663,7 @@ class CommutativityAnalyzer(BaseModel):
             )
 
         return CommutativityResult(
-            model_id=getattr(self.config, "model_id", "unknown"),
+            model_id=self._model_id(),
             layer=layer,
             num_pairs=len(pairs),
             mean_similarity=float(np.mean(similarities)),

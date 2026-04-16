@@ -1,10 +1,44 @@
 """Tests for introspect patching CLI commands."""
 
+import sys
 import tempfile
+import types
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture
+def mock_ablation_study():
+    """Patch the backend-aware pipeline loader used by patching commands."""
+    pipeline = SimpleNamespace(
+        model=MagicMock(),
+        tokenizer=MagicMock(),
+        config=SimpleNamespace(model_id="test-model"),
+        runtime=MagicMock(),
+    )
+    introspection_module = sys.modules.get("chuk_lazarus.introspection")
+    if introspection_module is not None:
+        introspection_module.__path__ = []
+
+    backend_dispatch = types.ModuleType("chuk_lazarus.introspection._backend_dispatch")
+    backend_dispatch.from_backend_tensor = MagicMock()
+    backend_dispatch.to_backend_tensor = MagicMock()
+
+    with (
+        patch.dict(
+            sys.modules,
+            {"chuk_lazarus.introspection._backend_dispatch": backend_dispatch},
+        ),
+        patch(
+            "chuk_lazarus.inference.UnifiedPipeline.from_pretrained",
+            return_value=pipeline,
+        ) as mock_loader,
+    ):
+        mock_loader.pipeline = pipeline
+        yield mock_loader
 
 
 class TestIntrospectCommutativity:
@@ -184,6 +218,39 @@ class TestIntrospectCommutativity:
             assert "2*3" in captured.out
             assert "3*2" in captured.out
 
+    def test_commutativity_passes_backend_runtime(
+        self, commutativity_args, mock_ablation_study
+    ):
+        """Test commutativity uses the backend-aware pipeline loader."""
+        from chuk_lazarus.cli.commands.introspect import introspect_commutativity
+
+        commutativity_args.backend = "torch"
+        commutativity_args.device = "cuda:3"
+
+        with patch("chuk_lazarus.introspection.CommutativityAnalyzer") as mock_cls:
+            mock_analyzer = MagicMock()
+            mock_result = MagicMock()
+            mock_result.layer = 12
+            mock_result.num_pairs = 0
+            mock_result.mean_similarity = 1.0
+            mock_result.std_similarity = 0.0
+            mock_result.min_similarity = 1.0
+            mock_result.max_similarity = 1.0
+            mock_result.level = MagicMock()
+            mock_result.level.value = "perfect"
+            mock_result.interpretation = "Test"
+            mock_result.pairs = []
+            mock_analyzer.analyze = AsyncMock(return_value=mock_result)
+            mock_cls.return_value = mock_analyzer
+
+            introspect_commutativity(commutativity_args)
+
+        assert mock_ablation_study.call_args.args == ("test-model",)
+        pipeline_config = mock_ablation_study.call_args.kwargs["pipeline_config"]
+        assert pipeline_config.backend_name == "torch"
+        assert pipeline_config.device == "cuda:3"
+        assert mock_cls.call_args.kwargs["runtime"] is mock_ablation_study.pipeline.runtime
+
 
 class TestIntrospectPatch:
     """Tests for introspect_patch command."""
@@ -209,6 +276,7 @@ class TestIntrospectPatch:
 
         with patch("chuk_lazarus.introspection.ActivationPatcher") as mock_cls:
             mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
 
             # Create layer result mock
             mock_layer_result = MagicMock()
@@ -242,6 +310,7 @@ class TestIntrospectPatch:
 
         with patch("chuk_lazarus.introspection.ActivationPatcher") as mock_cls:
             mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
 
             # Create layer result mock
             mock_layer_result = MagicMock()
@@ -271,6 +340,7 @@ class TestIntrospectPatch:
 
         with patch("chuk_lazarus.introspection.ActivationPatcher") as mock_cls:
             mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
 
             # Create layer result mock
             mock_layer_result = MagicMock()
@@ -304,6 +374,7 @@ class TestIntrospectPatch:
 
         with patch("chuk_lazarus.introspection.ActivationPatcher") as mock_cls:
             mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
 
             # Create layer result mock
             mock_layer_result = MagicMock()
@@ -351,6 +422,7 @@ class TestIntrospectPatch:
             mock_extract.side_effect = lambda p: "56" if "7*8" in p else "15"
 
             mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
 
             mock_layer_result = MagicMock()
             mock_layer_result.layer = 12
@@ -389,6 +461,7 @@ class TestIntrospectPatch:
             mock_parse.return_value = None
 
             mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
 
             mock_layer_result = MagicMock()
             mock_layer_result.layer = 8
@@ -427,6 +500,7 @@ class TestIntrospectPatch:
             mock_parse.return_value = None
 
             mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
 
             mock_layer_result = MagicMock()
             mock_layer_result.layer = 0
@@ -458,6 +532,7 @@ class TestIntrospectPatch:
 
         with patch("chuk_lazarus.introspection.ActivationPatcher") as mock_patcher_cls:
             mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
 
             # Create layer result with "transferred" effect
             mock_layer_result1 = MagicMock()
@@ -488,3 +563,29 @@ class TestIntrospectPatch:
             assert "Source answer transferred at layers" in captured.out
             assert "10" in captured.out
             assert "11" in captured.out
+
+    def test_patch_passes_backend_runtime(self, patch_args, mock_ablation_study):
+        """Test activation patching uses the backend-aware pipeline loader."""
+        from chuk_lazarus.cli.commands.introspect import introspect_patch
+
+        patch_args.backend = "torch"
+        patch_args.device = "cuda:2"
+
+        with patch("chuk_lazarus.introspection.ActivationPatcher") as mock_cls:
+            mock_patcher = MagicMock()
+            mock_patcher.num_layers = 12
+            mock_result = MagicMock()
+            mock_result.baseline_token = "15"
+            mock_result.baseline_prob = 0.9
+            mock_result.layer_results = []
+            mock_result.model_dump.return_value = {}
+            mock_patcher.sweep_layers = AsyncMock(return_value=mock_result)
+            mock_cls.return_value = mock_patcher
+
+            introspect_patch(patch_args)
+
+        assert mock_ablation_study.call_args.args == ("test-model",)
+        pipeline_config = mock_ablation_study.call_args.kwargs["pipeline_config"]
+        assert pipeline_config.backend_name == "torch"
+        assert pipeline_config.device == "cuda:2"
+        assert mock_cls.call_args.kwargs["runtime"] is mock_ablation_study.pipeline.runtime
