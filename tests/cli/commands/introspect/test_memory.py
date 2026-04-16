@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from argparse import Namespace
 from unittest.mock import MagicMock
 
@@ -22,6 +23,8 @@ class TestIntrospectMemory:
             classify=False,
             save_plot=None,
             output=None,
+            backend=None,
+            device=None,
         )
 
     def test_memory_basic(self, memory_args, capsys):
@@ -101,6 +104,20 @@ class TestIntrospectMemory:
 
         captured = capsys.readouterr()
         assert captured.out != "" or captured.err != ""
+
+    def test_memory_threads_backend_and_device(self, memory_args):
+        """Test memory analysis forwards backend/device into MemoryAnalysisConfig."""
+        from chuk_lazarus.cli.commands.introspect.memory import introspect_memory
+
+        memory_args.backend = "torch"
+        memory_args.device = "cuda:0"
+
+        asyncio.run(introspect_memory(memory_args))
+
+        mock_memory = sys.modules["chuk_lazarus.introspection.memory"]
+        _, kwargs = mock_memory.MemoryAnalysisConfig.call_args
+        assert kwargs["backend"] == "torch"
+        assert kwargs["device"] == "cuda:0"
 
 
 class TestIntrospectMemoryInject:

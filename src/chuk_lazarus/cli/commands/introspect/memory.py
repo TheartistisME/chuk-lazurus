@@ -56,6 +56,8 @@ async def introspect_memory(args: Namespace) -> None:
         layer_depth_ratio=get_layer_depth_ratio(layer, LayerDepthRatio.DEEP),
         top_k=extract_arg(args, "top_k", AnalysisDefaults.TOP_K),
         classify=extract_arg(args, "classify", False),
+        backend=getattr(args, "backend", None),
+        device=getattr(args, "device", None),
         # Memorization thresholds from constants
         memorized_prob_threshold=MemoryDefaults.MEMORIZED_PROB_THRESHOLD,
         partial_prob_threshold=MemoryDefaults.PARTIAL_PROB_THRESHOLD,

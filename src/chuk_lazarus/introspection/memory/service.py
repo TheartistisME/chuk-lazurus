@@ -11,11 +11,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from chuk_lazarus.introspection._backend_dispatch import lazy_mx as mx, lazy_nn as nn  # EWS-6 lazy
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from ...datasets import FactType
+from .._backend_dispatch import backend_matmul, from_backend_tensor, to_backend_tensor
 
 
 class MemoryAnalysisConfig(BaseModel):
@@ -30,6 +30,8 @@ class MemoryAnalysisConfig(BaseModel):
     layer_depth_ratio: float | None = Field(default=None, description="Layer depth ratio")
     top_k: int = Field(default=10, description="Top-k predictions")
     classify: bool = Field(default=False, description="Classify memorization levels")
+    backend: str | None = Field(default=None, description="Optional runtime backend selector")
+    device: str | None = Field(default=None, description="Optional device override")
 
     # Memorization thresholds
     memorized_prob_threshold: float = Field(default=0.1)
@@ -154,6 +156,138 @@ class MemoryAnalysisResult(BaseModel):
 class MemoryAnalysisService:
     """Service class for memory analysis operations."""
 
+    @staticmethod
+    def _get_embed(model: Any) -> Any:
+        if hasattr(model, "model") and hasattr(model.model, "embed_tokens"):
+            return model.model.embed_tokens
+        return model.embed_tokens
+
+    @staticmethod
+    def _get_norm(model: Any) -> Any | None:
+        if hasattr(model, "model") and hasattr(model.model, "norm"):
+            return model.model.norm
+        if hasattr(model, "norm"):
+            return model.norm
+        return None
+
+    @classmethod
+    def _get_lm_head(cls, model: Any) -> Any | None:
+        if hasattr(model, "lm_head") and model.lm_head is not None:
+            return model.lm_head
+
+        embed = cls._get_embed(model)
+        if hasattr(embed, "as_linear"):
+            return embed.as_linear
+
+        return None
+
+    @staticmethod
+    def _resolve_target_layer(config: MemoryAnalysisConfig, num_layers: int) -> int:
+        if config.layer is not None:
+            return config.layer
+        if config.layer_depth_ratio is not None:
+            return int(num_layers * config.layer_depth_ratio)
+        return int(num_layers * 0.8)
+
+    @staticmethod
+    def _reshape_hidden_for_head(hidden: Any, backend_name: str) -> Any:
+        if backend_name == "torch":
+            hidden = hidden.clone()
+            if hidden.ndim == 1:
+                return hidden.unsqueeze(0).unsqueeze(0)
+            if hidden.ndim == 2:
+                return hidden.unsqueeze(1)
+            return hidden
+
+        if backend_name == "mlx":
+            import mlx.core as mx
+
+            if hidden.ndim == 1:
+                return hidden[None, None, :]
+            if hidden.ndim == 2:
+                return hidden[:, None, :]
+            return hidden
+
+        raise NotImplementedError(f"Unsupported backend: {backend_name}")
+
+    @staticmethod
+    def _unwrap_logits(outputs: Any) -> Any:
+        return outputs.logits if hasattr(outputs, "logits") else outputs
+
+    @staticmethod
+    def _get_embedding_weight(embed: Any) -> Any:
+        weight = getattr(embed, "weight", None)
+        if weight is None:
+            raise AttributeError("Cannot resolve embedding projection weight.")
+        return getattr(weight, "weight", weight)
+
+    @classmethod
+    def _project_logits(cls, model: Any, hidden: Any, backend: Any) -> np.ndarray:
+        backend_name = str(backend.name).lower()
+        hidden_3d = cls._reshape_hidden_for_head(hidden, backend_name)
+        norm = cls._get_norm(model)
+        if norm is not None:
+            hidden_3d = norm(hidden_3d)
+
+        lm_head = cls._get_lm_head(model)
+        if lm_head is not None:
+            logits = cls._unwrap_logits(lm_head(hidden_3d))
+        else:
+            embed = cls._get_embed(model)
+            embed_weight = cls._get_embedding_weight(embed)
+            logits = backend_matmul(hidden_3d, embed_weight.T, backend=backend)
+
+        return from_backend_tensor(logits, backend=backend)[0, -1, :]
+
+    @staticmethod
+    def _top_k_predictions(logits: np.ndarray, tokenizer: Any, k: int) -> list[dict[str, Any]]:
+        vector = np.asarray(logits, dtype=np.float32)
+        vector = vector - float(np.max(vector))
+        probs = np.exp(vector)
+        probs = probs / probs.sum()
+
+        top_k = min(k, probs.shape[0])
+        top_indices = np.argsort(probs)[-top_k:][::-1]
+
+        return [
+            {
+                "token": tokenizer.decode([int(idx)]),
+                "token_id": int(idx),
+                "prob": float(probs[idx]),
+            }
+            for idx in top_indices
+        ]
+
+    @staticmethod
+    def _load_pipeline(config: MemoryAnalysisConfig) -> tuple[Any, Any]:
+        from ...inference import UnifiedPipeline, UnifiedPipelineConfig
+        from ...models_v2.core.backend import get_backend
+
+        resolved_backend = get_backend(name=config.backend, device=config.device)
+        resolved_backend_name = str(resolved_backend.name).lower()
+        resolved_device = (
+            getattr(resolved_backend, "device", None) if resolved_backend_name == "torch" else None
+        )
+
+        pipeline_config = UnifiedPipelineConfig(
+            backend_name=resolved_backend_name,
+            device=resolved_device,
+        )
+
+        try:
+            pipeline = UnifiedPipeline.from_pretrained(
+                config.model,
+                pipeline_config=pipeline_config,
+                verbose=False,
+            )
+        except ValueError as exc:
+            message = str(exc).lower()
+            if "detect model family" in message or "supported yet" in message:
+                raise ValueError(f"Unsupported model: {config.model}") from exc
+            raise
+
+        return pipeline, resolved_backend
+
     @classmethod
     async def analyze(cls, config: MemoryAnalysisConfig) -> MemoryAnalysisResult:
         """Analyze model's memory of facts.
@@ -164,98 +298,14 @@ class MemoryAnalysisService:
         Returns:
             MemoryAnalysisResult with analysis metrics.
         """
-        from ...models_v2 import load_model
-
-        # Load model
-        load_result = load_model(config.model)
-        model = load_result.model
-        tokenizer = load_result.tokenizer
-        model_config = load_result.config
+        pipeline, backend = cls._load_pipeline(config)
+        model = pipeline.model
+        tokenizer = pipeline.tokenizer
+        model_config = pipeline.config
 
         # Determine target layer
         num_layers = getattr(model_config, "num_hidden_layers", 32)
-        if config.layer is not None:
-            target_layer = config.layer
-        elif config.layer_depth_ratio is not None:
-            target_layer = int(num_layers * config.layer_depth_ratio)
-        else:
-            target_layer = int(num_layers * 0.8)
-
-        # Get model components
-        def get_layers():
-            if hasattr(model, "model") and hasattr(model.model, "layers"):
-                return list(model.model.layers)
-            return list(model.layers)
-
-        def get_embed():
-            if hasattr(model, "model"):
-                return model.model.embed_tokens
-            return model.embed_tokens
-
-        def get_norm():
-            if hasattr(model, "model") and hasattr(model.model, "norm"):
-                return model.model.norm
-            if hasattr(model, "norm"):
-                return model.norm
-            return None
-
-        def get_lm_head():
-            if hasattr(model, "lm_head"):
-                return model.lm_head
-            return None
-
-        def get_predictions_at_layer(prompt: str, layer: int, k: int) -> list:
-            """Get top-k predictions at specific layer."""
-            input_ids = mx.array(tokenizer.encode(prompt))[None, :]
-            layers = get_layers()
-            embed = get_embed()
-            norm = get_norm()
-            lm_head = get_lm_head()
-            scale = getattr(model_config, "embedding_scale", None)
-
-            h = embed(input_ids)
-            if scale:
-                h = h * scale
-
-            seq_len = input_ids.shape[1]
-            mask = nn.MultiHeadAttention.create_additive_causal_mask(seq_len).astype(h.dtype)
-
-            for idx, lyr in enumerate(layers):
-                try:
-                    out = lyr(h, mask=mask)
-                except TypeError:
-                    out = lyr(h)
-                h = (
-                    out.hidden_states
-                    if hasattr(out, "hidden_states")
-                    else (out[0] if isinstance(out, tuple) else out)
-                )
-                if idx == layer:
-                    break
-
-            if norm is not None:
-                h = norm(h)
-            if lm_head is not None:
-                outputs = lm_head(h)
-                logits = outputs.logits if hasattr(outputs, "logits") else outputs
-            else:
-                logits = h @ embed.weight.T
-
-            probs = mx.softmax(logits[0, -1, :], axis=-1)
-            top_indices = mx.argsort(probs)[-k:][::-1]
-            top_probs = probs[top_indices]
-
-            predictions = []
-            for idx, prob in zip(top_indices.tolist(), top_probs.tolist()):
-                token = tokenizer.decode([idx])
-                predictions.append(
-                    {
-                        "token": token,
-                        "token_id": idx,
-                        "prob": prob,
-                    }
-                )
-            return predictions
+        target_layer = cls._resolve_target_layer(config, num_layers)
 
         # Build answer vocabulary
         answer_vocab = {fact["answer"]: fact for fact in config.facts}
@@ -266,7 +316,10 @@ class MemoryAnalysisService:
             query = fact["query"]
             correct_answer = fact["answer"]
 
-            predictions = get_predictions_at_layer(query, target_layer, config.top_k)
+            residual_state = pipeline.runtime.extract_residual_state(query, layer_index=target_layer)
+            hidden = to_backend_tensor(residual_state.tensor, backend=backend)
+            logits = cls._project_logits(model, hidden, backend)
+            predictions = cls._top_k_predictions(logits, tokenizer, config.top_k)
 
             # Find correct answer rank
             correct_rank = None
