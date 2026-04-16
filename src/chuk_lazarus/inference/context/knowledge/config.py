@@ -139,8 +139,23 @@ class ArchitectureConfig:
         Use discover(backbone) for unknown models, or for_model() for
         a graceful fallback that returns None instead of raising.
         """
-        model_type = getattr(config, "model_type", "").lower()
-        num_layers = getattr(config, "num_hidden_layers", -1)
+        def _cfg_get(value, name: str, default=None):
+            if isinstance(value, dict):
+                return value.get(name, default)
+            return getattr(value, name, default)
+
+        def _coerce_num_layers(value) -> int:
+            return value if isinstance(value, int) else -1
+
+        resolved = config
+        text_config = _cfg_get(config, "text_config")
+        text_model_type = str(_cfg_get(text_config, "model_type", "") or "").lower()
+        text_num_layers = _coerce_num_layers(_cfg_get(text_config, "num_hidden_layers", -1))
+        if text_model_type and text_num_layers > 0:
+            resolved = text_config
+
+        model_type = str(_cfg_get(resolved, "model_type", "") or "").lower()
+        num_layers = _coerce_num_layers(_cfg_get(resolved, "num_hidden_layers", -1))
 
         # Normalise Gemma variant spellings
         if model_type in ("gemma", "gemma2", "gemma3", "gemma3_text"):

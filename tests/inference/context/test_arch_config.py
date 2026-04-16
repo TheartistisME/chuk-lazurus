@@ -39,6 +39,13 @@ class TestKnownRegistry:
             ac = ArchitectureConfig.from_model_config(config)
             assert ac.retrieval_layer == 29
 
+    def test_gemma3_wrapper_uses_nested_text_config(self):
+        config = _fake_wrapper_config("gemma3", "gemma3_text", 34)
+        ac = ArchitectureConfig.from_model_config(config)
+        assert ac.retrieval_layer == 29
+        assert ac.query_head == 4
+        assert ac.injection_layer == 30
+
     def test_llama_32_layers(self):
         """SmolLM2 (llama, 32 layers) should be in registry."""
         config = _fake_config("llama", 32)
@@ -266,6 +273,29 @@ class TestUserConfigFile:
             assert ac.retrieval_layer == 10
             assert ac.query_head == 3
 
+    def test_from_model_config_uses_gemma4_wrapper_user_file(self, tmp_path):
+        config_file = tmp_path / "arch_configs.json"
+        config_dir = tmp_path
+
+        data = {
+            "gemma4_text:35": {
+                "retrieval_layer": 30,
+                "query_head": 0,
+                "injection_layer": 31,
+            }
+        }
+        config_file.write_text(json.dumps(data))
+
+        with (
+            patch("chuk_lazarus.inference.context.knowledge.config._USER_ARCH_FILE", config_file),
+            patch("chuk_lazarus.inference.context.knowledge.config._USER_CONFIG_DIR", config_dir),
+        ):
+            config = _fake_wrapper_config("gemma4", "gemma4_text", 35)
+            ac = ArchitectureConfig.from_model_config(config)
+            assert ac.retrieval_layer == 30
+            assert ac.query_head == 0
+            assert ac.injection_layer == 31
+
     def test_save_merges_with_existing(self, tmp_path):
         config_file = tmp_path / "arch_configs.json"
         config_dir = tmp_path
@@ -319,10 +349,26 @@ class TestRepr:
 
 
 class _FakeConfig:
-    def __init__(self, model_type: str, num_hidden_layers: int):
+    def __init__(
+        self,
+        model_type: str,
+        num_hidden_layers: int | None,
+        *,
+        text_config: _FakeConfig | None = None,
+    ):
         self.model_type = model_type
         self.num_hidden_layers = num_hidden_layers
+        if text_config is not None:
+            self.text_config = text_config
 
 
 def _fake_config(model_type: str, num_layers: int) -> _FakeConfig:
     return _FakeConfig(model_type, num_layers)
+
+
+def _fake_wrapper_config(wrapper_type: str, text_type: str, text_layers: int) -> _FakeConfig:
+    return _FakeConfig(
+        wrapper_type,
+        None,
+        text_config=_FakeConfig(text_type, text_layers),
+    )
