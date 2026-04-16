@@ -72,12 +72,22 @@ class TorchMemoryTokenizer:
         return f"tok-{ids}"
 
 
-def test_memory_analysis_service_runs_real_torch_path(monkeypatch):
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda:0",
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"),
+        ),
+    ],
+)
+def test_memory_analysis_service_runs_real_torch_path(monkeypatch, device):
     import chuk_lazarus.inference as inference_module
 
-    model = TorchMemoryModel().eval()
+    model = TorchMemoryModel().eval().to(device)
     tokenizer = TorchMemoryTokenizer()
-    runtime = TorchInferenceRuntime(model, tokenizer, device="cpu")
+    runtime = TorchInferenceRuntime(model, tokenizer, device=device)
     captured: dict[str, object] = {}
 
     fake_pipeline = SimpleNamespace(
@@ -104,14 +114,14 @@ def test_memory_analysis_service_runs_real_torch_path(monkeypatch):
                 layer=0,
                 top_k=3,
                 backend="torch",
-                device="cpu",
+                device=device,
             )
         )
     )
 
     assert captured["model_id"] == "fake/test-model"
     assert captured["pipeline_config"].backend_name == "torch"
-    assert captured["pipeline_config"].device == "cpu"
+    assert captured["pipeline_config"].device == device
     assert captured["verbose"] is False
     assert result.layer == 0
     assert result.top1_accuracy == 1
