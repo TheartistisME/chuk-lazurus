@@ -71,8 +71,18 @@ def _title_alias_token_sequences(title: str) -> list[tuple[str, ...]]:
     return candidates
 
 
-def _single_token_in_longer_alias(token: str, alias_map: dict[tuple[str, ...], set[str]]) -> bool:
-    return any(len(tokens) > 1 and token in tokens for tokens in alias_map)
+def _count_two_token_aliases_with_token(
+    token: str, alias_map: dict[tuple[str, ...], set[str]]
+) -> int:
+    """Count 2-token aliases that contain this token.
+
+    Two-token aliases (e.g. ``(cable, armoured)``) are the primary
+    conflict zone for a single-token title such as ``cable``: when many
+    compounds share the same prefix, the bare token is ambiguous. Longer
+    3+ token compounds rarely collide with a single-token query and are
+    ignored here.
+    """
+    return sum(1 for tokens in alias_map if len(tokens) == 2 and token in tokens)
 
 
 def extract_window_keywords(
@@ -165,7 +175,7 @@ class ClauseMetadataRouter:
             token = tokens[0]
             if token in _GENERIC_SINGLE_TOKEN_TITLES:
                 continue
-            if _single_token_in_longer_alias(token, alias_map):
+            if _count_two_token_aliases_with_token(token, alias_map) >= 2:
                 continue
             exact_title_map[tokens] = tuple(sorted(clause_ids))
 
@@ -222,6 +232,11 @@ class ClauseMetadataRouter:
 
         matches_by_clause: dict[str, _ClauseMatch] = {}
         query_tokens = _normalize_clause_tokens(query_text)
+        # Ranges already matched by longer patterns. A shorter pattern whose
+        # occurrence is entirely inside one of these ranges is suppressed so
+        # that e.g. ``(earthed,)`` does not fire inside
+        # ``(multiple, earthed, neutral, men, system)``.
+        covered_ranges: list[tuple[int, int]] = []
         for pattern in patterns:
             tokens = pattern.tokens
             token_count = len(tokens)
@@ -230,6 +245,12 @@ class ClauseMetadataRouter:
             max_start = len(query_tokens) - token_count
             for start in range(max_start + 1):
                 if tuple(query_tokens[start : start + token_count]) != tokens:
+                    continue
+                end = start + token_count
+                if any(
+                    cs <= start and end <= ce and (ce - cs) > token_count
+                    for cs, ce in covered_ranges
+                ):
                     continue
 
                 for clause_id in pattern.clause_ids:
@@ -244,6 +265,7 @@ class ClauseMetadataRouter:
                         -existing.token_count,
                     ):
                         matches_by_clause[clause_id] = match
+                covered_ranges.append((start, end))
                 break
 
         return sorted(

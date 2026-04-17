@@ -227,7 +227,7 @@ def test_comparison_prompt_returns_all_primary_windows(tmp_path):
     )
 
     routed = store.route_top_k("What is the difference between Accessible and Accessible, readily?", tokenizer, k=1)
-    assert routed == [1, 0]
+    assert routed == [0, 1]
 
 
 def test_exact_routing_beats_tf_idf_ties(tmp_path):

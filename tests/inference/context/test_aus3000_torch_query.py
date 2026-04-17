@@ -327,7 +327,7 @@ def test_comparison_title_prompt_keeps_exact_and_backstop_windows(tmp_path: Path
         )
 
     assert response.routing_mode == "exact"
-    assert response.window_ids == [1, 0]
+    assert response.window_ids == [0, 1]
     prompt = runtime.generate_prompts[-1].lower()
     assert "accessible alpha" in prompt
     assert "accessible readily clause" in prompt
