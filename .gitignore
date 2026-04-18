@@ -76,3 +76,16 @@ sample_data/
 
 # results
 results/
+
+# Training artifacts (router outputs, checkpoints)
+artifacts/
+
+# Benchmark state
+.benchmarks/
+
+# vee workspace
+.vee/
+
+# beads workspace state (issue DB is tracked in .beads/*.jsonl; ignore caches)
+.beads/*.db
+.beads/*.db-journal
