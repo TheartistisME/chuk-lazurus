@@ -16,6 +16,20 @@ logger = logging.getLogger(__name__)
 # Global backend registry
 _current_backend: Backend | None = None
 
+# Alias map for user-facing backend names. ``BackendType`` itself only recognises
+# ``"torch"``; we normalise ``"pytorch"`` before calling ``BackendType(name)`` so
+# both spellings resolve to the same Torch backend without touching MLX paths.
+_BACKEND_ALIASES: dict[str, str] = {
+    "pytorch": BackendType.TORCH.value,
+}
+
+
+def _normalise_backend_name(name: BackendType | str) -> BackendType | str:
+    """Return a value safe to pass to ``BackendType(...)``; applies alias map for strings."""
+    if isinstance(name, BackendType):
+        return name
+    return _BACKEND_ALIASES.get(name.lower(), name)
+
 
 def _auto_backend_type(device: str | None = None) -> BackendType:
     """Resolve the default backend while preserving existing platform semantics."""
@@ -90,7 +104,9 @@ def get_backend(
     """
     global _current_backend
 
-    requested_type = BackendType(name) if name is not None else None
+    requested_type = (
+        BackendType(_normalise_backend_name(name)) if name is not None else None
+    )
     if _current_backend is not None and _matches_request(
         _current_backend,
         requested_type,
@@ -136,7 +152,9 @@ def set_backend(backend: Backend | BackendType | str) -> None:
     if isinstance(backend, Backend):
         _current_backend = backend
     elif isinstance(backend, (BackendType, str)):
-        backend_type = BackendType(str(backend))
+        # Normalise aliases (e.g. ``"pytorch"`` -> ``"torch"``) before ``BackendType``
+        # is asked to resolve the value; the enum itself does not know aliases.
+        backend_type = BackendType(_normalise_backend_name(str(backend)))
         _current_backend = _build_backend(backend_type)
     else:
         raise TypeError(f"Expected Backend, BackendType, or str, got {type(backend)}")

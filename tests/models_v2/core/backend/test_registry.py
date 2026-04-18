@@ -150,6 +150,52 @@ class TestGetBackendAutoDetection:
             assert isinstance(backend, TorchBackend)
 
 
+class TestTorchAlias:
+    """Tests for the ``"pytorch"`` alias in get_backend/set_backend."""
+
+    def setup_method(self):
+        """Reset backend before each test."""
+        reset_backend()
+
+    def teardown_method(self):
+        """Reset backend after each test."""
+        reset_backend()
+
+    def test_get_backend_with_torch_string(self):
+        """``get_backend("torch")`` returns a working TorchBackend instance."""
+        backend = get_backend("torch")
+        assert isinstance(backend, TorchBackend)
+        assert backend.name == BackendType.TORCH
+
+    def test_get_backend_with_pytorch_alias(self):
+        """``get_backend("pytorch")`` must resolve via the alias map to TorchBackend."""
+        backend = get_backend("pytorch")
+        assert isinstance(backend, TorchBackend)
+        assert backend.name == BackendType.TORCH
+
+    def test_set_backend_with_pytorch_string(self):
+        """``set_backend("pytorch")`` must not raise and install a TorchBackend."""
+        set_backend("pytorch")
+        backend = get_backend()
+        assert isinstance(backend, TorchBackend)
+
+    def test_set_backend_with_torch_then_pytorch_flow(self):
+        """Calling set_backend with both "torch" and "pytorch" is valid and idempotent in type."""
+        set_backend("torch")
+        first = get_backend()
+        assert isinstance(first, TorchBackend)
+
+        reset_backend()
+        set_backend("pytorch")
+        second = get_backend()
+        assert isinstance(second, TorchBackend)
+
+    def test_get_backend_pytorch_alias_case_insensitive(self):
+        """``get_backend("PyTorch")`` (mixed case) still resolves to TorchBackend."""
+        backend = get_backend("PyTorch")
+        assert isinstance(backend, TorchBackend)
+
+
 class TestBackendIntegration:
     """Integration tests for backend registry."""
 
