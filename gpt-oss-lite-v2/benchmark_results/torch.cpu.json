@@ -1,0 +1,83 @@
+{
+  "backend": "torch",
+  "device": "cpu",
+  "entries": [
+    {
+      "backend": "torch",
+      "device": "cpu",
+      "dtype": "float32",
+      "input_shape": [
+        1024,
+        1024
+      ],
+      "ms_per_op": 7.210021001810674,
+      "op": "matmul.1024x1024",
+      "per_run_ms_max": 8.922872999391984,
+      "per_run_ms_min": 6.965775002754526,
+      "repeats": 3,
+      "run_id": "109aa23b0ab8",
+      "timestamp": "2026-04-20T11:02:50+00:00",
+      "tokens_per_second": 136058398.59451425,
+      "wall_time_seconds": 0.023120424997614464
+    },
+    {
+      "backend": "torch",
+      "device": "cpu",
+      "dtype": "float32",
+      "input_shape": [
+        2048,
+        2048
+      ],
+      "ms_per_op": 59.1106520005269,
+      "op": "matmul.2048x2048",
+      "per_run_ms_max": 60.90938000124879,
+      "per_run_ms_min": 58.120769001106964,
+      "repeats": 3,
+      "run_id": "109aa23b0ab8",
+      "timestamp": "2026-04-20T11:02:50+00:00",
+      "tokens_per_second": 70629783.57219727,
+      "wall_time_seconds": 0.17815305900148815
+    },
+    {
+      "backend": "torch",
+      "device": "cpu",
+      "dtype": "float32",
+      "input_shape": [
+        8,
+        512,
+        512
+      ],
+      "ms_per_op": 0.43282700062263757,
+      "op": "softmax.8x512x512",
+      "per_run_ms_max": 0.43496199941728264,
+      "per_run_ms_min": 0.42476299859117717,
+      "repeats": 3,
+      "run_id": "109aa23b0ab8",
+      "timestamp": "2026-04-20T11:02:50+00:00",
+      "tokens_per_second": 4851366622.062391,
+      "wall_time_seconds": 0.0012968420014658477
+    },
+    {
+      "backend": "torch",
+      "device": "cpu",
+      "dtype": "float32",
+      "input_shape": [
+        8,
+        4096
+      ],
+      "ms_per_op": 0.004817000444745645,
+      "op": "reduce_mean.8x4096",
+      "per_run_ms_max": 0.009289000445278361,
+      "per_run_ms_min": 0.004184999852441251,
+      "repeats": 3,
+      "run_id": "109aa23b0ab8",
+      "timestamp": "2026-04-20T11:02:50+00:00",
+      "tokens_per_second": 5056790607.019087,
+      "wall_time_seconds": 1.9439998141024262e-05
+    }
+  ],
+  "repeats": 3,
+  "run_id": "109aa23b0ab8",
+  "timestamp": "2026-04-20T11:02:50+00:00",
+  "warmup": 1
+}
