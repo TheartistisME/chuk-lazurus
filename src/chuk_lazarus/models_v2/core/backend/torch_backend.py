@@ -6,6 +6,7 @@ Supports CUDA, CPU, and MPS (Apple Silicon via PyTorch).
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from .base import Backend
@@ -31,7 +32,15 @@ class TorchBackend(Backend):
     def _resolve_device(self, device: str) -> str:
         normalized = (device or "cuda").lower()
         if normalized.startswith("cuda"):
-            return normalized if self._torch.cuda.is_available() else "cpu"
+            if self._torch.cuda.is_available():
+                return normalized
+            warnings.warn(
+                f"CUDA requested but not available; falling back to cpu. "
+                f"Requested device={device!r}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return "cpu"
         if normalized == "mps":
             mps_backend = getattr(self._torch.backends, "mps", None)
             if mps_backend is not None and mps_backend.is_available():
@@ -74,15 +83,23 @@ class TorchBackend(Backend):
             return self._torch.load(path, map_location=self._device)
 
     def zeros(self, shape: tuple[int, ...], dtype: Any = None) -> Any:
+        if dtype is None:
+            dtype = self._dtype
         return self._torch.zeros(shape, dtype=dtype, device=self._device)
 
     def ones(self, shape: tuple[int, ...], dtype: Any = None) -> Any:
+        if dtype is None:
+            dtype = self._dtype
         return self._torch.ones(shape, dtype=dtype, device=self._device)
 
     def randn(self, shape: tuple[int, ...], dtype: Any = None) -> Any:
+        if dtype is None:
+            dtype = self._dtype
         return self._torch.randn(shape, dtype=dtype, device=self._device)
 
     def arange(self, start: int, end: int, step: int = 1, dtype: Any = None) -> Any:
+        if dtype is None:
+            dtype = self._dtype
         return self._torch.arange(start, end, step, dtype=dtype, device=self._device)
 
     def from_numpy(self, array: Any) -> Any:
@@ -131,7 +148,14 @@ class TorchBackend(Backend):
         return self._torch.cat(tensors, dim=axis)
 
     def split(self, x: Any, num_splits: int, axis: int = 0) -> list[Any]:
-        return list(self._torch.chunk(x, num_splits, dim=axis))
+        dim_size = x.shape[axis]
+        if dim_size % num_splits != 0:
+            raise ValueError(
+                f"split requires axis {axis} (size {dim_size}) to be "
+                f"divisible by num_splits={num_splits}."
+            )
+        piece = dim_size // num_splits
+        return list(self._torch.split(x, piece, dim=axis))
 
     def scaled_dot_product_attention(
         self,
@@ -150,7 +174,10 @@ class TorchBackend(Backend):
             self._torch.ones(seq_len, seq_len, device=self._device),
             diagonal=1,
         )
-        return mask.masked_fill(mask == 1, float("-inf"))
+        mask = mask.masked_fill(mask == 1, float("-inf"))
+        if dtype is not None:
+            mask = mask.to(dtype)
+        return mask
 
     def stop_gradient(self, x: Any) -> Any:
         return x.detach()

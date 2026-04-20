@@ -62,7 +62,7 @@ class MLXBackend(Backend):
         return self._mx.softmax(x, axis=axis)
 
     def relu(self, x: Any) -> Any:
-        return self._mx.maximum(x, 0)
+        return self._nn.relu(x)
 
     def silu(self, x: Any) -> Any:
         return x * self._mx.sigmoid(x)
@@ -77,13 +77,16 @@ class MLXBackend(Backend):
         return self._mx.sigmoid(x)
 
     def layer_norm(self, x: Any, weight: Any, bias: Any | None, eps: float) -> Any:
-        mean = self._mx.mean(x, axis=-1, keepdims=True)
-        var = self._mx.var(x, axis=-1, keepdims=True)
-        normalized = (x - mean) / self._mx.sqrt(var + eps)
-        result = weight * normalized
+        orig_dtype = x.dtype
+        x_f32 = x.astype(self._mx.float32)
+        w_f32 = weight.astype(self._mx.float32)
+        mean = self._mx.mean(x_f32, axis=-1, keepdims=True)
+        var = self._mx.var(x_f32, axis=-1, keepdims=True)
+        normalized = (x_f32 - mean) / self._mx.sqrt(var + eps)
+        result = w_f32 * normalized
         if bias is not None:
-            result = result + bias
-        return result
+            result = result + bias.astype(self._mx.float32)
+        return result.astype(orig_dtype)
 
     def rms_norm(self, x: Any, weight: Any, eps: float) -> Any:
         rms = self._mx.sqrt(self._mx.mean(x * x, axis=-1, keepdims=True) + eps)
