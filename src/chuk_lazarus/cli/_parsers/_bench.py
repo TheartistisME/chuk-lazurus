@@ -63,4 +63,16 @@ def register_bench_parser(subparsers):
         default=42,
         help="Random seed (default: 42)",
     )
+    bench_parser.add_argument(
+        "--json",
+        dest="json_output",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Emit a JSON artifact at PATH using the perf-harness schema "
+            "(backend/device/op/input_shape/dtype/ms_per_op/"
+            "tokens_per_second/wall_time_seconds/run_id/timestamp). "
+            "Consumed by src/chuk_lazarus/bench/perf_compare.py."
+        ),
+    )
     bench_parser.set_defaults(func=bench_pipeline)

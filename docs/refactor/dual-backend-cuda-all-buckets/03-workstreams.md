@@ -662,6 +662,120 @@ invocation form applied across every stream's acceptance criteria.
 
 ---
 
+## 9.2 Perf-harness tolerance contract (M-x2)
+
+Epic 2's numerical-parity contract is in §9 Gate 2 (MLX regression
+clean). This section pins the **performance** contract — what the
+dual-backend benchmark harness measures, which ops are covered, and the
+CUDA-to-MLX ratio floor used to decide PASS/FAIL. The contract closes
+the axis-4 baseline gap recorded in
+`ve-ins-0mo7015fp0000871fbe` (no declared numeric perf acceptance
+criterion).
+
+**Harness surface.** Three coordinated entry points produce and consume
+the same JSON schema:
+
+1. `chuk-lazarus gym benchmark --json <path>` — pipeline-level
+   benchmark (batching / packing). Emits ONE single-op JSON entry
+   whose `op` is `gym.benchmark.pipeline`.
+2. `gpt-oss-lite-v2/dual_backend_benchmark.py --backend {mlx,torch}
+   [--device ...]` — op-level driver for matmul / softmax /
+   reduce_mean at fixed shapes. Emits MANY entries in
+   `benchmark_results/<backend>.<device>.json`.
+3. `python -m chuk_lazarus.bench.perf_compare A.json B.json [--factor F]`
+   — reads one MLX and one torch artifact, prints an op-by-op ratio,
+   returns exit code `1` if any op FAILs the ratio floor.
+
+**Canonical JSON schema (per op entry).** Any artifact consumed by
+`perf_compare` MUST include at least these fields::
+
+    {
+      "backend":           "mlx" | "torch",
+      "device":            "mps" | "cpu" | "cuda:0" | ...,
+      "op":                "<canonical op name>",
+      "input_shape":       [int, ...],
+      "dtype":             "float32" | "float16" | ...,
+      "ms_per_op":          float,   # median of N repeats
+      "tokens_per_second":  float,   # derived from total tokens / total wall
+      "wall_time_seconds":  float,
+      "run_id":             "<12-hex uuid>",
+      "timestamp":          "<UTC ISO-8601>"
+    }
+
+Single-op payloads MAY sit at the top level; multi-op payloads wrap the
+entries inside an `entries: [ ... ]` list with the artifact-level
+`backend`/`device`/`run_id`/`timestamp` repeated at top level.
+
+**Covered ops (initial set).** The dual-backend driver exercises these
+op + shape + dtype tuples. Additions require a PR to this section
+because downstream CI thresholds are keyed on the op name::
+
+    matmul.1024x1024         (1024, 1024)          float32
+    matmul.2048x2048         (2048, 2048)          float32
+    softmax.8x512x512        (8, 512, 512)         float32
+    reduce_mean.8x4096       (8, 4096)             float32
+    gym.benchmark.pipeline   [<samples>, <batches>] int32
+
+**Tolerance policy.**
+
+- **Ratio floor (CUDA-to-MLX):** `perf_compare --factor F` defaults
+  `F = 1.0`, meaning CUDA must be *at least as fast as* MLX on every
+  covered op. `F` is read in priority order: explicit `--factor`
+  arg > `CHUK_PERF_RATIO_FLOOR` env > default.
+- **Absolute ms thresholds are NOT applied** in this contract.
+  Absolute wall-time ceilings depend on host hardware (5090 vs A100
+  vs CPU) and belong in per-host CI jobs, not in the cross-backend
+  gate. The ratio is the only cross-host-invariant signal.
+- **MISSING op handling.** When an op is present in only one
+  artifact, `perf_compare` reports verdict `MISSING` (not FAIL). The
+  CI gate treats `MISSING` as a soft warning unless the op is in the
+  **hard-coverage set** below.
+
+**Hard-coverage set (every artifact must include each of these, or
+`perf_compare` FAILs):**
+
+- `matmul.1024x1024`
+- `matmul.2048x2048`
+- `softmax.8x512x512`
+- `reduce_mean.8x4096`
+
+`gym.benchmark.pipeline` is **not** in the hard-coverage set because
+the pipeline benchmark is pipeline-scale and not always emitted in the
+op-level cadence.
+
+**CI gate (advisory for Epic 2, hardening for a follow-on epic).**
+
+1. A nightly Linux+CPU job and a nightly 5090+CUDA job each run:
+   `python gpt-oss-lite-v2/dual_backend_benchmark.py --backend torch`
+   and publish their JSON artifacts.
+2. A nightly macOS+MPS job runs:
+   `python gpt-oss-lite-v2/dual_backend_benchmark.py --backend mlx`
+   and publishes its JSON artifact.
+3. A reduction step downloads both artifacts and runs
+   `python -m chuk_lazarus.bench.perf_compare mlx.mps.json
+   torch.cuda_0.json --factor 1.0 --json summary.json`. Non-zero exit
+   opens an issue on `cuda-perf-regression` label. During Epic 2 the
+   issue is advisory (manual triage); a follow-on epic may promote
+   the gate to blocking by adding it to the Gate 3 hard block list
+   above.
+
+**Ownership.** The perf-harness code lives in:
+
+- `src/chuk_lazarus/cli/commands/gym/benchmark.py` + `_types.py`
+  (EWS-14 bucket) — `--json` output.
+- `src/chuk_lazarus/cli/_parsers/_bench.py` (EWS-14 / EWS-15 split,
+  per declaration) — parser flag.
+- `gpt-oss-lite-v2/dual_backend_benchmark.py` — repo-root driver,
+  lives next to `benchmark_simple.py`.
+- `src/chuk_lazarus/bench/perf_compare.py` — comparator, **new**
+  package `src/chuk_lazarus/bench/`.
+
+All four files must stay in lock-step when the schema changes; the PR
+that modifies the JSON schema MUST edit this section in the same
+commit.
+
+---
+
 ## 10. Out-of-Scope for Epic 2 (Flagged Gaps)
 
 Documented so reviewers do not re-raise them and a follow-on epic can

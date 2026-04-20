@@ -10,7 +10,9 @@ import logging
 import random
 import statistics
 import time
+import uuid
 from argparse import Namespace
+from datetime import datetime, timezone
 
 from ._types import BenchmarkConfig, BenchmarkResult
 
@@ -48,6 +50,9 @@ async def bench_pipeline(config: BenchmarkConfig) -> BenchmarkResult:
     print(f"\n{'=' * 70}")
     print("LAZARUS PIPELINE BENCHMARK")
     print(f"{'=' * 70}")
+
+    _run_started = time.time()
+    _run_id = uuid.uuid4().hex[:12]
 
     bucket_edges = config.get_bucket_edges()
 
@@ -191,6 +196,8 @@ async def bench_pipeline(config: BenchmarkConfig) -> BenchmarkResult:
 
     token_budget_utilization = avg_tokens_per_batch / config.token_budget
 
+    _wall_seconds = time.time() - _run_started
+
     return BenchmarkResult(
         samples=len(lengths),
         total_tokens=total_tokens,
@@ -200,6 +207,11 @@ async def bench_pipeline(config: BenchmarkConfig) -> BenchmarkResult:
         packing_efficiency=pack_metrics.efficiency,
         token_budget_utilization=token_budget_utilization,
         microbatches=total_batches,
+        backend=backend.name,
+        device=str(getattr(backend, "device", "") or ""),
+        wall_time_seconds=_wall_seconds,
+        run_id=_run_id,
+        timestamp=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )
 
 
@@ -212,6 +224,12 @@ async def bench_pipeline_cmd(args: Namespace) -> None:
     config = BenchmarkConfig.from_args(args)
     result = await bench_pipeline(config)
     print(result.to_display())
+
+    if config.json_output is not None:
+        payload = result.to_json_payload()
+        config.json_output.parent.mkdir(parents=True, exist_ok=True)
+        config.json_output.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        print(f"\n[json] wrote perf-harness artifact: {config.json_output}")
 
 
 __all__ = [

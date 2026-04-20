@@ -16,12 +16,27 @@ MLX leg skips gracefully (darwin-only — see task #15 brief).
 Fixtures use fixed seeds so the numpy reference is the frozen parity target
 that both backends must match. No model weights are required — circuit
 primitives are exercised on synthetic activation tensors.
+
+All tests are marked ``@pytest.mark.parity`` via a module-level
+``pytestmark`` so they can be selected/gated collectively (see M-x1 and
+the axis-3 baseline ve-ins-0mo7014jk000083602f). Every numeric
+comparison routes through ``mlx_snapshot_assert`` which appends a
+residual entry to ``tests/_helpers/mlx_snapshots/residuals.json``.
 """
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
+
+# Allow direct execution under "pytest tests/..." without relying on
+# editable-install side effects to resolve tests/_helpers.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from _helpers.mlx_snapshots import mlx_snapshot_assert  # noqa: E402
 
 # The top-level ``chuk_lazarus`` package currently imports ``models_v2`` which
 # pulls ``mlx.core`` at module scope (pre-existing, outside EWS-6 scope —
@@ -40,6 +55,9 @@ except ImportError as _err:
         f"pre-existing models_v2 blocker (outside EWS-6 scope): {_err}",
         allow_module_level=True,
     )
+
+
+pytestmark = pytest.mark.parity
 
 
 # Tolerance map from spec.
@@ -141,7 +159,13 @@ def test_edge_attribution_parity(backend: str, edge_inputs) -> None:
 
         got = from_backend_tensor(mx.sum(prod, axis=(0, 1)), backend=be)
 
-    np.testing.assert_allclose(got, ref, **TOL["edge_attribution"])
+    mlx_snapshot_assert(
+        f"circuit.edge_attribution.{backend}",
+        got,
+        ref,
+        inputs=[acts, grads, ablated],
+        **TOL["edge_attribution"],
+    )
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -157,7 +181,7 @@ def test_ablation_hook_parity(backend: str, rng) -> None:
     be = _backend(backend)
     xt = to_backend_tensor(x, backend=be)
     if backend == "torch":
-        import torch
+        import torch  # noqa: F401
 
         xt = xt.clone()
         xt[..., target_channel] = 0.0
@@ -172,7 +196,13 @@ def test_ablation_hook_parity(backend: str, rng) -> None:
         mask = mx.array(mask_np)
         got = from_backend_tensor(xt * mask, backend=be)
 
-    np.testing.assert_allclose(got, ref, **TOL["ablation"])
+    mlx_snapshot_assert(
+        f"circuit.ablation.{backend}",
+        got,
+        ref,
+        inputs=[x],
+        **TOL["ablation"],
+    )
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -190,7 +220,14 @@ def test_intervention_point_parity(backend: str, rng) -> None:
     dt = to_backend_tensor(delta, backend=be)
     Wt = to_backend_tensor(W, backend=be)
     out = backend_matmul(xt + dt, Wt, backend=be)
-    np.testing.assert_allclose(from_backend_tensor(out, backend=be), ref, **TOL["intervention"])
+    got = from_backend_tensor(out, backend=be)
+    mlx_snapshot_assert(
+        f"circuit.intervention.{backend}",
+        got,
+        ref,
+        inputs=[x, delta, W],
+        **TOL["intervention"],
+    )
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -211,7 +248,14 @@ def test_path_patching_parity(backend: str, rng) -> None:
     Wt = to_backend_tensor(W, backend=be)
     spliced = alpha * p + (1 - alpha) * r
     out = backend_matmul(spliced, Wt, backend=be)
-    np.testing.assert_allclose(from_backend_tensor(out, backend=be), ref, **TOL["path_patch"])
+    got = from_backend_tensor(out, backend=be)
+    mlx_snapshot_assert(
+        f"circuit.path_patch.{backend}",
+        got,
+        ref,
+        inputs=[resid, patch, W, np.array(alpha)],
+        **TOL["path_patch"],
+    )
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -232,7 +276,7 @@ def test_circuit_discovery_identical_edge_set(backend: str, rng) -> None:
 
         idxs = torch.nonzero(a > threshold, as_tuple=False).flatten().tolist()
     else:
-        import mlx.core as mx
+        import mlx.core as mx  # noqa: F401
 
         mask = a > threshold
         idxs = np.nonzero(np.array(mask))[0].tolist()
@@ -253,6 +297,11 @@ def test_logit_attribution_parity(backend: str, rng) -> None:
     r = to_backend_tensor(resid, backend=be)
     Ut = to_backend_tensor(U, backend=be)
     out = backend_matmul(r, Ut, backend=be)
-    np.testing.assert_allclose(
-        from_backend_tensor(out, backend=be), ref, **TOL["logit_attribution"]
+    got = from_backend_tensor(out, backend=be)
+    mlx_snapshot_assert(
+        f"circuit.logit_attribution.{backend}",
+        got,
+        ref,
+        inputs=[resid, U],
+        **TOL["logit_attribution"],
     )

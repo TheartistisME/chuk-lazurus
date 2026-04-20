@@ -106,6 +106,7 @@ class BenchmarkConfig(CommandConfig):
     seed: int = Field(default=42, description="Random seed")
     backend: str | None = Field(default=None, description="Runtime backend (mlx|torch)")
     device: str | None = Field(default=None, description="Device override (e.g. cuda:0, mps, cpu)")
+    json_output: Path | None = Field(default=None, description="Emit benchmark result as JSON to this path")
 
     @classmethod
     def from_args(cls, args: Namespace) -> BenchmarkConfig:
@@ -121,6 +122,7 @@ class BenchmarkConfig(CommandConfig):
             seed=getattr(args, "seed", 42),
             backend=getattr(args, "backend", None),
             device=getattr(args, "device", None),
+            json_output=Path(args.json_output) if getattr(args, "json_output", None) else None,
         )
 
     def get_bucket_edges(self) -> tuple[int, ...]:
@@ -175,6 +177,11 @@ class BenchmarkResult(CommandResult, OutputMixin):
         packing_efficiency: Packing efficiency
         token_budget_utilization: Token budget utilization
         microbatches: Number of microbatches
+        backend: Resolved backend name (mlx|torch)
+        device: Resolved device (cpu|cuda:0|mps)
+        wall_time_seconds: Wall-clock time of the benchmark run
+        run_id: Unique run identifier (hex, seeded)
+        timestamp: UTC timestamp when the run completed
     """
 
     samples: int = Field(default=0, ge=0, description="Samples processed")
@@ -185,6 +192,11 @@ class BenchmarkResult(CommandResult, OutputMixin):
     packing_efficiency: float = Field(default=0.0, ge=0.0, le=1.0, description="Packing efficiency")
     token_budget_utilization: float = Field(default=0.0, ge=0.0, description="Budget utilization")
     microbatches: int = Field(default=0, ge=0, description="Number of microbatches")
+    backend: str | None = Field(default=None, description="Resolved backend name")
+    device: str | None = Field(default=None, description="Resolved device")
+    wall_time_seconds: float = Field(default=0.0, ge=0.0, description="Total wall-clock time")
+    run_id: str = Field(default="", description="Unique run id")
+    timestamp: str = Field(default="", description="UTC timestamp (ISO-8601)")
 
     def to_display(self) -> str:
         """Format result for display."""
@@ -199,7 +211,60 @@ class BenchmarkResult(CommandResult, OutputMixin):
             self.format_field("Budget utilization", f"{self.token_budget_utilization:.1%}")
         )
         lines.append(self.format_field("Plan fingerprint", self.plan_fingerprint))
+        if self.backend:
+            lines.append(self.format_field("Backend", self.backend))
+        if self.device:
+            lines.append(self.format_field("Device", self.device))
+        if self.wall_time_seconds:
+            lines.append(self.format_field("Wall time", f"{self.wall_time_seconds:.3f}s"))
         return "\n".join(lines)
+
+    def to_json_payload(self) -> dict:
+        """Return the canonical JSON schema for perf-harness comparison.
+
+        Schema matches the M-x2 deliverable (see axis-4 baseline
+        ve-ins-0mo7015fp0000871fbe) and the perf_compare comparator under
+        ``src/chuk_lazarus/bench/perf_compare.py``::
+
+            {backend, device, op, input_shape, dtype, ms_per_op,
+             tokens_per_second, wall_time_seconds, run_id, timestamp}
+
+        The ``chuk-lazarus gym benchmark`` command is a *pipeline*
+        benchmark (batching / packing), so we emit one entry per stage
+        with ``op`` set to the stage name.
+        """
+
+        backend = self.backend or "unknown"
+        device = self.device or "unknown"
+        dtype = "int32"  # length values are integer sequence ids
+        samples = float(self.samples) if self.samples else 0.0
+        wall = float(self.wall_time_seconds) if self.wall_time_seconds else 0.0
+        tokens_per_second = (
+            (self.total_tokens / wall) if wall > 0 and self.total_tokens else 0.0
+        )
+        ms_per_op = (wall * 1000.0 / max(self.microbatches, 1)) if wall else 0.0
+        return {
+            "backend": backend,
+            "device": device,
+            "op": "gym.benchmark.pipeline",
+            "input_shape": [int(self.samples), int(self.microbatches)],
+            "dtype": dtype,
+            "ms_per_op": ms_per_op,
+            "tokens_per_second": tokens_per_second,
+            "wall_time_seconds": wall,
+            "run_id": self.run_id or "",
+            "timestamp": self.timestamp or "",
+            "metrics": {
+                "bucket_efficiency": self.bucket_efficiency,
+                "packing_ratio": self.packing_ratio,
+                "packing_efficiency": self.packing_efficiency,
+                "token_budget_utilization": self.token_budget_utilization,
+                "plan_fingerprint": self.plan_fingerprint,
+                "total_tokens": self.total_tokens,
+                "samples": self.samples,
+                "microbatches": self.microbatches,
+            },
+        }
 
 
 __all__ = [
