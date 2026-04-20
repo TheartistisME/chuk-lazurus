@@ -5,15 +5,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib import error, request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+
+ANTHROPIC_API = "https://api.anthropic.com/v1"
+ANTHROPIC_VERSION = "2023-06-01"
+DEFAULT_CODEX_MODEL = "gpt-5-codex"
 
 
 @dataclass(frozen=True)
@@ -30,56 +36,41 @@ class CountRecord:
     bytes_utf8: int
 
 
+@dataclass(frozen=True)
+class CounterSpec:
+    target: str
+    label: str
+    count: Callable[[str], int]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Count tokens for raw text, stdin, or one or more files.",
-        epilog=(
-            "Token counts are exact for the tokenizer you choose. "
-            "There is no universal token count across models."
-        ),
+        epilog="Use --to codex or --to anthropic for model-aware counting.",
     )
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("-t", "--tokenizer", help="Direct tokenizer/model/encoding/path.")
+    source.add_argument("--to", choices=["codex", "anthropic"], help="Target AI family.")
+    parser.add_argument("--model", help="Model to count against. Optional with --to.")
     parser.add_argument(
-        "-t",
-        "--tokenizer",
-        required=True,
-        help="Tokenizer name, model ID, local path, or tiktoken encoding.",
+        "--role",
+        choices=["user", "system"],
+        default="user",
+        help="Prompt role for API-style counting. Default: user.",
     )
-    parser.add_argument(
-        "--text",
-        action="append",
-        default=[],
-        help="Literal text to count. Repeat to add more text inputs.",
-    )
-    parser.add_argument(
-        "--stdin",
-        action="store_true",
-        help="Read one extra input from standard input.",
-    )
-    parser.add_argument(
-        "--encoding",
-        default="utf-8",
-        help="Text encoding for input files. Default: utf-8.",
-    )
+    parser.add_argument("--text", action="append", default=[], help="Literal text. Repeatable.")
+    parser.add_argument("--stdin", action="store_true", help="Read one extra input from stdin.")
+    parser.add_argument("--encoding", default="utf-8", help="File encoding. Default: utf-8.")
     parser.add_argument(
         "--special-tokens",
         action="store_true",
-        help="Include special tokens when the tokenizer supports it.",
+        help="Only applies with --tokenizer.",
     )
-    output_group = parser.add_mutually_exclusive_group()
-    output_group.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
-    output_group.add_argument(
-        "--total-only",
-        action="store_true",
-        help="Print only the combined token total.",
-    )
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
+    output.add_argument("--total-only", action="store_true", help="Print only total tokens.")
     parser.add_argument("files", nargs="*", help="File paths to read. Use '-' for stdin.")
     return parser
-
-
-def load_counter(tokenizer_name: str):
-    from chuk_lazarus.utils.tokenizer_loader import load_tokenizer
-
-    return load_tokenizer(tokenizer_name)
 
 
 def should_read_stdin(args: argparse.Namespace) -> bool:
@@ -91,51 +82,127 @@ def should_read_stdin(args: argparse.Namespace) -> bool:
 def collect_inputs(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[InputRecord]:
     if args.files.count("-") > 1:
         parser.error("stdin may only be provided once")
-
-    records: list[InputRecord] = []
-    for index, text in enumerate(args.text, start=1):
-        records.append(InputRecord(source=f"text[{index}]", text=text))
-
+    records = [InputRecord(source=f"text[{i}]", text=text) for i, text in enumerate(args.text, 1)]
     if should_read_stdin(args):
         records.append(InputRecord(source="<stdin>", text=sys.stdin.read()))
-
-    for file_arg in args.files:
-        if file_arg == "-":
+    for raw_path in args.files:
+        if raw_path == "-":
             continue
-        path = Path(file_arg)
+        path = Path(raw_path)
         try:
             text = path.read_text(encoding=args.encoding)
         except OSError as exc:
             parser.error(f"could not read {path}: {exc}")
         records.append(InputRecord(source=str(path), text=text))
-
     if not records:
         parser.error("provide --text, one or more files, or pipe data on stdin")
     return records
 
 
-def encode_text(tokenizer, text: str, add_special_tokens: bool) -> int:
+def encode_with_tokenizer(tokenizer, text: str, add_special_tokens: bool) -> int:
     try:
         token_ids = tokenizer.encode(text, add_special_tokens=add_special_tokens)
     except TypeError:
         token_ids = tokenizer.encode(text)
-    if hasattr(token_ids, "tolist"):
-        token_ids = token_ids.tolist()
-    return len(token_ids)
+    return len(token_ids.tolist() if hasattr(token_ids, "tolist") else token_ids)
 
 
-def count_inputs(tokenizer, inputs: Sequence[InputRecord], add_special_tokens: bool) -> list[CountRecord]:
-    results: list[CountRecord] = []
-    for item in inputs:
-        results.append(
-            CountRecord(
-                source=item.source,
-                tokens=encode_text(tokenizer, item.text, add_special_tokens),
-                chars=len(item.text),
-                bytes_utf8=len(item.text.encode("utf-8")),
-            )
+def build_direct_tokenizer_counter(name: str, add_special_tokens: bool) -> CounterSpec:
+    from chuk_lazarus.utils.tokenizer_loader import load_tokenizer
+
+    tokenizer = load_tokenizer(name)
+    return CounterSpec(
+        target="tokenizer",
+        label=name,
+        count=lambda text: encode_with_tokenizer(tokenizer, text, add_special_tokens),
+    )
+
+
+def build_codex_counter(model: str | None) -> CounterSpec:
+    try:
+        import tiktoken
+    except ImportError as exc:
+        raise RuntimeError(
+            "tiktoken is required for --to codex. Run via `uv run --extra openai ...`."
+        ) from exc
+    model_name = model or DEFAULT_CODEX_MODEL
+    try:
+        encoding = tiktoken.encoding_for_model(model_name)
+    except KeyError:
+        encoding = tiktoken.get_encoding("o200k_base")
+    return CounterSpec(
+        target="codex",
+        label=f"{model_name} ({encoding.name})",
+        count=lambda text: len(encoding.encode(text)),
+    )
+
+
+def anthropic_request(path: str, api_key: str, payload: dict | None = None) -> dict:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = request.Request(
+        f"{ANTHROPIC_API}{path}",
+        data=data,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        },
+        method="POST" if payload is not None else "GET",
+    )
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Anthropic API error {exc.code}: {body}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Anthropic API request failed: {exc.reason}") from exc
+
+
+def resolve_latest_anthropic_model(api_key: str) -> str:
+    payload = anthropic_request("/models", api_key)
+    models = payload.get("data") or []
+    if not models:
+        raise RuntimeError("Anthropic API returned no models")
+    return models[0]["id"]
+
+
+def build_anthropic_counter(model: str | None, role: str) -> CounterSpec:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is required for --to anthropic")
+    resolved_model = model or resolve_latest_anthropic_model(api_key)
+
+    def count(text: str) -> int:
+        payload = {"model": resolved_model, "messages": [] if role == "system" else [{"role": "user", "content": text}]}
+        if role == "system":
+            payload["system"] = text
+        response = anthropic_request("/messages/count_tokens", api_key, payload)
+        return int(response["input_tokens"])
+
+    return CounterSpec(target="anthropic", label=resolved_model, count=count)
+
+
+def resolve_counter(args: argparse.Namespace, parser: argparse.ArgumentParser) -> CounterSpec:
+    if args.to and args.special_tokens:
+        parser.error("--special-tokens only works with --tokenizer")
+    if args.to == "codex":
+        return build_codex_counter(args.model)
+    if args.to == "anthropic":
+        return build_anthropic_counter(args.model, args.role)
+    return build_direct_tokenizer_counter(args.tokenizer, args.special_tokens)
+
+
+def count_inputs(counter: CounterSpec, inputs: Sequence[InputRecord]) -> list[CountRecord]:
+    return [
+        CountRecord(
+            source=item.source,
+            tokens=counter.count(item.text),
+            chars=len(item.text),
+            bytes_utf8=len(item.text.encode("utf-8")),
         )
-    return results
+        for item in inputs
+    ]
 
 
 def summarize(results: Sequence[CountRecord]) -> CountRecord:
@@ -147,46 +214,49 @@ def summarize(results: Sequence[CountRecord]) -> CountRecord:
     )
 
 
-def emit_json(tokenizer_name: str, results: Sequence[CountRecord]) -> None:
-    total = summarize(results)
-    payload = {
-        "tokenizer": tokenizer_name,
-        "inputs": [asdict(item) for item in results],
-        "total": asdict(total),
-    }
-    print(json.dumps(payload, indent=2))
-
-
-def emit_table(tokenizer_name: str, results: Sequence[CountRecord]) -> None:
-    total = summarize(results)
-    rows = [*results, total]
-    source_width = max(len("SOURCE"), *(len(row.source) for row in rows))
-    token_width = max(len("TOKENS"), *(len(str(row.tokens)) for row in rows))
-    char_width = max(len("CHARS"), *(len(str(row.chars)) for row in rows))
-    byte_width = max(len("BYTES"), *(len(str(row.bytes_utf8)) for row in rows))
-
-    header = (
-        f"{'TOKENS':>{token_width}}  "
-        f"{'CHARS':>{char_width}}  "
-        f"{'BYTES':>{byte_width}}  "
-        f"{'SOURCE':<{source_width}}"
+def emit_json(counter: CounterSpec, role: str, results: Sequence[CountRecord]) -> None:
+    print(
+        json.dumps(
+            {
+                "target": counter.target,
+                "counter": counter.label,
+                "role": role,
+                "inputs": [asdict(item) for item in results],
+                "total": asdict(summarize(results)),
+            },
+            indent=2,
+        )
     )
-    print(f"Tokenizer: {tokenizer_name}")
+
+
+def emit_table(counter: CounterSpec, results: Sequence[CountRecord]) -> None:
+    rows = [*results, summarize(results)]
+    widths = {
+        "source": max(len("SOURCE"), *(len(row.source) for row in rows)),
+        "tokens": max(len("TOKENS"), *(len(str(row.tokens)) for row in rows)),
+        "chars": max(len("CHARS"), *(len(str(row.chars)) for row in rows)),
+        "bytes": max(len("BYTES"), *(len(str(row.bytes_utf8)) for row in rows)),
+    }
+    header = (
+        f"{'TOKENS':>{widths['tokens']}}  "
+        f"{'CHARS':>{widths['chars']}}  "
+        f"{'BYTES':>{widths['bytes']}}  "
+        f"{'SOURCE':<{widths['source']}}"
+    )
+    print(f"Target: {counter.target}")
+    print(f"Counter: {counter.label}")
     print(header)
     print("-" * len(header))
-    for row in results:
+    for row in rows[:-1]:
         print(
-            f"{row.tokens:>{token_width}}  "
-            f"{row.chars:>{char_width}}  "
-            f"{row.bytes_utf8:>{byte_width}}  "
-            f"{row.source:<{source_width}}"
+            f"{row.tokens:>{widths['tokens']}}  {row.chars:>{widths['chars']}}  "
+            f"{row.bytes_utf8:>{widths['bytes']}}  {row.source:<{widths['source']}}"
         )
     print("-" * len(header))
+    total = rows[-1]
     print(
-        f"{total.tokens:>{token_width}}  "
-        f"{total.chars:>{char_width}}  "
-        f"{total.bytes_utf8:>{byte_width}}  "
-        f"{total.source:<{source_width}}"
+        f"{total.tokens:>{widths['tokens']}}  {total.chars:>{widths['chars']}}  "
+        f"{total.bytes_utf8:>{widths['bytes']}}  {total.source:<{widths['source']}}"
     )
 
 
@@ -194,22 +264,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     inputs = collect_inputs(args, parser)
-
     try:
-        tokenizer = load_counter(args.tokenizer)
+        counter = resolve_counter(args, parser)
+        results = count_inputs(counter, inputs)
     except Exception as exc:
-        print(f"error: failed to load tokenizer '{args.tokenizer}': {exc}", file=sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
         return 2
-
-    results = count_inputs(tokenizer, inputs, add_special_tokens=args.special_tokens)
     if args.total_only:
         print(summarize(results).tokens)
         return 0
     if args.as_json:
-        emit_json(args.tokenizer, results)
+        emit_json(counter, args.role, results)
         return 0
-
-    emit_table(args.tokenizer, results)
+    emit_table(counter, results)
     return 0
 
 
