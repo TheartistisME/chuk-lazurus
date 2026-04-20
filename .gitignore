@@ -89,3 +89,7 @@ artifacts/
 # beads workspace state (issue DB is tracked in .beads/*.jsonl; ignore caches)
 .beads/*.db
 .beads/*.db-journal
+
+# Tier-3 ephemeral parity test artefacts (supervisor artifact-class policy: EPHEMERAL)
+tests/_helpers/mlx_snapshots/*-junit.xml
+tests/_helpers/mlx_snapshots/parity-junit.xml
