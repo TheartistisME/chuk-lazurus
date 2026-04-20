@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Run the strict-mode AUS3000 + Gemma + CUDA demo using the Linux-native HF cache
+# Run the strict-mode clause-aligned + Gemma + CUDA demo using the Linux-native HF cache
 # (which already has gemma-4-E2B-it fully downloaded — instant load, no re-fetch).
 #
-# Usage:
-#   bash scripts/run_aus3000_demo_fast.sh                                   # default question
-#   bash scripts/run_aus3000_demo_fast.sh "What does clause 1.4.72 define?" # custom question
+# This wrapper now defaults to the clause-aligned variant store (the generic demo at
+# examples/inference/demo_clause_aligned_strict.py already defaults --store to the
+# aus3000 clause-aligned variant), and forwards ALL args verbatim to the demo so
+# you can freely pass --store, --question, --model, --device, --max-new-tokens, etc.
 #
-# Everything else (store path, model, device, max tokens) uses the demo's defaults.
+# For backwards compatibility, a single bare positional arg (no leading --) is still
+# treated as the --question value, matching the old usage.
+#
+# Usage:
+#   bash scripts/run_aus3000_demo_fast.sh                                      # default question, aus3000 clause-aligned store
+#   bash scripts/run_aus3000_demo_fast.sh "What does clause 1.4.72 define?"    # legacy: lone positional -> --question
+#   bash scripts/run_aus3000_demo_fast.sh --question "..." --max-new-tokens 256
+#   bash scripts/run_aus3000_demo_fast.sh --store /path/to/clause_aligned/torch_store --question "..."
 
 set -euo pipefail
 
@@ -37,14 +45,19 @@ fi
 echo "[fast-run] using Linux HF cache at $LINUX_HF_CACHE"
 echo "[fast-run] found blob: $(basename "$WEIGHT")  ($(du -sh "$WEIGHT" | cut -f1))"
 
-# Forward any arg as --question
-QUESTION_ARG=()
-if [ $# -gt 0 ]; then
-  QUESTION_ARG=(--question "$*")
+# Forward ALL args verbatim to the generic demo. The generic demo already
+# defaults --store to the aus3000 clause-aligned variant, so running this
+# wrapper with no args still works for the end-to-end aus3000 test.
+# If the caller passes a single positional arg (no flags), treat it as --question
+# for backwards compatibility with the old usage:
+#   bash scripts/run_aus3000_demo_fast.sh "What does clause 1.4.72 define?"
+
+if [ $# -eq 1 ] && [[ "$1" != --* ]]; then
+  set -- --question "$1"
 fi
 
 cd "$REPO_ROOT"
 echo "[fast-run] starting demo with HF_HOME=$HF_HOME"
 echo
 
-exec uv run python examples/inference/demo_c_aus3000_torch_strict.py "${QUESTION_ARG[@]}"
+exec uv run python examples/inference/demo_clause_aligned_strict.py "$@"
