@@ -152,6 +152,7 @@ markers = [
     "golden: marks tests as golden/regression tests requiring real tokenizers",
     "parity: marks cross-backend numerical parity tests (mlx vs torch vs numpy reference)",
     "benchmark: marks performance-regression benchmark tests (disabled by default, runs via dedicated CI job)",
+    "cuda: marks tests that require a CUDA-capable GPU (deselect with '-m \"not cuda\"'; run only via self-hosted CUDA runner)",
 ]
 
 [tool.coverage.run]

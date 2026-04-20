@@ -130,6 +130,13 @@ jobs:
       run: |
         uv run pytest tests/ -m parity --strict-markers -v --junitxml=parity-results.xml
 
+    # Merge-blocking gate: this assertion is the primary enforcement
+    # that parity tests cannot silently be skipped (e.g. via
+    # importorskip). If skipped != 0, the job fails and the PR merge
+    # is blocked (assuming "parity" is configured as a required
+    # status check in branch protection — see
+    # docs/refactor/dual-backend-cuda-all-buckets/04-validation-matrix.md
+    # "Branch protection / required status checks").
     - name: Assert no parity tests were skipped
       run: |
         uv run python -c "
@@ -157,6 +164,12 @@ jobs:
   # `matrix` context (which actionlint disallows at job level). Requires a
   # runner registered with labels [self-hosted, cuda, sm120] and is gated to
   # workflow_dispatch + schedule so push/PR builds don't require the runner.
+  #
+  # TODO(ops): register a self-hosted CUDA runner with labels
+  # [self-hosted, cuda, sm120]. Until registered, workflow_dispatch runs
+  # of this job will queue indefinitely. Registration instructions:
+  # docs/refactor/dual-backend-cuda-all-buckets/04-validation-matrix.md
+  # (see "Self-hosted CUDA runner registration" section).
   parity-cuda:
     runs-on: [self-hosted, cuda, sm120]
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -186,6 +199,13 @@ jobs:
       run: |
         uv run pytest tests/ -m parity --strict-markers -v --junitxml=parity-results.xml
 
+    # Merge-blocking gate: this assertion is the primary enforcement
+    # that parity tests cannot silently be skipped (e.g. via
+    # importorskip). If skipped != 0, the job fails and the PR merge
+    # is blocked (assuming "parity" is configured as a required
+    # status check in branch protection — see
+    # docs/refactor/dual-backend-cuda-all-buckets/04-validation-matrix.md
+    # "Branch protection / required status checks").
     - name: Assert no parity tests were skipped
       run: |
         uv run python -c "
@@ -214,6 +234,11 @@ jobs:
   # M-x2 deliverable; a stub fallback is used until it lands. Artifacts named
   # `perf-baseline` are downloaded from prior runs to seed threshold diffing
   # (see docs/refactor/dual-backend-cuda-all-buckets/04-validation-matrix.md:228).
+  #
+  # TODO(ops): register a self-hosted CUDA runner with labels
+  # [self-hosted, cuda, sm120] to enable this job. See
+  # docs/refactor/dual-backend-cuda-all-buckets/04-validation-matrix.md
+  # "Self-hosted CUDA runner registration" for the registration flow.
   benchmark:
     runs-on: [self-hosted, cuda, sm120]
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

@@ -548,6 +548,180 @@ CI runners are network-restricted. Model weights are pre-staged:
 
 ---
 
+## Appendix P — Self-hosted CUDA runner registration (tier-3 enablement)
+
+Run 2 / Tier-3: the `parity-cuda` and `benchmark` jobs in
+`.github/workflows/test.yml` are wired to run on
+`runs-on: [self-hosted, cuda, sm120]`. These jobs are gated to
+`workflow_dispatch` + `schedule` so push/PR builds do not require the
+runner. Once the runner is registered, scheduled nightly runs (07:00 UTC,
+cron `0 7 * * *`) will execute the parity-cuda arm automatically.
+
+### P.1 Runner status (as of 2026-04-20)
+
+| Repo | Runner count | Verification command |
+|---|---|---|
+| `TheartistisME/chuk-lazurus` (fork) | 0 | `gh api repos/TheartistisME/chuk-lazurus/actions/runners` → `{total_count: 0, runners: []}` |
+| `chrishayuk/chuk-lazurus` (origin) | unknown | `gh api repos/chrishayuk/chuk-lazurus/actions/runners` → HTTP 403 (token lacks runner read permission) |
+
+**ABSENT-pending-ops**: no self-hosted sm120 runner confirmed online.
+Until ops registers one, `parity-cuda` and `benchmark` workflow_dispatch
+invocations will queue indefinitely.
+
+### P.2 Hardware + software prerequisites
+
+- GPU with compute capability ≥ 8.0 (sm_120 target for Run 2: RTX 5090).
+- NVIDIA driver + CUDA toolkit matching the torch wheel ABI (cu124+ for
+  current torch stable).
+- Ubuntu 22.04 / 24.04 LTS or Debian 12 (other distros untested).
+- `uv` + Python 3.12 installable via `uv python install 3.12` (the
+  workflow installs these per-job).
+- Offline HF cache at `/opt/hf-cache` pre-staged per Appendix N.
+
+### P.3 Registration flow
+
+```bash
+# 1. On the CUDA host, create a dedicated service account
+sudo useradd -m -s /bin/bash gha-runner
+sudo -iu gha-runner
+
+# 2. Download the Actions runner package (pin a version)
+mkdir -p ~/actions-runner && cd ~/actions-runner
+RUNNER_VERSION=2.322.0  # check for latest at time of install
+curl -fsSL -o actions-runner.tar.gz \
+  "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz"
+tar xzf actions-runner.tar.gz
+
+# 3. Get a registration token from the repo admin UI:
+#    Settings -> Actions -> Runners -> "New self-hosted runner"
+#    OR via API:
+#    gh api -X POST repos/<owner>/chuk-lazurus/actions/runners/registration-token
+#
+# 4. Configure the runner with the required labels
+./config.sh --url https://github.com/<owner>/chuk-lazurus \
+  --token <REG_TOKEN> \
+  --name sm120-runner-01 \
+  --labels self-hosted,cuda,sm120 \
+  --work _work \
+  --unattended
+
+# 5. Install as systemd service (runs on boot, auto-restarts)
+sudo ./svc.sh install gha-runner
+sudo ./svc.sh start
+sudo ./svc.sh status
+```
+
+### P.4 Post-registration verification
+
+```bash
+# From a machine with repo write access:
+gh api repos/<owner>/chuk-lazurus/actions/runners \
+  --jq '.runners[] | {name, status, labels: [.labels[].name]}'
+# Expected: a runner with status="online" and labels including
+# ["self-hosted","cuda","sm120"].
+
+# Trigger a test run:
+gh workflow run test.yml --ref main
+gh run watch  # or: gh run list --workflow=test.yml
+```
+
+### P.5 Runner hygiene
+
+- Restrict the runner to this repo (not org-wide) unless the same
+  hardware serves multiple Lazarus repos.
+- Disable `ACTIONS_ALLOW_UNSECURE_COMMANDS` (default off in runner 2.x).
+- Configure runner autoscaling or a single always-on box; nightly
+  schedule is 07:00 UTC, so a single runner with ≥ 12 GiB VRAM free is
+  sufficient for Qwen2.5-1.5B rows.
+- Pre-stage the HF model cache at `$HF_HOME=/opt/hf-cache` (Appendix N).
+- Set `CUBLAS_WORKSPACE_CONFIG=:4096:8` in the runner's global env for
+  deterministic rows (§O.1).
+
+---
+
+## Appendix Q — Branch protection / required status checks
+
+The parity + parity-cuda jobs self-enforce "no silently-skipped parity
+tests" via the `Assert no parity tests were skipped` step inside
+`.github/workflows/test.yml`. For that enforcement to block merges,
+the jobs must be configured as **required status checks** in repo
+branch protection.
+
+### Q.1 Required checks list
+
+Configure the following checks as required for the `main` branch
+(and `develop`, if used as a pre-merge integration branch):
+
+| Check name | Produced by | Blocks merge if |
+|---|---|---|
+| `test (macos-latest, 3.12, mlx, cpu)` | `test` job, matrix row | any test fails |
+| `test (ubuntu-latest, 3.12, torch, cpu)` | `test` job, matrix row | any test fails |
+| `parity (macos-latest, 3.12, mlx, cpu)` | `parity` job | parity fails OR skipped != 0 |
+| `parity (ubuntu-latest, 3.12, torch, cpu)` | `parity` job | parity fails OR skipped != 0 |
+| `lint` | `lint` job | ruff check fails |
+
+The `parity-cuda` and `benchmark` jobs are **not** listed as
+required-for-merge because they are gated to workflow_dispatch +
+schedule and will not run on PR events. Those jobs serve as
+post-merge nightly signals; regressions surface via the scheduled
+run and are triaged out-of-band.
+
+### Q.2 How to configure (GitHub web UI)
+
+1. Navigate to `Settings → Branches → Branch protection rules`.
+2. Edit the rule for `main` (or create one).
+3. Enable "Require status checks to pass before merging".
+4. Enable "Require branches to be up to date before merging".
+5. Search the check list and add each required check from §Q.1.
+6. Save.
+
+### Q.3 How to configure (gh CLI)
+
+```bash
+gh api -X PUT repos/<owner>/chuk-lazurus/branches/main/protection \
+  --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "test (macos-latest, 3.12, mlx, cpu)",
+      "test (ubuntu-latest, 3.12, torch, cpu)",
+      "parity (macos-latest, 3.12, mlx, cpu)",
+      "parity (ubuntu-latest, 3.12, torch, cpu)",
+      "lint"
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
+JSON
+```
+
+### Q.4 Post-configuration verification
+
+```bash
+gh api repos/<owner>/chuk-lazurus/branches/main/protection \
+  --jq '.required_status_checks.contexts'
+```
+
+Should list the five check names from §Q.1. If `parity*` checks
+are missing, silent-green regressions become possible — the skipped=0
+assertion inside the job is toothless without branch protection.
+
+### Q.5 ABSENT (current state)
+
+As of 2026-04-20 the current runtime environment has no token-scoped
+access to verify branch protection on `chrishayuk/chuk-lazurus`.
+Verification command:
+
+```bash
+gh api repos/chrishayuk/chuk-lazurus/branches/main/protection --jq '.required_status_checks'
+```
+
+Required action: repo admin applies §Q.3 (or UI equivalent) and
+re-runs the verification command from §Q.4 to confirm.
+
 ---
 
 ## Appendix O — R3 revisions (round-2 review)
