@@ -7,16 +7,29 @@ on:
     branches: [ main ]
   workflow_dispatch:
   workflow_call:
+  schedule:
+    - cron: "0 7 * * *"   # 07:00 UTC nightly — parity + optional benchmark
 
 jobs:
+  # test: backend x device matrix. macOS rows exercise MLX (cpu/mps);
+  # ubuntu row exercises torch-cpu. No self-hosted runner required — all
+  # rows run on push/PR. CUDA coverage lives in the `parity` and
+  # `benchmark` jobs which are gated to workflow_dispatch/schedule.
   test:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # MLX only works on macOS, so we primarily test there
-        os: [macos-latest]
-        python-version: ["3.11", "3.12"]
+        include:
+          - { os: macos-latest,  python-version: "3.11", backend: mlx,   device: cpu }
+          - { os: macos-latest,  python-version: "3.11", backend: mlx,   device: mps }
+          - { os: macos-latest,  python-version: "3.12", backend: mlx,   device: cpu }
+          - { os: macos-latest,  python-version: "3.12", backend: mlx,   device: mps }
+          - { os: ubuntu-latest, python-version: "3.12", backend: torch, device: cpu }
+
+    env:
+      CHUK_BACKEND: ${{ matrix.backend }}
+      CHUK_DEVICE: ${{ matrix.device }}
 
     steps:
     - uses: actions/checkout@v4
@@ -29,8 +42,18 @@ jobs:
     - name: Set up Python ${{ matrix.python-version }}
       run: uv python install ${{ matrix.python-version }}
 
-    - name: Install dependencies
+    - name: Install dependencies (macOS, full dev extras incl. MLX)
+      if: matrix.os == 'macos-latest'
       run: uv sync --frozen --extra dev
+
+    - name: Install dependencies (ubuntu, torch-cpu, no MLX)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        uv venv
+        uv pip install -e . --no-deps
+        uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+        uv pip install pytest pytest-cov pytest-asyncio numpy pyyaml pydantic transformers huggingface-hub tqdm typer tabulate aiofiles scikit-learn scipy matplotlib
+        uv pip install ruff mypy bandit types-tabulate types-PyYAML types-aiofiles
 
     - name: Run linting
       run: |
@@ -51,13 +74,197 @@ jobs:
         uv run pytest tests/ --cov=src/chuk_lazarus --cov-report=term --cov-report=xml --cov-report=html -v
 
     - name: Upload coverage reports
-      if: matrix.python-version == '3.12'
+      if: matrix.python-version == '3.12' && matrix.os == 'macos-latest'
       uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
+
+  # parity: cross-backend numerical parity suite. Runs on push/PR for
+  # mlx/torch-cpu rows. The torch/cuda arm lives in the separate
+  # `parity-cuda` job (self-hosted, gated to workflow_dispatch + schedule)
+  # to avoid referencing the matrix context at job level.
+  # Asserts zero parity tests were skipped to catch silent-green via importorskip.
+  parity:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,  python-version: "3.11", backend: mlx,   device: cpu }
+          - { os: macos-latest,  python-version: "3.11", backend: mlx,   device: mps }
+          - { os: macos-latest,  python-version: "3.12", backend: mlx,   device: cpu }
+          - { os: macos-latest,  python-version: "3.12", backend: mlx,   device: mps }
+          - { os: ubuntu-latest, python-version: "3.12", backend: torch, device: cpu }
+
+    env:
+      CHUK_BACKEND: ${{ matrix.backend }}
+      CHUK_DEVICE: ${{ matrix.device }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+
+    - name: Set up Python ${{ matrix.python-version }}
+      run: uv python install ${{ matrix.python-version }}
+
+    - name: Install dependencies (macOS, full dev extras incl. MLX)
+      if: matrix.os == 'macos-latest'
+      run: uv sync --frozen --extra dev
+
+    - name: Install dependencies (ubuntu, torch-cpu, no MLX)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        uv venv
+        uv pip install -e . --no-deps
+        uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+        uv pip install pytest pytest-cov pytest-asyncio numpy pyyaml pydantic transformers huggingface-hub tqdm typer tabulate aiofiles scikit-learn scipy matplotlib
+
+    - name: Run parity tests
+      run: |
+        uv run pytest tests/ -m parity --strict-markers -v --junitxml=parity-results.xml
+
+    - name: Assert no parity tests were skipped
+      run: |
+        uv run python -c "
+        import sys, xml.etree.ElementTree as ET
+        r = ET.parse('parity-results.xml').getroot()
+        ts = r.find('testsuite') if r.tag == 'testsuites' else r
+        skipped = int(ts.get('skipped', '0'))
+        tests = int(ts.get('tests', '0'))
+        print(f'parity tests={tests} skipped={skipped}')
+        if skipped != 0:
+            print('FAIL: parity job had skipped tests (silent-green via importorskip).', file=sys.stderr)
+            sys.exit(1)
+        "
+
+    - name: Upload parity results artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: parity-results-${{ matrix.os }}-${{ matrix.python-version }}-${{ matrix.backend }}-${{ matrix.device }}
+        path: parity-results.xml
+        retention-days: 30
+
+  # parity-cuda: self-hosted CUDA arm of the parity suite. Split out from
+  # `parity` so the job-level gate can be expressed without referencing the
+  # `matrix` context (which actionlint disallows at job level). Requires a
+  # runner registered with labels [self-hosted, cuda, sm120] and is gated to
+  # workflow_dispatch + schedule so push/PR builds don't require the runner.
+  parity-cuda:
+    runs-on: [self-hosted, cuda, sm120]
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    env:
+      CHUK_BACKEND: torch
+      CHUK_DEVICE: cuda
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+
+    - name: Set up Python 3.12
+      run: uv python install 3.12
+
+    - name: Install dependencies (self-hosted CUDA)
+      run: |
+        uv venv
+        uv pip install -e . --no-deps
+        uv pip install torch
+        uv pip install pytest pytest-cov pytest-asyncio numpy pyyaml pydantic transformers huggingface-hub tqdm typer tabulate aiofiles scikit-learn scipy matplotlib
+
+    - name: Run parity tests
+      run: |
+        uv run pytest tests/ -m parity --strict-markers -v --junitxml=parity-results.xml
+
+    - name: Assert no parity tests were skipped
+      run: |
+        uv run python -c "
+        import sys, xml.etree.ElementTree as ET
+        r = ET.parse('parity-results.xml').getroot()
+        ts = r.find('testsuite') if r.tag == 'testsuites' else r
+        skipped = int(ts.get('skipped', '0'))
+        tests = int(ts.get('tests', '0'))
+        print(f'parity tests={tests} skipped={skipped}')
+        if skipped != 0:
+            print('FAIL: parity job had skipped tests (silent-green via importorskip).', file=sys.stderr)
+            sys.exit(1)
+        "
+
+    - name: Upload parity results artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: parity-results-cuda-sm120
+        path: parity-results.xml
+        retention-days: 30
+
+  # benchmark: perf regression harness. Gated to workflow_dispatch + schedule
+  # (disabled-by-default on push/PR). Requires a runner registered with labels
+  # [self-hosted, cuda, sm120]. Harness path scripts/perf_harness.py is an
+  # M-x2 deliverable; a stub fallback is used until it lands. Artifacts named
+  # `perf-baseline` are downloaded from prior runs to seed threshold diffing
+  # (see docs/refactor/dual-backend-cuda-all-buckets/04-validation-matrix.md:228).
+  benchmark:
+    runs-on: [self-hosted, cuda, sm120]
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies (torch + pytest for harness)
+      run: |
+        uv venv
+        uv pip install -e . --no-deps
+        uv pip install torch
+        uv pip install pytest pytest-asyncio numpy pyyaml pydantic transformers huggingface-hub tqdm typer tabulate aiofiles scikit-learn scipy matplotlib
+
+    - name: Run perf harness
+      run: |
+        uv run python scripts/perf_harness.py --backend torch --device cuda --json perf-results.json || { echo "WARN: scripts/perf_harness.py not yet present (M-x2 deliverable); writing empty stub"; echo '{"results": [], "warning": "harness missing"}' > perf-results.json; }
+
+    - name: Download previous perf baseline
+      continue-on-error: true
+      uses: actions/download-artifact@v4
+      with:
+        name: perf-baseline
+
+    - name: Compare against baseline (threshold placeholder)
+      run: |
+        uv run python - <<'PY'
+        import json, sys, os
+        try:
+            cur = json.load(open('perf-results.json'))
+            base = json.load(open('perf-baseline.json'))
+        except FileNotFoundError as e:
+            print(f'no baseline yet: {e}'); sys.exit(0)
+        # TODO: real threshold; placeholder until M-x2 lands
+        print('baseline comparison placeholder')
+        PY
+
+    - name: Upload perf results as new baseline
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: perf-baseline
+        path: perf-results.json
+        retention-days: 90
 
   # Lint-only job for non-macOS platforms (since MLX won't install)
   lint:

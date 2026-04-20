@@ -150,6 +150,8 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "golden: marks tests as golden/regression tests requiring real tokenizers",
+    "parity: marks cross-backend numerical parity tests (mlx vs torch vs numpy reference)",
+    "benchmark: marks performance-regression benchmark tests (disabled by default, runs via dedicated CI job)",
 ]
 
 [tool.coverage.run]
