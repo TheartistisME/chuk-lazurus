@@ -187,7 +187,7 @@ def run_apollo_demo(
             dtype=str(boundary_tensor.dtype).replace("torch.", ""),
             device="cpu",
         )
-        result = runtime.generate_with_residual(prompt, residual_state, generation_config)
+        result = runtime.generate_with_residual_prefill_seeded(prompt, residual_state, generation_config)
     else:
         result = runtime.generate(prompt, generation_config)
 

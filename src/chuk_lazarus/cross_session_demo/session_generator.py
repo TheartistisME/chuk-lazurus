@@ -257,21 +257,14 @@ def _compose_assistant_turn(
     )
     pieces.append(header)
     char_count += len(header) + 1
-    # Plant the phrase FIVE times as the first sentences of every
-    # assistant turn so it lands inside the PRIMARY window of every
-    # assistant clause_id AND dominates the verbatim-mass at the head
-    # of the retrieval context. This biases greedy decoding toward
-    # reproducing the planted phrase over any competing verbatim
-    # substring further down in the window.
-    planted_block = (
-        f"{plan.planted_phrase}. "
-        f"{plan.planted_phrase}. "
-        f"{plan.planted_phrase}. "
-        f"{plan.planted_phrase}. "
-        f"{plan.planted_phrase}. "
-    )
-    pieces.append(planted_block.rstrip())
-    char_count += len(planted_block)
+    # Plant the phrase ONCE, naturally embedded as the lead sentence of the
+    # assistant turn body. Mirrors AUS3000-style natural prose where each
+    # clause has a single self-contained statement. Earlier 5x saturation
+    # was an iteration tweak that produced degenerate residuals at layer 29
+    # under the current transformers/Gemma-4 stack.
+    planted_block = f"{plan.planted_phrase}."
+    pieces.append(planted_block)
+    char_count += len(planted_block) + 1
     while char_count < min_chars:
         sentence = pool[idx % len(pool)].format(entity=_entity_tokens(plan.entity))
         pieces.append(sentence)

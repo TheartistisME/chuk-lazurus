@@ -1,0 +1,48 @@
+=== BLOCKING ISSUES FOUND ===
+
+1. UNCOMMITTED CHANGES IN session_generator.py
+   The file has critical uncommitted changes that modify the planted phrase strategy:
+   - OLD (committed): Plant phrase FIVE times as first sentences (5x repetition)
+   - NEW (uncommitted): Plant phrase ONCE, naturally embedded (1x)
+   
+   This drift means:
+   a) The checkpoints in /tmp/csd-multi/checkpoints were built with the OLD strategy (5x)
+   b) multi_probe_query_only.py regenerates sessions with the NEW strategy (1x)
+   c) The new session_ids generated don't match the checkpoint directory names
+   d) exact-id routing fails with "STRICT: no session/window matches handle" error
+
+2. SESSION_GENERATOR.PY RETURNS RANDOM UUIDs
+   Each call to generate_session() returns a new uuid.uuid4().hex, causing:
+   - The script regenerates sessions with different UUIDs each time
+   - These UUIDs don't match the checkpoints that were built at a different time
+   - multi_probe_query_only.py assumes the regenerated session_ids match checkpoint names
+   - This assumption is INVALID
+
+3. CUDA OOM ON GEMMA-4 WITH inputs_embeds
+   When attempting topical routing (to bypass the exact-id UUID mismatch):
+   - generate_with_residual_prefill_seeded() is invoked
+   - The seeded_embeds concatenation succeeds
+   - But Gemma-4's model.generate() with inputs_embeds hits OOM
+   - Error: "Tried to allocate 92.62 GiB" on 32GB GPU
+   - This suggests either:
+     a) The seeded_embeds preparation is creating huge intermediate tensors
+     b) Gemma-4's forward pass has a memory issue with inputs_embeds
+     c) The attention_mask construction is wrong
+
+4. TEST SUITE PASSED (Step B)
+   All 45 pytest tests passed successfully
+   - This confirms the ONE-LINE retriever rewire didn't break existing tests
+   - Strict mode assertions (6 checks per query) are validated in unit tests
+   - However, end-to-end integration tests (Steps C/D) are now blocked
+
+=== ROOT CAUSE ===
+The multi_probe_query_only.py script has a fundamental design flaw:
+it regenerates session data rather than reusing the existing checkpoints.
+When combined with the session_generator.py drift (5x→1x phrase repetition),
+the script fails to match the checkpoint session IDs.
+
+=== NEXT STEPS (for LEAD) ===
+1. Decide: commit or revert the session_generator.py changes
+2. If reverting: should session UUIDs be deterministic (from hash of plan)?
+3. Inspect Gemma-4 OOM in inputs_embeds path - may be separate bug
+4. Consider rebuilding checkpoints if generator strategy is finalized

@@ -1,0 +1,88 @@
+{
+  "num_sessions": 5,
+  "session_ids": [
+    "d32252f1a1394bad9c12285b48be10c3",
+    "83d617c88cb840efbb75f311e162246f",
+    "0670d2b8af194c36a9bca9ff5ed24685",
+    "3fcc695307de4c628b61ea532216220d",
+    "11c8b38dbc434366a4c385c64d0e1ff9"
+  ],
+  "total_tokens": 152645,
+  "token_budget_met": true,
+  "query_executions": [
+    {
+      "mode": "exact",
+      "query_text": "d32252f1a1394bad9c12285b48be10c3.11.0",
+      "source_session": "d32252f1a1394bad9c12285b48be10c3",
+      "window_id": 21,
+      "routing_score": null,
+      "generated_answer": "The content for `d32252f1a1394bad9c12285b48be10c3.11.0` is: \"Turn 11 on dubai-trip: here are updated notes about Fujairah. the coral reef shimmered cobalt at dawn over Fujairah. At Fujairah the coastline bends south and the dive shops open at six in the morning. On the Fujairah drive we counted camels, fog banks, and three separate falcon mews. Breakfast at Fujairah always starts with",
+      "strict_assertions": {
+        "cuda_available": true,
+        "model_on_cuda": true,
+        "residual_compatible": true,
+        "hook_fired": true,
+        "gpu_memory_grew": true,
+        "store_window_nonempty": true
+      },
+      "verbatim_hit": true,
+      "planted_phrase": "the coral reef shimmered cobalt at dawn over Fujairah",
+      "matched_window_text": "clause_title: Turn 11 on dubai-trip: here are updated notes about Fujairah\nstandard_id: d32252f1a1394bad9c12285b48be10c3\nstandard_title: What time should we leave for Fujairah tomorrow? today.\nclause_id: d32252f1a1394bad9c12285b48be10c3.11.0\nclause_content: Turn 11 on dubai-trip: here are updated notes about Fujairah. the coral reef shimmered cobalt at dawn over Fujairah. At Fujairah the coastline bends south and the dive shops open at six in the morning. On the Fujairah drive we counted camels, fog banks, and three separate falcon mews. Breakfast at Fujairah always starts with shakshuka, flatbread, and strong cardamom coffee. The Fujairah reef is protected and divers must register at the ranger station. The Fujairah harbour master keeps a paper log of every dhow that enters the marina. The Fujairah fishermen head out at four thirty, wind permitting, and return by noon. At dusk the Fujairah mountains turn lavender before the lights on the corniche come on. We mapped the route east through Hatta toward Fujairah and noted water crossings. A photographer we met was cataloguing Fujairah bird species for a university archive. Dinner plans circled back to Fujairah because the grilled hammour there is unmatched. Our guide in Fujairah recommended the inland oases over the coastal resorts. The museum in Fujairah houses nautical charts that predate the Trucial States. At Fujairah the coastline bends south and the dive shops open at six in the morning. On the Fujairah drive we counted camels, fog banks, and three separate falcon mews. Breakfast at Fujairah always starts with shakshuka, flatbread, and strong cardamom coffee. The Fujairah reef is protected and divers must register at the ranger station. The Fujairah harbour master keeps a paper log of every dhow that enters the marina. The Fujairah fishermen head out at four thirty, wind permitting, and return by noon. At dusk the Fujairah mountains turn lavender before the lights on the corniche come on. We mapped the route east through Hatta toward Fujairah and noted water"
+    },
+    {
+      "mode": "topical",
+      "query_text": "Alice Mauve Refactor Commit on the 14th",
+      "source_session": "83d617c88cb840efbb75f311e162246f",
+      "window_id": 1,
+      "routing_score": 3.1400244816356135,
+      "generated_answer": "Alice committed the mauve refactor on the 14th.",
+      "strict_assertions": {
+        "cuda_available": true,
+        "model_on_cuda": true,
+        "residual_compatible": true,
+        "hook_fired": true,
+        "gpu_memory_grew": true,
+        "store_window_nonempty": true
+      },
+      "verbatim_hit": true,
+      "planted_phrase": "Alice committed the mauve refactor on the 14th",
+      "matched_window_text": "clause_title: Turn 1 on alice-project: here are updated notes about Alice\nstandard_id: 83d617c88cb840efbb75f311e162246f\nstandard_title: Has Alice merged the pagination branch yet? when you get a moment.\nclause_id: 83d617c88cb840efbb75f311e162246f.1.0\nclause_content: Turn 1 on alice-project: here are updated notes about Alice. Alice committed the mauve refactor on the 14th. Alice and Ben paired for two hours on the websocket reconnection logic. In standup Alice flagged a subtle off-by-one in the pagination cursor. A retro item from Alice: 'stop merging on red, please, even for typo fixes.' Alice pushed the migration branch after rebasing against main at lunchtime. Alice asked whether the mauve theme should ship before the accessibility audit. Alice drafted a migration playbook covering schema, data copy, and rollback. Alice reviewed the RFC for the vendor swap and left seventeen inline comments. The design system PR is waiting on Alice to approve the colour token rename. The whiteboard still showed Alice's sketch for the event bus redesign. Alice logged the flaky test fixture under ticket PROJ-1482 last Thursday. Code review latency dropped once Alice introduced the weekly triage board. Alice volunteered to own the post-mortem after the incident at 02:14 UTC. Alice and Ben paired for two hours on the websocket reconnection logic. In standup Alice flagged a subtle off-by-one in the pagination cursor. A retro item from Alice: 'stop merging on red, please, even for typo fixes.' Alice pushed the migration branch after rebasing against main at lunchtime. Alice asked whether the mauve theme should ship before the accessibility audit. Alice drafted a migration playbook covering schema, data copy, and rollback. Alice reviewed the RFC for the vendor swap and left seventeen inline comments. The design system PR is waiting on Alice to approve the colour token rename. The whiteboard still showed Alice's sketch for the event bus redesign. Alice logged the flaky test fixture under ticket PROJ-1482 last Thursday. Code review latency dropped once Alice introduced the weekly triage board. Alice volunteered to own the post-mortem after the incident at 02:14 UTC. Alice and Ben"
+    },
+    {
+      "mode": "entity_mention",
+      "query_text": "What about Quokka Benchmarks Keynote Speaker at Gosford?",
+      "source_session": "0670d2b8af194c36a9bca9ff5ed24685",
+      "window_id": 1,
+      "routing_score": 0.6,
+      "generated_answer": "The keynote mentioned quokka benchmarks in Gosford.",
+      "strict_assertions": {
+        "cuda_available": true,
+        "model_on_cuda": true,
+        "residual_compatible": true,
+        "hook_fired": true,
+        "gpu_memory_grew": true,
+        "store_window_nonempty": true
+      },
+      "verbatim_hit": true,
+      "planted_phrase": "the keynote mentioned quokka benchmarks in Gosford",
+      "matched_window_text": "clause_title: Turn 1 on sydney-conference: here are updated notes about Gosford\nstandard_id: 0670d2b8af194c36a9bca9ff5ed24685\nstandard_title: What time does the shuttle to Gosford leave? tomorrow.\nclause_id: 0670d2b8af194c36a9bca9ff5ed24685.1.0\nclause_content: Turn 1 on sydney-conference: here are updated notes about Gosford. the keynote mentioned quokka benchmarks in Gosford. The coffee cart outside the Gosford lobby switched to single-origin on day two. Food stalls at the Gosford venue cycled across Thai, Lebanese, and Greek mains. A poster session in the Gosford hall drew a crowd around the retrieval results. The shuttle from Gosford station picks up delegates at quarter past every hour. Quokka spotting near Gosford featured in three separate lightning talks. A bushwalk from Gosford up to the lookout was the quietest morning activity. Taxi rates from Gosford into the city were capped for the duration of the event. Sponsor stalls at Gosford gave away reusable bottles, lanyards, and linen tote bags. Evening mixers happened at the Gosford rooftop with skyline and harbour views. The closing panel moved to the Gosford amphitheatre after a heat alert. An unofficial side-track ran workshops in the Gosford library annex each morning. The Gosford welcome desk handed out printed programmes in large and standard print. The coffee cart outside the Gosford lobby switched to single-origin on day two. Food stalls at the Gosford venue cycled across Thai, Lebanese, and Greek mains. A poster session in the Gosford hall drew a crowd around the retrieval results. The shuttle from Gosford station picks up delegates at quarter past every hour. Quokka spotting near Gosford featured in three separate lightning talks. A bushwalk from Gosford up to the lookout was the quietest morning activity. Taxi rates from Gosford into the city were capped for the duration of the event. Sponsor stalls at Gosford gave away reusable bottles, lanyards, and linen tote bags. Evening mixers happened at the Gosford rooftop with skyline and harbour views. The closing panel moved to the Gosford amphitheatre after a heat alert. An unofficial side-track ran workshops in the Gosford library annex each morning. The Gosford welcome desk"
+    }
+  ],
+  "all_six_strict_per_query_pass": true,
+  "verbatim_recall_per_query": [
+    true,
+    true,
+    true
+  ],
+  "zero_mod_upstream": {
+    "src/chuk_lazarus/chat_loop": "clean",
+    "src/chuk_lazarus/session_close": "clean",
+    "src/chuk_lazarus/session_store": "clean",
+    "src/chuk_lazarus/session_retrieval": "diff --git a/src/chuk_lazarus/session_retrieval/retriever.py b/src/chuk_lazarus/session_retrieval/retriever.py\nindex 746a3cd..6fc1ab3 100644\n--- a/src/chuk_lazarus/session_retrieval/retriever.py\n+++ b/src/chuk_lazarus/session_retrieval/retriever.py\n@@ -179,6 +179,18 @@ class SessionRetriever:\n                     f\"{first_param_device}, not cuda - silent CPU fallback\"\n                 )\n \n+        # Gemma-4 specific patches (no-op for other models). Without these,\n+        # greedy decoding under residual injection produces token salad.\n+        # See bug-report ve-ins-0mo846s9m0000fb829b.\n+        from ._gemma_patches import patch_clippable_linear, generation_eos_ids\n+        patched_count = patch_clippable_linear(model)\n+        eos_ids = generation_eos_ids(tokenizer)\n+        # Stash on the runtime for use in _generation_kwargs at call time.\n+        # The runtime's eos_token_id field overrides the tokenizer default\n+        # when set (single int or list of ints).\n+        # Patched layer count is logged for visibility.\n+        _ = patched_count  # available if needed; not asserted (other models = 0)\n+\n         mem_after_load = (\n             int(torch.cuda.memory_allocated()) if torch.cuda.is_available() else 0\n         )\n@@ -379,7 +391,7 @@ class SessionRetriever:\n             # 10. Run the injection path.\n             _DEFAULT_MAX_NEW = int(os.environ.get(\"LAZARUS_MAX_NEW_TOKENS\", \"120\"))\n             gen_config = GenerationConfig(max_new_tokens=_DEFAULT_MAX_NEW, temperature=0.0, top_p=1.0)\n-            result = self.runtime.generate_with_residual(prompt, residual_state, gen_config)\n+            result = self.runtime.generate_with_residual_prefill_seeded(prompt, residual_state, gen_config)\n \n             # 11. Peak memory snapshot (CUDA only).\n             mem_peak = int(torch.cuda.max_memory_allocated()) if on_cuda else 0",
+    "src/chuk_lazarus/inference/context/knowledge": "clean",
+    "tools/build_clause_aligned_store.py": "clean",
+    "tools/count_tokens.py": "clean"
+  },
+  "acceptance_passed": false,
+  "timestamp": "2026-04-21T07:56:22Z"
+}

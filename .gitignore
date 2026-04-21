@@ -89,6 +89,8 @@ artifacts/
 # beads workspace state (issue DB is tracked in .beads/*.jsonl; ignore caches)
 .beads/*.db
 .beads/*.db-journal
+# per-developer hook-disable toggles (see CLAUDE.md hook-toggle tools)
+.beads/hooks/*.backup
 
 # Tier-3 ephemeral parity test artefacts (supervisor artifact-class policy: EPHEMERAL)
 tests/_helpers/mlx_snapshots/*-junit.xml

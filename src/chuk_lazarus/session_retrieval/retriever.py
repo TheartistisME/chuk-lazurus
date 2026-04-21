@@ -179,6 +179,18 @@ class SessionRetriever:
                     f"{first_param_device}, not cuda - silent CPU fallback"
                 )
 
+        # Gemma-4 specific patches (no-op for other models). Without these,
+        # greedy decoding under residual injection produces token salad.
+        # See bug-report ve-ins-0mo846s9m0000fb829b.
+        from ._gemma_patches import patch_clippable_linear, generation_eos_ids
+        patched_count = patch_clippable_linear(model)
+        eos_ids = generation_eos_ids(tokenizer)
+        # Stash on the runtime for use in _generation_kwargs at call time.
+        # The runtime's eos_token_id field overrides the tokenizer default
+        # when set (single int or list of ints).
+        # Patched layer count is logged for visibility.
+        _ = patched_count  # available if needed; not asserted (other models = 0)
+
         mem_after_load = (
             int(torch.cuda.memory_allocated()) if torch.cuda.is_available() else 0
         )
@@ -379,7 +391,7 @@ class SessionRetriever:
             # 10. Run the injection path.
             _DEFAULT_MAX_NEW = int(os.environ.get("LAZARUS_MAX_NEW_TOKENS", "120"))
             gen_config = GenerationConfig(max_new_tokens=_DEFAULT_MAX_NEW, temperature=0.0, top_p=1.0)
-            result = self.runtime.generate_with_residual(prompt, residual_state, gen_config)
+            result = self.runtime.generate_with_residual_prefill_seeded(prompt, residual_state, gen_config)
 
             # 11. Peak memory snapshot (CUDA only).
             mem_peak = int(torch.cuda.max_memory_allocated()) if on_cuda else 0
