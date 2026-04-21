@@ -75,7 +75,99 @@ bash scripts/cross_session_demo.sh /tmp/csd-custom-output
 
 Internally runs axes 1-3 to build 5 fresh sessions, then exercises axis-4 and axis-5 retrieval with multiple query modes (exact-id, topical, entity-mention). Writes `report.json` to the output root.
 
-## 6. Multi-probe (stress test)
+## 6. Interactive pseudo-infinite-memory chat (the "live" test)
+
+Exercises the full pipeline in a REPL so you can talk to the model, compress the conversation to vectors on demand, and verify the recall in a fresh session. All routing metadata is printed inline.
+
+```bash
+python scripts/interactive_memory_chat.py
+# default store: /tmp/interactive-memory  (override with --store-root / LAZARUS_STORE_DIR)
+```
+
+### Workflow
+
+1. **Chat normally.** The model streams replies; the session accumulates in memory.
+2. **Type `/save`** to compress the current session:
+   - transcript JSON → `<store>/transcripts/<session_id>.json`
+   - AUS3000 clauses → `<store>/inputs/<session_id>/`
+   - clause-aligned torch store → `<store>/checkpoints/<session_id>/`
+   - retriever is rebuilt against the new store
+3. **Type `/new`** to start a fresh session. From this point on, every turn where the memory-mode isn't `off` will:
+   - run `retriever.query_topical(...)` against your input + recent-context window
+   - inject the matched window's residual at `layers[0]` position 0 via `generate_with_residual_prefill_seeded` (the new canonical port)
+   - print a **ROUTING + STRICT ASSERTIONS** debug block above every reply:
+     - `routing_mode`, `source_session`, `window_id`, `routing_score`
+     - first ~220 chars of `matched_window_text`
+     - top keywords from the routed window
+     - all six strict assertions (`cuda_available`, `model_on_cuda`, `residual_compatible`, `hook_fired`, `gpu_memory_grew`, `store_window_nonempty`)
+     - timing split (retrieve / generate / total)
+     - token counts (prompt / generated)
+
+### Slash commands
+
+| Command | Effect |
+|---|---|
+| `/save` | compress current session to the store, keep chatting |
+| `/new` | `/save`, then start a fresh session |
+| `/query <text>` | topical recall probe (no chat-history mutation) |
+| `/exact <handle>` | exact-id recall probe (e.g. `11a1c9ad.1.0`) |
+| `/entity <text>` | entity-mention recall probe |
+| `/stats` | store summary (sessions, windows, tokens, crystal_layer) |
+| `/last` | reprint the last turn's routing metadata |
+| `/history` | dump the current session transcript |
+| `/memory [topical\|entity_mention\|off]` | toggle / set recall mode |
+| `/help` | show command list |
+| `/quit` or `/exit` or Ctrl-D | prompt to save, then exit |
+
+### Environment
+
+| Var | Default | Purpose |
+|---|---|---|
+| `LAZARUS_STORE_DIR` | `/tmp/interactive-memory` | persistent store root |
+| `LAZARUS_MODEL` | local Gemma snapshot → `google/gemma-4-E2B-it` | model id/path |
+| `LAZARUS_MAX_NEW_TOKENS` | `180` | decode length |
+| `LAZARUS_MEMORY_MODE` | `topical` | recall routing mode for post-save turns |
+
+### Example session
+
+```
+you> My dog's name is Banjo and he loves chasing dragonflies at dusk.
+gemma> That sounds lovely ...
+
+you> /save
+[save] AUS3000 clauses -> 6 record(s) under /tmp/interactive-memory/inputs/b4f8…
+[save] torch store built -> /tmp/interactive-memory/checkpoints/b4f8… in 38.2s
+[save] retriever refreshed: 1 session(s) indexed · crystal_layer=29
+
+you> /new
+[new] fresh session started.
+
+you> What was my dog's name again?
+===== ROUTING + STRICT ASSERTIONS ===================================
+  mode            : topical
+  source_session  : b4f8e9a4c7e14d2a8f1b…
+  window_id       : 3
+  routing_score   : 0.7421
+  matched_window  : Turn 1 on dog-chat: My dog's name is Banjo and he loves
+                    chasing dragonflies at dusk…
+  keywords        : ['banjo', 'dog', 'dragonflies', 'dusk', 'chasing']
+  strict_asserts  : cuda_available=True model_on_cuda=True residual_compatible=True
+                    hook_fired=True gpu_memory_grew=True store_window_nonempty=True
+  timing (s)      : retrieve=0.43  generate=1.82  total=2.25
+  tokens          : prompt=287  generated=52
+======================================================================
+gemma> Your dog's name is Banjo. You mentioned he loves chasing dragonflies at dusk.
+```
+
+### What to eyeball
+
+- **`hook_fired=True`** — confirms the `forward_pre_hook` on `layers[0]` ran (i.e. residual was injected). If `False`, the new canonical method didn't run.
+- **`routing_score`** — topical TF-IDF score. Low scores (<0.1) mean the retriever grabbed a marginal window; the answer may not actually relate to your query. Try `/exact` with a specific handle, or plant more distinctive content.
+- **`matched_window`** — the actual prior-session excerpt being anchored in the KV cache. If it contains the answer verbatim, the output echoing it is retrieval-pipeline working; if the question forces the model to reconstruct *without* the window text echoing the answer, that's stronger residual-only recall.
+- **timing split** — `retrieve` is the topical TF-IDF + store-load cost; `generate` is the forward_pre_hook + `generate()` call. Retrieval dominating means your store is big / keywords expensive; generation dominating is normal for Gemma-4.
+- **`gpu_memory_grew=True`** — sanity that generation actually ran (didn't silently early-exit).
+
+## 7. Multi-probe (stress test)
 
 ```bash
 python scripts/multi_probe_test.py       # 15-query harness (has a pre-existing UUID bug — see NEXT-RUN WORK)
