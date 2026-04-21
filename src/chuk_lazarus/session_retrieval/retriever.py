@@ -459,6 +459,76 @@ class SessionRetriever:
             routing_score=routing_score,
         )
 
+    def refresh_handles(
+        self,
+        checkpoint_root: Path,
+        original_input_root: Path | None = None,
+    ) -> int:
+        """Re-enumerate checkpoints under ``checkpoint_root`` and update ``self.handles`` in place.
+
+        Preserves the crystal_layer agreement invariant enforced at construction
+        time: if any newly-enumerated checkpoint's store reports a different
+        ``crystal_layer`` than ``self.crystal_layer``, raise ``RuntimeError``
+        WITHOUT mutating ``self.handles``.
+
+        Does NOT reload the model or tokenizer. Does NOT touch CUDA. Is a pure
+        metadata refresh.
+
+        Returns
+        -------
+        int
+            The number of newly-added handles (i.e. handles whose ``session_id``
+            was not already present in ``self.handles`` before the refresh).
+
+        Raises
+        ------
+        RuntimeError
+            - If ``iter_checkpoint_handles`` yields zero handles (all-gone is
+              suspicious; previous state had at least one).
+            - If the new enumeration contains a checkpoint whose store disagrees
+              on ``crystal_layer``.
+
+        Notes
+        -----
+        * Atomic-in-failure: if the crystal_layer check fails, ``self.handles``
+          is unchanged. Accomplish this by enumerating+validating into a local
+          list first, and ONLY then assigning to ``self.handles``.
+        * The function is idempotent when called twice in a row with no new
+          sessions on disk (returns 0 the second time).
+        * Uses ``load_store`` (already imported from ``.enumeration``) to peek
+          at ``store.config.crystal_layer`` for the agreement check. This
+          mirrors ``from_checkpoint_root`` lines 142-152. DO NOT refactor that
+          loop out into a shared helper - that's a cross-scope change.
+        """
+        root = Path(checkpoint_root)
+        new_handles = list(
+            iter_checkpoint_handles(root, original_input_root=original_input_root)
+        )
+        if not new_handles:
+            raise RuntimeError(
+                f"STRICT: refresh_handles enumerated zero checkpoints under {root!s} - "
+                "previous state had at least one; refusing to null out self.handles."
+            )
+
+        # Crystal_layer agreement check against the already-loaded scalar.
+        # Validate BEFORE mutating self.handles so failure is atomic.
+        for handle in new_handles:
+            other = load_store(handle)
+            other_layer = int(other.config.crystal_layer)
+            if other_layer != self.crystal_layer:
+                raise RuntimeError(
+                    f"STRICT: crystal_layer mismatch on refresh - "
+                    f"retriever={self.crystal_layer} vs "
+                    f"{handle.session_id}={other_layer}"
+                )
+
+        existing_ids = {h.session_id for h in self.handles}
+        new_ids = {h.session_id for h in new_handles}
+        added = len(new_ids - existing_ids)
+
+        self.handles = new_handles
+        return added
+
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",

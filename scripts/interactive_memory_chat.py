@@ -95,6 +95,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+# LiveIndexer replaces the subprocess `invoke_build` call at runtime. The
+# chat loop now indexes streaming windows into the per-session torch_store
+# directory live, in the same on-disk format TorchKnowledgeStore.load expects,
+# so /save only needs to drain + compact + refresh. The offline/CI
+# `invoke_build` entry point (src/chuk_lazarus/session_store/invoke.py) is
+# intentionally retained for rebuild-from-AUS3000 workflows but is NEVER
+# invoked at runtime from this REPL.
+from chuk_lazarus.session_store.live_indexer import LiveIndexer
+
 
 DEFAULT_STORE = "/tmp/interactive-memory"
 HEADER_W = 72
@@ -206,6 +215,15 @@ class MemoryChat:
         self.session: Any = None  # ChatLoopSession
         self.history: Any = None  # ChatHistory
 
+        # Live clause-aligned indexer. Allocated fresh per session in
+        # start_new_session(); flushed-and-closed in save_current_session().
+        self.indexer: LiveIndexer | None = None
+        # Per-session monotonic window id (reset when a new session starts).
+        # ChunkBoundary.chunk_index resets per turn, but LiveIndexer requires
+        # a session-unique id (windows across turns share the same on-disk
+        # store). We assign ids ourselves instead of reusing chunk_index.
+        self._window_counter: int = 0
+
         self.last_meta: TurnMetadata | None = None
 
     # ── machinery loaders ──────────────────────────────────────────────────
@@ -270,7 +288,153 @@ class MemoryChat:
 
         self.session = ChatLoopSession()
         self.history = ChatHistory()
+        self._window_counter = 0
+        self.indexer = self._make_live_indexer(self.session.session_id)
         info(f"new session started · session_id={self.session.session_id}")
+
+    # ── live-indexer wiring ────────────────────────────────────────────────
+
+    def _derive_arch_config(self) -> tuple[dict[str, Any], int, int]:
+        """Build the LiveIndexer arch_config dict.
+
+        Mirrors tools/build_clause_aligned_store.py (line ~760) and
+        src/chuk_lazarus/cli/commands/context/prefill/_torch_sidecar.py
+        (line ~148). Falls back to the empirically validated Gemma 4 E2B
+        (35-layer) defaults if ArchitectureConfig cannot resolve the model.
+        """
+        # Gemma-4 E2B safety-net defaults.
+        retrieval_layer = 28
+        query_head = 7
+        injection_layer = 29
+        hidden_dim = 1536
+        head_dim = 256
+        crystal_layer = 29
+        window_size = 512
+
+        try:
+            from chuk_lazarus.inference.context.knowledge.config import (
+                ArchitectureConfig,
+            )
+
+            ac = ArchitectureConfig.from_model_config(self.model.config)
+            retrieval_layer = int(getattr(ac, "retrieval_layer", retrieval_layer))
+            query_head = int(getattr(ac, "query_head", query_head))
+            injection_layer = int(getattr(ac, "injection_layer", injection_layer))
+            # hidden_dim / head_dim may be 0 on the registry entry; only
+            # overwrite the defaults when positive.
+            ac_hidden_dim = int(getattr(ac, "hidden_dim", 0) or 0)
+            if ac_hidden_dim > 0:
+                hidden_dim = ac_hidden_dim
+            ac_head_dim = int(getattr(ac, "head_dim", 0) or 0)
+            if ac_head_dim > 0:
+                head_dim = ac_head_dim
+            ac_crystal_layer = int(getattr(ac, "crystal_layer", -1))
+            if ac_crystal_layer >= 0:
+                crystal_layer = ac_crystal_layer
+            ac_window_size = int(getattr(ac, "window_size", window_size))
+            if ac_window_size > 0:
+                window_size = ac_window_size
+        except Exception as exc:  # noqa: BLE001
+            info(
+                f"  arch_config fallback engaged ({exc!r}); using hard-coded Gemma-4 E2B defaults"
+            )
+
+        arch_config = {
+            "retrieval_layer": int(retrieval_layer),
+            "query_head": int(query_head),
+            "injection_layer": int(injection_layer),
+            "hidden_dim": int(hidden_dim),
+            "head_dim": int(head_dim),
+            "crystal_layer": int(crystal_layer),
+            "window_size": int(window_size),
+        }
+        return arch_config, int(crystal_layer), int(window_size)
+
+    def _make_live_indexer(self, session_id: str) -> LiveIndexer | None:
+        """Instantiate a LiveIndexer rooted at <checkpoints_root>/<sid>/torch_store.
+
+        Returns None if the model/tokenizer haven't been loaded yet (e.g. when
+        tests construct MemoryChat without calling run_repl). The REPL flow
+        always loads them before calling start_new_session, so in practice
+        this branch only trips in tests.
+        """
+        if self.model is None or self.tokenizer is None:
+            info("  live indexer skipped: model/tokenizer not loaded yet")
+            return None
+
+        # Matches the layout iter_checkpoint_handles expects:
+        #   <checkpoint_root>/<session_id>/torch_store/manifest.json
+        ts_dir = self.checkpoints_root / session_id / "torch_store"
+        ts_dir.mkdir(parents=True, exist_ok=True)
+
+        arch_config, crystal_layer, window_size = self._derive_arch_config()
+        try:
+            return LiveIndexer(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                checkpoint_dir=ts_dir,
+                crystal_layer=crystal_layer,
+                window_size=window_size,
+                arch_config=arch_config,
+            )
+        except Exception as exc:  # noqa: BLE001
+            info(f"  live indexer init FAILED: {exc!r}; running without live indexing")
+            return None
+
+    def _make_on_window(self, turn: Any):
+        """Return a StreamingWindower on_window adapter closure for `turn`.
+
+        The closure bridges the StreamingWindower's (boundary, decoded_text)
+        signature to LiveIndexer.enqueue's (window_id, token_ids, keywords,
+        clause_metadata) signature. Every closure invocation produces a
+        session-monotonic window_id via self._window_counter — we do NOT
+        reuse boundary.chunk_index because that resets per turn.
+        """
+        # Import locally so tests that patch these names still work and so
+        # that module-import cost stays off the cold path.
+        from chuk_lazarus.inference.context.knowledge.route import (
+            _extract_keywords_from_text,
+        )
+
+        def _on_window(boundary: Any, decoded_text: str) -> None:
+            if self.indexer is None:
+                # Defensive no-op: test harnesses can instantiate
+                # StreamingWindower without a LiveIndexer wired up.
+                return
+            try:
+                # Re-tokenize the decoded window text. This round-trips
+                # through the tokenizer (cheap; sub-ms for 512-token
+                # windows) instead of maintaining a parallel token buffer
+                # inside the windower — which would require modifying
+                # streaming.py (out of scope for this axis).
+                token_ids = self.tokenizer(
+                    decoded_text, add_special_tokens=False
+                ).input_ids
+                keywords = _extract_keywords_from_text(
+                    decoded_text, max_keywords=12
+                )
+                sid = self.session.session_id if self.session is not None else ""
+                role_str = getattr(turn.role, "value", str(turn.role))
+                clause_metadata = {
+                    "session_id": sid,
+                    "turn_index": int(turn.turn_index),
+                    "role": role_str,
+                    "chunk_index": int(boundary.chunk_index),
+                    "start_token_offset": int(boundary.start_token_offset),
+                    "end_token_offset": int(boundary.end_token_offset),
+                    "emitted_at": str(boundary.emitted_at),
+                    "token_count": int(
+                        boundary.end_token_offset - boundary.start_token_offset
+                    ),
+                }
+                wid = self._window_counter
+                self._window_counter += 1
+                self.indexer.enqueue(wid, token_ids, keywords, clause_metadata)
+            except Exception as exc:  # noqa: BLE001
+                # Never let a capture hiccup kill the streaming reply.
+                info(f"  live-index enqueue failed on chunk {boundary.chunk_index}: {exc!r}")
+
+        return _on_window
 
     # ── plain chat turn (no memory injection) ──────────────────────────────
 
@@ -283,8 +447,11 @@ class MemoryChat:
         user_turn = self.session.begin_turn(Role.USER, user_text)
         self.session.finish_turn(user_turn)
 
-        windower = StreamingWindower(self.tokenizer)
         assistant_turn = self.session.begin_turn(Role.ASSISTANT, "")
+        windower = StreamingWindower(
+            self.tokenizer,
+            on_window=self._make_on_window(assistant_turn),
+        )
 
         sys.stdout.write("gemma> ")
         sys.stdout.flush()
@@ -413,9 +580,18 @@ class MemoryChat:
     # ── save / close session, rebuild store ────────────────────────────────
 
     def save_current_session(self, *, rebuild_retriever: bool = True) -> bool:
-        """Emit AUS3000 → build torch store → refresh retriever. Idempotent."""
+        """Flush live index → refresh retriever. Idempotent.
+
+        The per-turn LiveIndexer has already written boundaries and shard
+        records to ``<checkpoints_root>/<sid>/torch_store/``. /save just has
+        to drain + compact + write the manifest (``flush_and_close``), then
+        point the retriever at the new handle.
+
+        AUS3000 per-session inputs are still emitted for audit and for the
+        offline/CI ``invoke_build`` rebuild entry point — they are not
+        consumed at runtime.
+        """
         from chuk_lazarus.session_close.wind_down import emit_session
-        from chuk_lazarus.session_store.invoke import invoke_build
 
         assert self.session is not None
         if not self.session.turns:
@@ -440,7 +616,10 @@ class MemoryChat:
         )
         info(f"  transcript -> {transcript_path}")
 
-        # 2. Emit AUS3000 clause JSON files under inputs_root/<sid>/
+        # 2. Emit AUS3000 clause JSON files under inputs_root/<sid>/.
+        #    These are NOT consumed at runtime anymore; they remain as the
+        #    canonical input for the offline `invoke_build` CI/rebuild entry
+        #    and for post-mortem debugging.
         written = emit_session(
             list(self.session.turns),
             sid,
@@ -448,28 +627,50 @@ class MemoryChat:
         )
         info(f"  AUS3000 clauses -> {len(written)} record(s) under {self.inputs_root / sid}")
 
-        # 3. Invoke the clause-aligned torch store build
-        per_session_inputs = self.inputs_root / sid
+        # 3. Flush-and-close the live indexer. This drains any still-queued
+        #    windows, compacts the per-window shards into canonical
+        #    window_tokens.npz/keywords.json/window_metadata.json/idf.json,
+        #    and writes manifest.json LAST (the readiness gate). After this
+        #    returns the per-session torch_store is load()able by
+        #    TorchKnowledgeStore. No subprocess; no Gemma reload.
         t0 = time.time()
-        result = invoke_build(
-            session_id=sid,
-            input_dir=per_session_inputs,
-            checkpoint_root=self.checkpoints_root,
-            device=self.device,
-            force=True,
-        )
+        if self.indexer is not None:
+            try:
+                self.indexer.flush_and_close()
+            except RuntimeError as exc:
+                info(f"  indexer flush FAILED: {exc}")
+                return False
+            # Convention: /save closes this session's indexing. If the user
+            # keeps chatting after /save without /new, we skip live-indexing
+            # those trailing turns (deterministic: the saved manifest
+            # already reflects exactly what was committed). /new or the next
+            # start_new_session() allocates a fresh indexer. The
+            # _make_on_window closure's `self.indexer is None` guard
+            # degrades newly-emitted windows into a no-op.
+            self.indexer = None
+        else:
+            info("  no live indexer to flush (session had no streamed windows)")
         dt = time.time() - t0
-        if result.returncode != 0:
-            info(f"  build FAILED (rc={result.returncode}) in {dt:.1f}s — see logs at {result.checkpoint}")
-            print("---- stderr (tail) ----")
-            print("\n".join((result.stderr or "").splitlines()[-20:]))
-            print("-----------------------")
-            return False
-        info(f"  torch store built -> {result.checkpoint} in {dt:.1f}s")
+        info(f"  live index flushed in {dt:.2f}s")
 
-        # 4. Rebuild retriever so subsequent turns can see the new session
+        # 4. Refresh retriever so subsequent turns can see the new session.
+        #    First-save path: no retriever exists yet — lazy-load once
+        #    (this is Gemma load #3, one-time). Subsequent saves: just
+        #    re-enumerate handles on the existing retriever — no reload.
         if rebuild_retriever:
-            self.maybe_load_retriever()
+            if self.retriever is None:
+                self.maybe_load_retriever()
+            else:
+                t0 = time.time()
+                try:
+                    added = self.retriever.refresh_handles(self.checkpoints_root)
+                except RuntimeError as exc:
+                    info(f"  retriever refresh FAILED: {exc}")
+                    return False
+                info(
+                    f"  retriever refreshed in {time.time() - t0:.2f}s "
+                    f"(+{added} handle(s))"
+                )
         return True
 
     # ── stats ──────────────────────────────────────────────────────────────
