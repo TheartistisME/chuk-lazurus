@@ -185,6 +185,7 @@ class UnifiedPipeline:
             model,
             tokenizer,
             self._pipeline_config,
+            family_info.family_type,
         )
 
         # Introspection hooks (mutable state for capturing)
@@ -195,6 +196,7 @@ class UnifiedPipeline:
         model: Any,
         tokenizer: PreTrainedTokenizer,
         pipeline_config: UnifiedPipelineConfig,
+        family_type: ModelFamilyType | None = None,
     ) -> InferenceRuntime:
         """Choose the runtime that matches the configured backend."""
         if pipeline_config.backend == LazarusBackend.CUDA:
@@ -202,6 +204,8 @@ class UnifiedPipeline:
                 model,
                 tokenizer,
                 device=pipeline_config.device or "cuda",
+                engine=pipeline_config.engine.value,
+                family_type=family_type,
             )
         return MLXInferenceRuntime(model, tokenizer)
 
@@ -234,6 +238,19 @@ class UnifiedPipeline:
     def runtime(self) -> InferenceRuntime:
         """Access the backend-specific runtime."""
         return self._runtime
+
+    @property
+    def engine_mode(self) -> EngineMode:
+        """Active engine mode for this pipeline."""
+        runtime_engine = getattr(self._runtime, "engine_mode", None)
+        if runtime_engine is not None:
+            return EngineMode(runtime_engine)
+        return self._pipeline_config.engine
+
+    @property
+    def last_generation_path(self) -> str | None:
+        """Observable label for the most recent runtime generation path."""
+        return getattr(self._runtime, "last_generation_path", None)
 
     @classmethod
     def from_pretrained(
@@ -442,7 +459,13 @@ class UnifiedPipeline:
         model = model.to(resolved_device, **to_kwargs)
         model.eval()
 
-        runtime = TorchInferenceRuntime(model, tokenizer, device=resolved_device)
+        runtime = TorchInferenceRuntime(
+            model,
+            tokenizer,
+            device=resolved_device,
+            engine=pipeline_config.engine.value,
+            family_type=family_type,
+        )
         param_count = sum(int(param.numel()) for param in model.parameters())
 
         log("\n" + "=" * 60)
@@ -589,6 +612,13 @@ class UnifiedPipeline:
             engine = pipeline.make_engine()
             logits, kv_store = engine.prefill(input_ids)
         """
+        if isinstance(self._runtime, TorchInferenceRuntime):
+            raise RuntimeError(
+                "UnifiedPipeline.make_engine() is only available for MLX-backed pipelines. "
+                "Torch-backed pipelines should use generate()/chat(); set "
+                "pipeline_config.engine='kv_direct' to select the torch KV-direct path."
+            )
+
         from .context import make_kv_generator
 
         return make_kv_generator(self._model)

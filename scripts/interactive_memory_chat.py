@@ -436,6 +436,28 @@ class MemoryChat:
 
         return _on_window
 
+    def _capture_turn_text_live(self, turn: Any) -> None:
+        """Window a completed turn's text through the live indexer path."""
+        if self.indexer is None:
+            return
+        if self.session is None or self.tokenizer is None:
+            return
+        turn_text = getattr(turn, "text", "")
+        if not turn_text:
+            return
+
+        from chuk_lazarus.chat_loop.streaming import StreamingWindower
+
+        windower = StreamingWindower(
+            self.tokenizer,
+            on_window=self._make_on_window(turn),
+        )
+        for boundary in windower.feed_text(turn_text):
+            self.session.append_chunk(turn, boundary)
+        tail = windower.flush()
+        if tail is not None:
+            self.session.append_chunk(turn, tail)
+
     # ── plain chat turn (no memory injection) ──────────────────────────────
 
     def plain_chat_turn(self, user_text: str) -> TurnMetadata:
@@ -446,6 +468,7 @@ class MemoryChat:
         self.history.add_user(user_text)
         user_turn = self.session.begin_turn(Role.USER, user_text)
         self.session.finish_turn(user_turn)
+        self._capture_turn_text_live(user_turn)
 
         assistant_turn = self.session.begin_turn(Role.ASSISTANT, "")
         windower = StreamingWindower(
@@ -525,6 +548,7 @@ class MemoryChat:
             return self.plain_chat_turn(user_text)
 
         t_retrieve = time.time() - t_retrieve_start
+        self._capture_turn_text_live(user_turn)
 
         # Populate metadata
         meta.routing_mode = result.routing_mode

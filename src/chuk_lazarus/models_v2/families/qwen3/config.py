@@ -15,7 +15,7 @@ class Qwen3Config(ModelConfig):
     Configuration for Qwen3 models.
 
     Qwen3 is similar to Llama but with:
-    - Bias on QKV projections
+    - Q/K normalization before attention
     - Different default values
 
     Sizes:
@@ -64,6 +64,6 @@ class Qwen3Config(ModelConfig):
             bos_token_id=hf_config.get(ConfigField.BOS_TOKEN_ID.value),
             eos_token_id=hf_config.get(ConfigField.EOS_TOKEN_ID.value),
             pad_token_id=hf_config.get(ConfigField.PAD_TOKEN_ID.value),
-            attention_bias=hf_config.get(ConfigField.ATTENTION_BIAS.value, True),
+            attention_bias=hf_config.get(ConfigField.ATTENTION_BIAS.value, False),
             mlp_bias=hf_config.get(ConfigField.MLP_BIAS.value, False),
         )

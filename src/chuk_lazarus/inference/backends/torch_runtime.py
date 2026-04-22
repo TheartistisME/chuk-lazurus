@@ -4,6 +4,7 @@ PyTorch/CUDA-backed inference runtime.
 
 from __future__ import annotations
 
+import inspect
 import time
 from contextlib import nullcontext
 from typing import Any
@@ -15,16 +16,47 @@ from .types import LazarusBackend, ResidualState
 class TorchInferenceRuntime(InferenceRuntime):
     """Inference runtime for Hugging Face causal LM models on CUDA."""
 
-    def __init__(self, model, tokenizer, device: str = "cuda"):
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        device: str = "cuda",
+        engine: str = "standard",
+        family_type: Any | None = None,
+    ):
         super().__init__(model, tokenizer)
         import torch
 
         self._torch = torch
         self._device = torch.device(device)
+        self._engine_mode = self._normalize_engine(engine)
+        self._family_type = getattr(family_type, "value", family_type)
+        self._last_generation_path: str | None = None
+        self._cached_kv_direct_forward_kwargs: dict[str, Any] | None = None
 
     @property
     def backend(self) -> LazarusBackend:
         return LazarusBackend.CUDA
+
+    @property
+    def engine_mode(self) -> str:
+        """Configured generation engine."""
+        return self._engine_mode
+
+    @property
+    def last_generation_path(self) -> str | None:
+        """Observable label for the most recent generation path."""
+        return self._last_generation_path
+
+    @staticmethod
+    def _normalize_engine(engine: str | None) -> str:
+        normalized = str(engine or "standard").strip().lower()
+        if normalized in {"standard", "kv_direct"}:
+            return normalized
+        raise ValueError(f"Unsupported torch runtime engine '{engine}'.")
+
+    def _set_generation_path(self, path: str | None) -> None:
+        self._last_generation_path = path
 
     def _resolve_layers(self) -> list[Any]:
         """Locate transformer layers across common Hugging Face architectures.
@@ -136,6 +168,28 @@ class TorchInferenceRuntime(InferenceRuntime):
 
         return sdpa_kernel(backends)
 
+    def _resolved_eos_token_ids(self) -> list[int]:
+        """Resolve EOS ids, including chat-template-specific turn terminators."""
+        eos_attr = getattr(self._tokenizer, "eos_token_id", None)
+        eos_token_ids: list[int] = []
+        if isinstance(eos_attr, list):
+            eos_token_ids.extend(int(token_id) for token_id in eos_attr if token_id is not None)
+        elif eos_attr is not None:
+            eos_token_ids.append(int(eos_attr))
+
+        convert = getattr(self._tokenizer, "convert_tokens_to_ids", None)
+        if callable(convert):
+            extra = convert("<turn|>")
+            if (
+                isinstance(extra, int)
+                and extra >= 0
+                and extra != getattr(self._tokenizer, "unk_token_id", -1)
+                and extra not in eos_token_ids
+            ):
+                eos_token_ids.append(extra)
+
+        return eos_token_ids
+
     def _generation_kwargs(self, config, model_inputs: dict[str, Any], *, use_cache: bool) -> dict[str, Any]:
         """Build generate() kwargs while avoiding noisy ignored sampling flags.
 
@@ -147,19 +201,13 @@ class TorchInferenceRuntime(InferenceRuntime):
         Without the multi-id list, Gemma-4-it does not halt on its natural
         ``<end_of_turn>`` token and produces token-salad past the natural stop.
         """
-        eos_attr = getattr(self._tokenizer, "eos_token_id", None)
-        if isinstance(eos_attr, list):
-            eos_token_id = eos_attr
+        eos_token_ids = self._resolved_eos_token_ids()
+        if not eos_token_ids:
+            eos_token_id = None
+        elif len(eos_token_ids) == 1:
+            eos_token_id = eos_token_ids[0]
         else:
-            eos_token_id = eos_attr
-            extra = self._tokenizer.convert_tokens_to_ids("<turn|>")
-            if (
-                isinstance(extra, int)
-                and extra >= 0
-                and extra != getattr(self._tokenizer, "unk_token_id", -1)
-                and extra != eos_token_id
-            ):
-                eos_token_id = [eos_attr, extra] if eos_attr is not None else [extra]
+            eos_token_id = eos_token_ids
         generation_kwargs = {
             "max_new_tokens": config.max_new_tokens,
             "do_sample": config.temperature > 0,
@@ -182,8 +230,106 @@ class TorchInferenceRuntime(InferenceRuntime):
             if value is not None
         }
 
-    def generate(self, prompt: str, config):
-        from ..generation import GenerationResult, GenerationStats, StopReason
+    def _qwen_identity(self) -> tuple[str | None, list[str]]:
+        config = getattr(self._model, "config", None)
+        model_type = getattr(config, "model_type", None)
+        raw_architectures = getattr(config, "architectures", None) or []
+        architectures = [str(arch).lower() for arch in raw_architectures]
+        return (str(model_type).lower() if model_type is not None else None, architectures)
+
+    def _ensure_kv_direct_supported(self) -> None:
+        if self._device.type != "cuda":
+            raise NotImplementedError(
+                "engine=kv_direct on the torch runtime is only implemented for CUDA devices. "
+                f"Requested device={self._device}."
+            )
+
+        family_type = str(self._family_type).lower() if self._family_type is not None else None
+        model_type, architectures = self._qwen_identity()
+        qwen_markers = [family_type, model_type, *architectures]
+        if not any(marker and "qwen" in marker for marker in qwen_markers):
+            arch_desc = ", ".join(architectures) if architectures else "unknown"
+            raise NotImplementedError(
+                "engine=kv_direct on the torch runtime is currently implemented only for "
+                "Qwen-family Hugging Face causal LMs. "
+                f"family_type={family_type!r}, model_type={model_type!r}, architectures={arch_desc}."
+            )
+
+    def _kv_direct_forward_kwargs(self) -> dict[str, Any]:
+        if self._cached_kv_direct_forward_kwargs is None:
+            kwargs: dict[str, Any] = {}
+            try:
+                parameters = inspect.signature(self._model.forward).parameters
+            except (TypeError, ValueError, AttributeError):
+                parameters = {}
+            if "logits_to_keep" in parameters:
+                kwargs["logits_to_keep"] = 1
+            self._cached_kv_direct_forward_kwargs = kwargs
+        return dict(self._cached_kv_direct_forward_kwargs)
+
+    def _extract_logits_and_cache(self, outputs: Any) -> tuple[Any, Any]:
+        if hasattr(outputs, "logits"):
+            return outputs.logits, getattr(outputs, "past_key_values", None)
+        if isinstance(outputs, tuple) and outputs:
+            logits = outputs[0]
+            cache = outputs[1] if len(outputs) > 1 else None
+            return logits, cache
+        raise RuntimeError(
+            "STRICT: torch kv_direct expected model outputs with logits and past_key_values."
+        )
+
+    def _sample_next_token(self, logits, config):
+        if config.temperature <= 0:
+            return logits.argmax(dim=-1, keepdim=True)
+
+        scores = logits.float() / config.temperature
+        vocab_size = int(scores.shape[-1])
+
+        if config.top_k is not None:
+            top_k = min(int(config.top_k), vocab_size)
+            if top_k > 0 and top_k < vocab_size:
+                threshold = self._torch.topk(scores, top_k, dim=-1).values[..., -1, None]
+                scores = scores.masked_fill(scores < threshold, float("-inf"))
+
+        if config.top_p < 1.0:
+            sorted_scores, sorted_indices = self._torch.sort(scores, descending=True, dim=-1)
+            sorted_probs = self._torch.softmax(sorted_scores, dim=-1)
+            cumulative_probs = self._torch.cumsum(sorted_probs, dim=-1)
+            sorted_to_remove = cumulative_probs > config.top_p
+            sorted_to_remove[..., 1:] = sorted_to_remove[..., :-1].clone()
+            sorted_to_remove[..., 0] = False
+            to_remove = self._torch.zeros_like(scores, dtype=self._torch.bool)
+            to_remove.scatter_(dim=-1, index=sorted_indices, src=sorted_to_remove)
+            scores = scores.masked_fill(to_remove, float("-inf"))
+
+        probs = self._torch.softmax(scores, dim=-1)
+        return self._torch.multinomial(probs, num_samples=1)
+
+    def _build_generation_result(self, *, input_length: int, token_ids, start_time: float, stop_reason):
+        from ..generation import GenerationResult, GenerationStats
+
+        if hasattr(token_ids, "to"):
+            tokens_cpu = token_ids.to("cpu")
+            token_list = (
+                tokens_cpu[0].tolist() if getattr(tokens_cpu, "ndim", 1) > 1 else tokens_cpu.tolist()
+            )
+        else:
+            token_list = list(token_ids)
+
+        output_length = len(token_list)
+        generated_text = self._tokenizer.decode(token_list, skip_special_tokens=True)
+        gen_time = time.time() - start_time
+
+        stats = GenerationStats(
+            input_tokens=input_length,
+            output_tokens=output_length,
+            total_time_seconds=gen_time,
+            tokens_per_second=output_length / gen_time if gen_time > 0 else 0,
+        )
+        return GenerationResult(text=generated_text, stats=stats, stop_reason=stop_reason)
+
+    def _generate_standard(self, prompt: str, config):
+        from ..generation import StopReason
 
         model_inputs = self._tokenize_prompt(prompt)
         input_ids = model_inputs["input_ids"]
@@ -196,29 +342,108 @@ class TorchInferenceRuntime(InferenceRuntime):
             output_ids = self._model.generate(input_ids=input_ids, **generation_kwargs)
 
         new_tokens = output_ids[:, input_length:]
-        new_tokens_cpu = new_tokens.to("cpu")
-        generated_text = self._tokenizer.decode(new_tokens_cpu[0].tolist(), skip_special_tokens=True)
         output_length = int(new_tokens.shape[1])
-        gen_time = time.time() - start_time
 
         stop_reason = StopReason.MAX_TOKENS
         if output_length < config.max_new_tokens and output_length > 0:
             last_token = int(new_tokens[0, -1].item())
-            eos_token_id = self._tokenizer.eos_token_id
-            if isinstance(eos_token_id, list) and last_token in eos_token_id:
-                stop_reason = StopReason.EOS
-            elif eos_token_id is not None and last_token == eos_token_id:
-                stop_reason = StopReason.EOS
-            else:
-                stop_reason = StopReason.STOP_TOKEN
+            eos_token_ids = set(self._resolved_eos_token_ids())
+            stop_reason = StopReason.EOS if last_token in eos_token_ids else StopReason.STOP_TOKEN
 
-        stats = GenerationStats(
-            input_tokens=input_length,
-            output_tokens=output_length,
-            total_time_seconds=gen_time,
-            tokens_per_second=output_length / gen_time if gen_time > 0 else 0,
+        self._set_generation_path("torch.generate.standard")
+        return self._build_generation_result(
+            input_length=input_length,
+            token_ids=new_tokens,
+            start_time=start_time,
+            stop_reason=stop_reason,
         )
-        return GenerationResult(text=generated_text, stats=stats, stop_reason=stop_reason)
+
+    def _generate_kv_direct(self, prompt: str, config):
+        from ..generation import StopReason
+
+        self._ensure_kv_direct_supported()
+
+        model_inputs = self._tokenize_prompt(prompt)
+        input_ids = model_inputs["input_ids"]
+        attention_mask = model_inputs.get("attention_mask")
+        if attention_mask is None:
+            attention_mask = self._torch.ones_like(input_ids, dtype=self._torch.long)
+
+        input_length = int(input_ids.shape[1])
+        start_time = time.time()
+        eos_token_ids = set(self._resolved_eos_token_ids())
+        stop_token_ids = set(int(token_id) for token_id in config.stop_tokens)
+        stop_token_ids.update(eos_token_ids)
+        generated_token_ids: list[int] = []
+        stop_reason = StopReason.MAX_TOKENS
+
+        total_window_tokens = input_length + config.max_new_tokens
+        with self._torch.inference_mode(), self._generation_context(total_window_tokens):
+            outputs = self._model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=True,
+                **self._kv_direct_forward_kwargs(),
+            )
+            logits, past_key_values = self._extract_logits_and_cache(outputs)
+            if past_key_values is None:
+                raise RuntimeError(
+                    "STRICT: torch kv_direct expected the model prefill to return past_key_values."
+                )
+
+            next_token = self._sample_next_token(logits[:, -1, :], config)
+
+            for step in range(config.max_new_tokens):
+                token_id = int(next_token[0, 0].item())
+                generated_token_ids.append(token_id)
+
+                if token_id in stop_token_ids:
+                    stop_reason = (
+                        StopReason.EOS if token_id in eos_token_ids else StopReason.STOP_TOKEN
+                    )
+                    break
+
+                if step + 1 >= config.max_new_tokens:
+                    break
+
+                attention_mask = self._torch.cat(
+                    [
+                        attention_mask,
+                        self._torch.ones(
+                            (attention_mask.shape[0], 1),
+                            dtype=attention_mask.dtype,
+                            device=attention_mask.device,
+                        ),
+                    ],
+                    dim=1,
+                )
+                outputs = self._model(
+                    input_ids=next_token,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    **self._kv_direct_forward_kwargs(),
+                )
+                logits, past_key_values = self._extract_logits_and_cache(outputs)
+                if past_key_values is None:
+                    raise RuntimeError(
+                        "STRICT: torch kv_direct expected every decode step to return past_key_values."
+                    )
+                next_token = self._sample_next_token(logits[:, -1, :], config)
+
+        self._set_generation_path("torch.kv_direct.past_key_values")
+        return self._build_generation_result(
+            input_length=input_length,
+            token_ids=generated_token_ids,
+            start_time=start_time,
+            stop_reason=stop_reason,
+        )
+
+    def generate(self, prompt: str, config):
+        self._set_generation_path(None)
+        if self._engine_mode == "kv_direct":
+            return self._generate_kv_direct(prompt, config)
+        return self._generate_standard(prompt, config)
 
     def extract_residual_state(self, prompt: str, layer_index: int) -> ResidualState:
         layers = self._resolve_layers()

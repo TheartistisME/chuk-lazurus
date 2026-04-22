@@ -1,0 +1,140 @@
+QWEN KV-DIRECT MANUAL TEST DOCUMENT
+
+Read the entire document before answering.
+Do not answer early.
+Treat every section as part of one continuous prompt.
+
+Section 1: operator goal
+
+The operator is validating a local Qwen deployment that should run through the
+KV-direct path instead of the default cached generation path. The practical goal
+is to leave more VRAM headroom available for long-context local coding work on
+an RTX 5090. The validation is not about changing vLLM. The validation is about
+confirming that the chuk-lazurus path is active and useful.
+
+EARLY_ANCHOR = amber-lathe-5090
+
+The operator wants the response to be calm, precise, and short. If you are able
+to read this whole document, you should remember the exact anchor string above.
+
+Section 2: workspace note
+
+This workspace has several moving parts:
+- a Qwen-family model
+- a chuk-lazurus inference path
+- a KV-direct implementation
+- a bounded-state verification story
+- a local manual test that should be easy to repeat
+
+The model is being used for coding assistance rather than open-ended fiction.
+The most useful validation is to show that the model can still answer targeted
+questions after reading a structured document with details placed early, middle,
+and late in the prompt.
+
+Section 3: memory policy note
+
+The desired behavior is:
+1. load the model locally
+2. generate through the intended path
+3. avoid silent fallback
+4. keep behavior deterministic for the test
+
+The test should therefore use temperature 0 so the answer is stable and easier
+to inspect manually.
+
+Section 4: project codename
+
+For this prompt only, the temporary project codename is:
+
+PROJECT_CODENAME = vermilion-archive
+
+That codename is not secret. It exists only to confirm that the model retained
+middle-of-document details rather than only the beginning or the end.
+
+Section 5: bounded-state reminder
+
+This validation prompt is only a functional test document. It is not claiming
+to prove a huge context window by itself. It is meant to be easy to redirect
+into stdin and confirm that the model reads structured content correctly before
+you move on to a much larger real document.
+
+MIDDLE_ANCHOR = copper-window-bound
+
+Section 6: coding instruction
+
+When you answer, include one Python function named merge_layers that accepts
+two dictionaries a and b and returns a shallow merged dictionary using the rule
+"values from b overwrite values from a".
+
+The language to use for the function is:
+
+TARGET_LANGUAGE = python
+
+Section 7: behavior guardrail
+
+Do not invent new anchors.
+Do not rename the function.
+Do not switch to pseudocode.
+Do not answer in markdown bullets.
+
+Use a compact JSON object followed by the function in a fenced code block.
+
+Section 8: synthetic engineering notes
+
+Notebook fragment A:
+The operator cares more about correct path selection than benchmark theater.
+If the path is wrong, more tuning is wasted effort.
+
+Notebook fragment B:
+The response should mention whether the model appears to have read the whole
+document and should quote the three exact anchors unchanged.
+
+Notebook fragment C:
+The final summary sentence should mention RTX 5090 and KV-direct explicitly.
+
+Section 9: long-context rehearsal
+
+Imagine this smaller document is a stand-in for a much larger coding context.
+The useful pattern is:
+- put exact markers at different depths
+- ask for those markers at the end
+- ask for one simple code artifact
+- inspect whether the response is coherent and grounded
+
+If the reply misses one of the markers or renames the requested function, the
+run should be treated as suspect.
+
+Section 10: final anchor
+
+LATE_ANCHOR = obsidian-residual-lantern
+
+Section 11: strict output request
+
+Return exactly two parts in this order.
+
+Part 1:
+A single compact JSON object on one line with these keys:
+- "early_anchor"
+- "middle_anchor"
+- "late_anchor"
+- "project_codename"
+- "target_language"
+- "read_whole_document"
+- "summary"
+
+Part 2:
+A fenced Python code block containing the function merge_layers.
+
+Section 12: success conditions
+
+The JSON values must satisfy all of the following:
+- "early_anchor" must equal the exact early anchor from Section 1
+- "middle_anchor" must equal the exact middle anchor from Section 5
+- "late_anchor" must equal the exact late anchor from Section 10
+- "project_codename" must equal the codename from Section 4
+- "target_language" must equal the language from Section 6
+- "read_whole_document" must be true
+- "summary" must be one sentence and must include both the phrases
+  "RTX 5090" and "KV-direct"
+
+End of document.

@@ -300,6 +300,44 @@ lazarus infer --model google/gemma-3-1b-it --prompt "Hello" --engine kv_direct
 | `bounded_kv` | `BoundedKVEngine` | HOT/WARM/COLD memory budgets (Gemma) |
 | `unlimited` | `UnlimitedContextEngine` | Unbounded context via checkpoint replay |
 
+### Qwen3.6-35B-A3B Manual Verification (RTX 5090)
+
+For manual CUDA evidence on Blackwell (`sm_120`) with the local `Infatoshi/Qwen3.6-35B-A3B-NVFP4-FP8` snapshot, run from repo root:
+
+```bash
+scripts/run_qwen_kv_direct_manual_test.sh
+scripts/run_qwen_bounded_kv_direct_manual_test.sh
+```
+
+The bounded script defaults to a 1 GiB hot-tier budget:
+
+```bash
+HOT_BUDGET_MIB=1024 scripts/run_qwen_bounded_kv_direct_manual_test.sh
+```
+
+What each script verifies:
+- `scripts/run_qwen_kv_direct_manual_test.sh` verifies the torch KV-direct decode path (`generation.path == "torch.kv_direct.past_key_values"`) and strict content checks (anchors, function snippet, and first-line JSON schema/values from the manual prompt).
+- `scripts/run_qwen_bounded_kv_direct_manual_test.sh` verifies the bounded torch KV-direct path (`generation.path == "torch.kv_direct.bounded_past_key_values"`), the same strict content checks, and bounded hot-state enforcement (`checks.bounded_hot_state_within_budget == true`).
+
+Blackwell / RTX 5090 causal-conv1d workaround:
+- Both scripts install a runtime workaround on `sm_120` that disables `causal-conv1d` entrypoints to avoid `CUDA error: no kernel image is available for execution on the device`.
+- Qwen's safe torch convolution fallback remains available, and Flash Linear Attention gated-delta kernels stay enabled when present.
+- Check `blackwell_causal_conv1d_workaround` in the `Run Configuration` section of the log for the applied status.
+
+Artifacts and where to look:
+- Unbounded script writes logs and summary JSON under `artifacts/qwen_kv_direct/` by default:
+  `manual_test_<UTCSTAMP>.log` and `manual_test_<UTCSTAMP>.summary.json`.
+- Bounded script writes logs and summary JSON under `artifacts/qwen_kv_direct_bounded/` by default:
+  `manual_test_<UTCSTAMP>.log` and `manual_test_<UTCSTAMP>.summary.json`.
+- The `Artifacts` section in each run prints `summary_json` and `log_file` paths explicitly.
+
+How to interpret `PASS` and path fields:
+- A passing run prints `OVERALL_STATUS=PASS` in the log and stores `"overall_status": "PASS"` in the summary JSON.
+- For the unbounded script, `PASS` requires `checks.path_is_kv_direct == true` plus all strict content checks.
+- For the bounded script, `PASS` requires `checks.path_is_bounded_kv_direct == true`, `checks.bounded_hot_state_within_budget == true`, plus all strict content checks.
+- `generation.path` is the authoritative path field in summary JSON:
+  `torch.kv_direct.past_key_values` means unbounded KV-direct; `torch.kv_direct.bounded_past_key_values` means bounded KV-direct.
+
 ## Example Scripts
 
 The `examples/inference/` directory contains streamlined examples using UnifiedPipeline:

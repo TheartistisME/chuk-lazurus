@@ -202,6 +202,17 @@ chuk-lazarus infer --model "TinyLlama/TinyLlama-1.1B-Chat-v1.0" --prompt "What i
 chuk-lazarus infer --model "TinyLlama/TinyLlama-1.1B-Chat-v1.0" --prompt "What is 2+2?" --engine kv_direct
 ```
 
+### RTX 5090 Qwen KV-Direct Manual Tests
+
+For operator-facing manual validation on `Qwen3.6-35B-A3B` (Blackwell / RTX 5090), run:
+
+```bash
+scripts/run_qwen_kv_direct_manual_test.sh
+HOT_BUDGET_MIB=1024 scripts/run_qwen_bounded_kv_direct_manual_test.sh
+```
+
+Detailed guidance on what each script verifies, the Blackwell `causal-conv1d` workaround, bounded 1 GiB hot-tier budget semantics, artifact paths, and `PASS`/`generation.path` interpretation is in [`docs/inference.md`](docs/inference.md).
+
 ### Context Libraries (Prefill + Generate)
 
 Pre-fill a document into a windowed KV checkpoint library, then query any part of it at generation time — no re-reading the source:

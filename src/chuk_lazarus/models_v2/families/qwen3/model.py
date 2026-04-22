@@ -2,8 +2,8 @@
 Qwen3 model implementation.
 
 Very similar to Llama, but with:
-- Bias on QKV projections
 - QK normalization (RMSNorm on Q and K before attention)
+- optional projection bias controlled by config.attention_bias (defaults off)
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class Qwen3Attention(nn.Module):
             num_key_value_heads=num_kv_heads,
             hidden_size=config.hidden_size,
             head_dim=head_dim,
-            attention_bias=getattr(config, "attention_bias", True),
+            attention_bias=getattr(config, "attention_bias", False),
         )
 
         # Core attention components (q_proj, k_proj, v_proj, o_proj)

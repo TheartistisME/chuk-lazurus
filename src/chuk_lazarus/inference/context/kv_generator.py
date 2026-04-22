@@ -21,11 +21,14 @@ Model-agnostic design
   Built-in adapters:
     GemmaBackboneAdapter  — wraps GemmaResidualStreamForCausalLM
     LlamaBackboneAdapter  — wraps LlamaForCausalLM / Mistral
+    QwenBackboneAdapter   — wraps Qwen3ForCausalLM
 
   Factory:
     make_kv_generator(model)           — auto-detects family
+    KVDirectGenerator.from_model(model, config)
     KVDirectGenerator.from_gemma_rs(rs_model, config)
     KVDirectGenerator.from_llama(llama_model)
+    KVDirectGenerator.from_qwen3(qwen_model)
 
 Lifecycle
 ---------
@@ -50,6 +53,22 @@ def _mx():
 def _mask_dtype():
     """Resolve the attention-mask dtype lazily."""
     return _mx().bfloat16
+
+
+def _detect_kv_model_family(model) -> str:
+    """Class-name based family detection for compatibility constructors."""
+    cls_name = type(model).__name__
+    if "Gemma" in cls_name:
+        return "gemma"
+    if "Qwen" in cls_name:
+        return "qwen3"
+    if "Llama" in cls_name or "Mistral" in cls_name:
+        return "llama"
+    raise ValueError(
+        f"Cannot auto-detect adapter for {cls_name!r}. "
+        "Pass a pre-built ModelBackboneProtocol to KVDirectGenerator() directly, "
+        "or implement an adapter in chuk_lazarus.inference.context.adapters."
+    )
 
 
 def _run_layer(
@@ -87,7 +106,7 @@ class KVDirectGenerator:
     """
     Incremental generator that stores K,V per layer.
 
-    Accepts any ModelBackboneProtocol — Gemma, Llama, Mistral, etc.
+    Accepts any ModelBackboneProtocol — Gemma, Llama, Mistral, Qwen, etc.
 
     All methods assume batch_size=1:
         input_ids : (1, S) int32
@@ -107,16 +126,42 @@ class KVDirectGenerator:
     # ------------------------------------------------------------------
 
     @classmethod
+    def from_model(cls, model, config=None) -> KVDirectGenerator:
+        """Construct from any supported model family.
+
+        This is the shared compatibility surface used by both
+        ``make_kv_generator(...)`` and legacy call sites that still invoke
+        ``from_gemma_rs(model, config)`` regardless of the actual family.
+        """
+        family = _detect_kv_model_family(model)
+        if family == "gemma":
+            from .adapters.gemma_adapter import GemmaBackboneAdapter
+
+            return cls(GemmaBackboneAdapter(model))
+        if family == "qwen3":
+            from .adapters.qwen_adapter import QwenBackboneAdapter
+
+            return cls(QwenBackboneAdapter(model))
+        if family == "llama":
+            from .adapters.llama_adapter import LlamaBackboneAdapter
+
+            return cls(LlamaBackboneAdapter(model))
+        raise AssertionError(f"Unhandled KV model family: {family}")
+
+    @classmethod
     def from_gemma_rs(cls, rs_model, config=None) -> KVDirectGenerator:
         """
-        Construct from a GemmaResidualStreamForCausalLM.
+        Compatibility constructor retained for existing Gemma call sites.
 
-        The `config` argument is accepted but unused — the adapter reads it
-        directly from the model. Kept for call-site compatibility.
+        Historically bounded/unlimited engines called
+        ``KVDirectGenerator.from_gemma_rs(model, config)`` for the hot tier.
+        Keep that surface stable, but dispatch by model family so Qwen and
+        other supported families can reuse the same call shape unchanged.
+
+        The `config` argument is accepted but unused — adapters read directly
+        from the model. Kept for call-site compatibility.
         """
-        from .adapters.gemma_adapter import GemmaBackboneAdapter
-
-        return cls(GemmaBackboneAdapter(rs_model))
+        return cls.from_model(rs_model, config=config)
 
     @classmethod
     def from_llama(cls, llama_model) -> KVDirectGenerator:
@@ -124,6 +169,13 @@ class KVDirectGenerator:
         from .adapters.llama_adapter import LlamaBackboneAdapter
 
         return cls(LlamaBackboneAdapter(llama_model))
+
+    @classmethod
+    def from_qwen3(cls, qwen_model) -> KVDirectGenerator:
+        """Construct from a Qwen3ForCausalLM."""
+        from .adapters.qwen_adapter import QwenBackboneAdapter
+
+        return cls(QwenBackboneAdapter(qwen_model))
 
     # ------------------------------------------------------------------
     # Prefill — full forward from token IDs
@@ -1005,17 +1057,10 @@ def make_kv_generator(model, config=None) -> KVDirectGenerator:
         gen = make_kv_generator(rs_model)        # GemmaResidualStreamForCausalLM
         gen = make_kv_generator(llama_model)     # LlamaForCausalLM
         gen = make_kv_generator(mistral_model)   # Mistral (Llama-family)
+        gen = make_kv_generator(qwen_model)      # Qwen3ForCausalLM
 
-    Pass a pre-built ModelBackboneProtocol to KVDirectGenerator() directly
-    for families not yet covered here.
+    Legacy bounded-engine callers may still use
+    ``KVDirectGenerator.from_gemma_rs(model, config)``; both surfaces now
+    share the same family detection so the constructor layer stays aligned.
     """
-    cls_name = type(model).__name__
-    if "Gemma" in cls_name:
-        return KVDirectGenerator.from_gemma_rs(model)
-    if "Llama" in cls_name or "Mistral" in cls_name:
-        return KVDirectGenerator.from_llama(model)
-    raise ValueError(
-        f"Cannot auto-detect adapter for {cls_name!r}. "
-        "Pass a pre-built ModelBackboneProtocol to KVDirectGenerator() directly, "
-        "or implement an adapter in chuk_lazarus.inference.context.adapters."
-    )
+    return KVDirectGenerator.from_model(model, config=config)

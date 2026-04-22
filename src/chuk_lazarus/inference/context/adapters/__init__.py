@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .gemma_adapter import GemmaBackboneAdapter, GemmaLayerAdapter
     from .llama_adapter import LlamaBackboneAdapter, LlamaLayerAdapter
+    from .qwen_adapter import QwenBackboneAdapter, QwenLayerAdapter
 
 
 _LAZY: dict[str, tuple[str, str]] = {
@@ -21,6 +22,8 @@ _LAZY: dict[str, tuple[str, str]] = {
     "GemmaLayerAdapter": (".gemma_adapter", "GemmaLayerAdapter"),
     "LlamaBackboneAdapter": (".llama_adapter", "LlamaBackboneAdapter"),
     "LlamaLayerAdapter": (".llama_adapter", "LlamaLayerAdapter"),
+    "QwenBackboneAdapter": (".qwen_adapter", "QwenBackboneAdapter"),
+    "QwenLayerAdapter": (".qwen_adapter", "QwenLayerAdapter"),
 }
 
 __all__ = sorted(_LAZY.keys())

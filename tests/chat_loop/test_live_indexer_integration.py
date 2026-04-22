@@ -126,6 +126,24 @@ class _StubTokenizer:
         n = max(1, len(text.split()))
         return SimpleNamespace(input_ids=self._ids[:n] or [0])
 
+    def decode(
+        self,
+        token_ids: list[int],
+        skip_special_tokens: bool = True,
+    ) -> str:
+        return " ".join(f"tok{token_id}" for token_id in token_ids)
+
+
+class _FakeHistory:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str]] = []
+
+    def add_user(self, text: str) -> None:
+        self.messages.append(("user", text))
+
+    def add_assistant(self, text: str) -> None:
+        self.messages.append(("assistant", text))
+
 
 def _make_boundary(
     *,
@@ -155,6 +173,19 @@ def _make_chat(tmp_path: Path) -> MemoryChat:
 def _make_turn(turn_index: int = 0, role: Role = Role.ASSISTANT):
     """Return a SimpleNamespace with the attrs the on_window closure reads."""
     return SimpleNamespace(turn_index=turn_index, role=role)
+
+
+def _make_retrieval_result(answer: str = "recalled answer") -> SimpleNamespace:
+    return SimpleNamespace(
+        routing_mode="topical",
+        source_session="source-sess",
+        window_id=7,
+        routing_score=0.91,
+        matched_window_text="matched memory window",
+        window_keywords=["banjo", "memory"],
+        strict_assertions={"hook_fired": True},
+        generated_answer=answer,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +269,84 @@ def test_on_window_noop_when_indexer_none(tmp_path: Path) -> None:
     assert result is None
     # Counter must not advance when no indexer is wired.
     assert chat._window_counter == 0
+
+
+def test_plain_chat_turn_enqueues_user_turn_before_assistant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = _make_chat(tmp_path)
+    chat.model = SimpleNamespace(device="cpu")
+    chat.tokenizer = _StubTokenizer(ids=list(range(100, 700)))
+    chat.history = _FakeHistory()
+    chat.session = ChatLoopSession()
+
+    enqueue_mock = MagicMock()
+    chat.indexer = SimpleNamespace(enqueue=enqueue_mock)
+
+    def _fake_stream_assistant_reply(**kwargs: Any) -> str:
+        reply = "assistant remembers banjo"
+        windower = kwargs["windower"]
+        session = kwargs["session"]
+        turn = kwargs["turn"]
+        on_text_delta = kwargs["on_text_delta"]
+        on_text_delta(reply)
+        for boundary in windower.feed_text(reply):
+            session.append_chunk(turn, boundary)
+        tail = windower.flush()
+        if tail is not None:
+            session.append_chunk(turn, tail)
+        session.finish_turn(turn)
+        return reply
+
+    monkeypatch.setattr(
+        "chuk_lazarus.chat_loop.cli.stream_assistant_reply",
+        _fake_stream_assistant_reply,
+    )
+
+    meta = chat.plain_chat_turn("user mentions banjo at dusk")
+
+    assert meta.generated_answer == "assistant remembers banjo"
+    assert enqueue_mock.call_count == 2
+
+    first_args, _ = enqueue_mock.call_args_list[0]
+    second_args, _ = enqueue_mock.call_args_list[1]
+
+    assert first_args[0] == 0
+    assert first_args[3]["role"] == "user"
+    assert first_args[3]["turn_index"] == 0
+    assert second_args[0] == 1
+    assert second_args[3]["role"] == "assistant"
+    assert second_args[3]["turn_index"] == 1
+    assert chat._window_counter == 2
+
+
+def test_recall_chat_turn_enqueues_user_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = _make_chat(tmp_path)
+    chat.model = SimpleNamespace(device="cpu")
+    chat.tokenizer = _StubTokenizer(ids=list(range(200, 800)))
+    chat.history = _FakeHistory()
+    chat.session = ChatLoopSession()
+
+    enqueue_mock = MagicMock()
+    chat.indexer = SimpleNamespace(enqueue=enqueue_mock)
+    chat.retriever = SimpleNamespace(
+        system_prompt="system prompt",
+        query_topical=MagicMock(return_value=_make_retrieval_result("recalled answer")),
+    )
+
+    monkeypatch.setattr(_imc.TurnMetadata, "pretty_print", lambda self: None)
+
+    meta = chat.recall_chat_turn("what did I say about banjo?")
+
+    assert meta.generated_answer == "recalled answer"
+    assert enqueue_mock.call_count == 1
+    args, _ = enqueue_mock.call_args
+    assert args[0] == 0
+    assert args[3]["role"] == "user"
+    assert args[3]["turn_index"] == 0
+    assert chat._window_counter == 1
 
 
 # ---------------------------------------------------------------------------

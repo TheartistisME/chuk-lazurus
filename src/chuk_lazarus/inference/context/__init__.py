@@ -13,6 +13,8 @@ _LAZY: dict[str, tuple[str, str]] = {
     "GemmaLayerAdapter": (".adapters", "GemmaLayerAdapter"),
     "LlamaBackboneAdapter": (".adapters", "LlamaBackboneAdapter"),
     "LlamaLayerAdapter": (".adapters", "LlamaLayerAdapter"),
+    "QwenBackboneAdapter": (".adapters", "QwenBackboneAdapter"),
+    "QwenLayerAdapter": (".adapters", "QwenLayerAdapter"),
     "ArchitectureConfig": (".arch_config", "ArchitectureConfig"),
     "ArchitectureNotCalibrated": (".arch_config", "ArchitectureNotCalibrated"),
     "BoundedKVEngine": (".bounded_engine", "BoundedKVEngine"),

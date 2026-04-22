@@ -32,17 +32,17 @@ class TransformerLayerProtocol(Protocol):
     Normalises architecture differences:
     - Residual add semantics  (Gemma: clip_residual+norm delta, Llama: plain add)
     - Pre-FFN norm source     (Gemma: dedicated 4th norm, Llama: 2nd norm on full residual)
-    - Per-head norms          (Gemma: q_norm/k_norm, Llama: none)
+    - Per-head norms          (Gemma/Qwen: q_norm/k_norm, Llama: none)
     - RoPE application with explicit absolute offset
 
     Optional methods (may raise NotImplementedError):
-    - project_qkv_pre_rope : Pre-RoPE QKV projection (Gemma only)
-    - apply_rope           : Standalone RoPE application (Gemma only)
+    - project_qkv_pre_rope : Pre-RoPE QKV projection (Gemma/Qwen)
+    - apply_rope           : Standalone RoPE application (Gemma/Qwen)
     These are required only for Mode 6 KV injection (prefill_pages / inject_pages).
     """
 
     def pre_attn_norm(self, h: mx.array) -> mx.array:
-        """Pre-attention normalisation (input_layernorm for both Gemma and Llama)."""
+        """Pre-attention normalisation (input_layernorm for Gemma/Llama/Qwen)."""
         ...
 
     def project_qkv(
@@ -51,7 +51,7 @@ class TransformerLayerProtocol(Protocol):
         """
         Project x → Q, K, V.
 
-        Applies per-head norms (Gemma: q_norm/k_norm; Llama: none) and RoPE
+        Applies per-head norms (Gemma/Qwen: q_norm/k_norm; Llama: none) and RoPE
         with the given absolute position offset.
 
         Returns (q, k, v):
@@ -70,7 +70,7 @@ class TransformerLayerProtocol(Protocol):
         Add attention output to the residual stream.
 
         Gemma: clip_residual(h, post_attention_layernorm(attn_out))
-        Llama: h + attn_out
+        Llama/Qwen: h + attn_out
         """
         ...
 
@@ -79,7 +79,7 @@ class TransformerLayerProtocol(Protocol):
         Normalise hidden state before the FFN.
 
         Gemma: pre_feedforward_layernorm(h)   — 3rd dedicated norm
-        Llama: post_attention_layernorm(h)    — 2nd norm, applied to full residual
+        Llama/Qwen: post_attention_layernorm(h)    — 2nd norm, applied to full residual
         """
         ...
 
@@ -92,7 +92,7 @@ class TransformerLayerProtocol(Protocol):
         Add FFN output to the residual stream.
 
         Gemma: clip_residual(h, post_feedforward_layernorm(ffn_out))
-        Llama: h + ffn_out
+        Llama/Qwen: h + ffn_out
         """
         ...
 
@@ -160,7 +160,7 @@ class ModelBackboneProtocol(Protocol):
     Top-level model interface for KVDirectGenerator.
 
     Wraps an entire CausalLM and provides a uniform interface regardless of
-    the underlying architecture (Gemma, Llama, Mistral, ...).
+    the underlying architecture (Gemma, Llama, Mistral, Qwen, ...).
     """
 
     @property
