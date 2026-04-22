@@ -2,6 +2,10 @@
 """
 Qwen3 Inference Example
 
+Standard pipeline example for load / chat / generate.
+For Qwen3 KV-direct and bounded hot-window evidence, use:
+    uv run python scripts/qwen_qwen3_surface_probe.py --help
+
 Usage:
     uv run python examples/inference/qwen3_inference.py
     uv run python examples/inference/qwen3_inference.py --model qwen3-1.7b
