@@ -80,9 +80,14 @@ Internally runs axes 1-3 to build 5 fresh sessions, then exercises axis-4 and ax
 Exercises the full pipeline in a REPL so you can talk to the model, compress the conversation to vectors on demand, and verify the recall in a fresh session. All routing metadata is printed inline.
 
 ```bash
-python scripts/interactive_memory_chat.py
-# default store: /tmp/interactive-memory  (override with --store-root / LAZARUS_STORE_DIR)
+scripts/run_interactive_memory_chat.sh
+# default store: artifacts/manual/repl_loop_<utcstamp>
+# override with --store-root or LAZARUS_STORE_DIR
 ```
+
+The wrapper also defaults the model to `google/gemma-4-E2B-it` unless
+`LAZARUS_MODEL` or `--model-path` overrides it. The raw Python entry point is
+still available if you want to manage all flags and env vars yourself.
 
 ### Workflow
 

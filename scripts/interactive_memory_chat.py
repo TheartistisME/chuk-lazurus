@@ -49,6 +49,12 @@ Environment overrides:
 
 Example session:
 
+  For manual testing, prefer the wrapper so you get a fresh repo-local store:
+
+  $ scripts/run_interactive_memory_chat.sh
+
+  Equivalent raw invocation:
+
   $ python scripts/interactive_memory_chat.py
   [store] /tmp/interactive-memory/checkpoints (empty)
   [model] loading google/gemma-4-E2B-it ... done.
@@ -898,6 +904,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="interactive_memory_chat.py",
         description="Interactive pseudo-infinite-memory chat with routing metadata.",
+        epilog=(
+            "Tip: use scripts/run_interactive_memory_chat.sh for safer manual "
+            "REPL launches with a fresh repo-local store."
+        ),
     )
     parser.add_argument(
         "--store-root",
