@@ -34,13 +34,19 @@ Commands (typed at the prompt):
   /exact  <dotted-id>   exact-id recall probe (no chat-history mutation)
   /entity <text>        entity-mention recall probe (no chat-history mutation)
   /kv_query <text>      axis-5 KV-direct query — runs the real ASI-router +
-                        tier-policy + KV-direct runtime path. Surfaces the
+                        tier-policy + KV-direct runtime path. Defaults to the
+                        current Gemma-4 full-attention insertion path
+                        (retrieval_layer=12, injection_layer=13).
+                        Use --insertion-family sliding plus optional
+                        --sliding-layer-indices / --sliding-head-indices to
+                        exercise the sliding selector explicitly. Surfaces the
                         real axis-6 observability fields (selected_tier,
                         mask_penalty_applied, kv_direct_active, vram_peak_mib,
                         vram_delta_mib, no_silent_fallback) on self.last_meta.
                         Env overrides: LAZARUS_KV_CANDIDATE_POOL (default 16),
                         LAZARUS_KV_K_HOT (4), LAZARUS_KV_K_WARM (8),
-                        LAZARUS_KV_HOT_BUDGET_MIB (32).
+                        LAZARUS_KV_HOT_BUDGET_MIB (32),
+                        LAZARUS_KV_HOT_BONUS (default 0.0).
   /stats                print store summary
   /last                 print last turn's routing metadata
   /history              dump the current session transcript
@@ -99,15 +105,17 @@ Example session:
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
+import shlex
 import sys
 import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 # LiveIndexer replaces the subprocess `invoke_build` call at runtime. The
 # chat loop now indexes streaming windows into the per-session torch_store
@@ -121,6 +129,14 @@ from chuk_lazarus.session_store.live_indexer import LiveIndexer
 
 DEFAULT_STORE = "/tmp/interactive-memory"
 HEADER_W = 72
+KVInsertionFamily = Literal["full_attention", "sliding"]
+KV_QUERY_USAGE = (
+    "/kv_query "
+    "[--insertion-family {full_attention,sliding}] "
+    "[--sliding-layer-indices 13,15] "
+    "[--sliding-head-indices 0,7] "
+    "<text>"
+)
 
 
 def ts() -> str:
@@ -149,6 +165,157 @@ def truncate(text: str, n: int) -> str:
     if len(text) <= n:
         return text
     return text[: n - 1] + "…"
+
+
+def _parse_csv_int_tuple(raw_value: str, *, option_name: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in raw_value.split(",")]
+    if not parts or any(part == "" for part in parts):
+        raise ValueError(
+            f"{option_name} must be a comma-separated list of integers"
+        )
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise ValueError(
+            f"{option_name} must be a comma-separated list of integers"
+        ) from exc
+
+
+def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
+    try:
+        tokens = shlex.split(raw_arg)
+    except ValueError as exc:
+        raise ValueError(f"{KV_QUERY_USAGE} ({exc})") from exc
+
+    if not tokens:
+        raise ValueError(KV_QUERY_USAGE)
+
+    insertion_family: KVInsertionFamily = "full_attention"
+    sliding_layer_indices: tuple[int, ...] | None = None
+    sliding_head_indices: tuple[int, ...] | None = None
+    query_tokens: list[str] = []
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token == "--":
+            query_tokens = tokens[idx + 1:]
+            break
+        if not token.startswith("-"):
+            query_tokens = tokens[idx:]
+            break
+        if token in ("--insertion-family", "--family"):
+            idx += 1
+            if idx >= len(tokens):
+                raise ValueError(f"{token} requires a value ({KV_QUERY_USAGE})")
+            family = tokens[idx].strip().lower()
+            if family not in {"full_attention", "sliding"}:
+                raise ValueError(
+                    "--insertion-family must be one of "
+                    "{full_attention, sliding}"
+                )
+            insertion_family = family
+        elif token == "--sliding-layer-indices":
+            idx += 1
+            if idx >= len(tokens):
+                raise ValueError(f"{token} requires a value ({KV_QUERY_USAGE})")
+            sliding_layer_indices = _parse_csv_int_tuple(
+                tokens[idx], option_name=token
+            )
+        elif token == "--sliding-head-indices":
+            idx += 1
+            if idx >= len(tokens):
+                raise ValueError(f"{token} requires a value ({KV_QUERY_USAGE})")
+            sliding_head_indices = _parse_csv_int_tuple(
+                tokens[idx], option_name=token
+            )
+        else:
+            raise ValueError(f"unrecognized /kv_query option {token!r}")
+        idx += 1
+
+    if not query_tokens:
+        raise ValueError(KV_QUERY_USAGE)
+    if insertion_family != "sliding" and (
+        sliding_layer_indices is not None or sliding_head_indices is not None
+    ):
+        raise ValueError(
+            "--sliding-layer-indices and --sliding-head-indices require "
+            "--insertion-family sliding"
+        )
+
+    query_text = " ".join(query_tokens).strip()
+    if not query_text:
+        raise ValueError(KV_QUERY_USAGE)
+
+    return query_text, {
+        "insertion_family": insertion_family,
+        "sliding_layer_indices": sliding_layer_indices,
+        "sliding_head_indices": sliding_head_indices,
+    }
+
+
+def _select_kv_direct_kwargs(
+    retriever: Any,
+    *,
+    insertion_family: KVInsertionFamily,
+    sliding_layer_indices: tuple[int, ...] | None,
+    sliding_head_indices: tuple[int, ...] | None,
+) -> dict[str, Any]:
+    selector_kwargs = {
+        "insertion_family": insertion_family,
+        "sliding_layer_indices": sliding_layer_indices,
+        "sliding_head_indices": sliding_head_indices,
+    }
+    explicit_selector = (
+        insertion_family != "full_attention"
+        or sliding_layer_indices is not None
+        or sliding_head_indices is not None
+    )
+    if not explicit_selector:
+        return {}
+
+    def _assert_selector_support(callable_obj: Any, *, label: str) -> None:
+        try:
+            signature = inspect.signature(callable_obj)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "kv_query selector requested, but "
+                f"{label} cannot be introspected for selector support"
+            ) from exc
+
+        parameters = signature.parameters
+        if any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ):
+            return
+        supported = {
+            key for key in selector_kwargs if key in parameters
+        }
+        if supported == set(selector_kwargs):
+            return
+        missing = ", ".join(
+            key for key in selector_kwargs if key not in supported
+        )
+        raise RuntimeError(
+            "kv_query selector requested, but "
+            f"{label} is missing selector kwargs: {missing}"
+        )
+
+    _assert_selector_support(
+        retriever.answer_with_kv_direct,
+        label="retriever.answer_with_kv_direct",
+    )
+    runtime = getattr(retriever, "runtime", None)
+    runtime_generate = (
+        None if runtime is None
+        else getattr(runtime, "generate_with_kv_direct_materialization", None)
+    )
+    if runtime_generate is not None:
+        _assert_selector_support(
+            runtime_generate,
+            label="runtime.generate_with_kv_direct_materialization",
+        )
+    return selector_kwargs
 
 
 # ─── metadata container ─────────────────────────────────────────────────────
@@ -685,7 +852,14 @@ class MemoryChat:
 
     # ── axis-5 KV-direct recall turn ───────────────────────────────────────
 
-    def kv_query_turn(self, query_text: str) -> TurnMetadata:
+    def kv_query_turn(
+        self,
+        query_text: str,
+        *,
+        insertion_family: KVInsertionFamily = "full_attention",
+        sliding_layer_indices: tuple[int, ...] | None = None,
+        sliding_head_indices: tuple[int, ...] | None = None,
+    ) -> TurnMetadata:
         """Run a single axis-5 KV-direct query. Used by ``/kv_query`` and by
         the REPL integration tests.
 
@@ -711,6 +885,14 @@ class MemoryChat:
         k_hot = int(os.environ.get("LAZARUS_KV_K_HOT", "4"))
         k_warm = int(os.environ.get("LAZARUS_KV_K_WARM", "8"))
         hot_budget_mib = int(os.environ.get("LAZARUS_KV_HOT_BUDGET_MIB", "32"))
+        # LAZARUS_KV_HOT_BONUS: pre-softmax additive bonus for HOT slots
+        # (float, default 0.0 = no bonus; positive values boost HOT attention).
+        hot_bonus_value = float(os.environ.get("LAZARUS_KV_HOT_BONUS", "0.0"))
+        explicit_selector = (
+            insertion_family != "full_attention"
+            or sliding_layer_indices is not None
+            or sliding_head_indices is not None
+        )
 
         t_total_start = time.time()
         t_retrieve_start = time.time()
@@ -752,12 +934,28 @@ class MemoryChat:
                     "no tier assignments owned by top-ranked candidate's handle"
                 )
 
-            warm_config = WarmPenaltyConfig()
+            warm_config = WarmPenaltyConfig(hot_bonus_value=hot_bonus_value)
             gen_config = GenerationConfig(
                 max_new_tokens=int(self.max_new_tokens),
                 temperature=0.0,
                 top_p=1.0,
             )
+
+            selector_kwargs = _select_kv_direct_kwargs(
+                self.retriever,
+                insertion_family=insertion_family,
+                sliding_layer_indices=sliding_layer_indices,
+                sliding_head_indices=sliding_head_indices,
+            )
+            if explicit_selector:
+                info(
+                    "kv_query selector: "
+                    f"insertion_family={selector_kwargs['insertion_family']} "
+                    f"sliding_layer_indices="
+                    f"{selector_kwargs['sliding_layer_indices']} "
+                    f"sliding_head_indices="
+                    f"{selector_kwargs['sliding_head_indices']}"
+                )
 
             result = self.retriever.answer_with_kv_direct(
                 query_text,
@@ -766,6 +964,7 @@ class MemoryChat:
                 warm_config=warm_config,
                 generation_config=gen_config,
                 handle=top_handle,
+                **selector_kwargs,
             )
         except (ValueError, RuntimeError) as exc:
             # axis-6: SILENT FALLBACK DETECTED — first-class WARN.
@@ -1222,9 +1421,14 @@ class MemoryChat:
 
         if head == "/kv_query":
             if not arg:
-                info("usage: /kv_query <text>")
+                info(f"usage: {KV_QUERY_USAGE}")
                 return False
-            meta = self.kv_query_turn(arg)
+            try:
+                query_text, selector_kwargs = _parse_kv_query_args(arg)
+            except ValueError as exc:
+                info(f"usage: {exc}")
+                return False
+            meta = self.kv_query_turn(query_text, **selector_kwargs)
             self.last_meta = meta
             return False
 

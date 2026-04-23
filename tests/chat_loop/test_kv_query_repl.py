@@ -1,20 +1,12 @@
-"""CUDA-gated integration tests: ``/kv_query`` drives the real axis-5
-KV-direct runtime path via ``MemoryChat.kv_query_turn`` and surfaces truthful
-axis-6 observability fields on ``chat.last_meta``.
+"""Unit + CUDA integration coverage for the ``/kv_query`` REPL surface.
 
-These tests run real Gemma — expect 60-180s wall time. They are CUDA-gated
-per the user mandate: never CPU-run tests in this repo.
+The fast unit tests pin the command-surface selector behavior:
 
-Test matrix:
+  1. default ``/kv_query <text>`` keeps the current full-attention behavior
+  2. explicit sliding-family flags are parsed and forwarded correctly
 
-  1. ``test_kv_query_turn_surfaces_real_axis6_fields`` — the end-to-end
-     happy path. This is the post-hotfix closure gate for the real
-     KV-direct path on Gemma-4 E2B.
-  2. ``test_kv_query_turn_surfaces_silent_fallback_truthfully`` — the
-     truthful fallback path. Forces the axis-5 call to raise, asserts the
-     axis-6 WARN is emitted on stdout and ``meta.no_silent_fallback is
-     False``. This is the POSITIVE evidence that axis-6's own wiring is
-     correct regardless of the upstream axis-5 block.
+The heavier integration tests still run real Gemma on CUDA — expect
+60-180s wall time when those are enabled.
 """
 
 from __future__ import annotations
@@ -22,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,12 +25,6 @@ try:
     _HAS_CUDA = bool(torch.cuda.is_available())
 except Exception:
     _HAS_CUDA = False
-
-
-pytestmark = [
-    pytest.mark.cuda,
-    pytest.mark.skipif(not _HAS_CUDA, reason="CUDA required for axis-5 KV-direct"),
-]
 
 
 def _load_interactive_memory_chat():
@@ -57,6 +44,185 @@ def _load_interactive_memory_chat():
     return module
 
 
+def test_kv_query_command_preserves_default_full_attention_selector() -> None:
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+    meta = _imc.TurnMetadata(mode="kv_direct")
+
+    chat = MemoryChat.__new__(MemoryChat)
+    chat.last_meta = None
+    seen: dict[str, object] = {}
+
+    def _fake_kv_query_turn(query_text: str, **kwargs):
+        seen["query_text"] = query_text
+        seen["kwargs"] = kwargs
+        return meta
+
+    chat.kv_query_turn = _fake_kv_query_turn  # type: ignore[assignment]
+
+    handled = chat._handle_command("/kv_query remember the saffron sidecar")
+
+    assert handled is False
+    assert seen == {
+        "query_text": "remember the saffron sidecar",
+        "kwargs": {
+            "insertion_family": "full_attention",
+            "sliding_layer_indices": None,
+            "sliding_head_indices": None,
+        },
+    }
+    assert chat.last_meta is meta
+
+
+def test_kv_query_command_parses_explicit_sliding_selector() -> None:
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+    meta = _imc.TurnMetadata(mode="kv_direct")
+
+    chat = MemoryChat.__new__(MemoryChat)
+    chat.last_meta = None
+    seen: dict[str, object] = {}
+
+    def _fake_kv_query_turn(query_text: str, **kwargs):
+        seen["query_text"] = query_text
+        seen["kwargs"] = kwargs
+        return meta
+
+    chat.kv_query_turn = _fake_kv_query_turn  # type: ignore[assignment]
+
+    handled = chat._handle_command(
+        "/kv_query --insertion-family sliding "
+        "--sliding-layer-indices 11,13 "
+        "--sliding-head-indices 0,7 "
+        "remember the saffron sidecar"
+    )
+
+    assert handled is False
+    assert seen == {
+        "query_text": "remember the saffron sidecar",
+        "kwargs": {
+            "insertion_family": "sliding",
+            "sliding_layer_indices": (11, 13),
+            "sliding_head_indices": (0, 7),
+        },
+    }
+    assert chat.last_meta is meta
+
+
+def test_kv_query_turn_propagates_selector_kwargs_to_retriever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("torch")
+
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+
+    class SelectorAwareRetriever:
+        def __init__(self) -> None:
+            self.handles = [SimpleNamespace(session_id="sess-1")]
+            self.tokenizer = object()
+            self.system_prompt = "system prompt"
+            self.captured: dict[str, object] | None = None
+
+        def answer_with_kv_direct(
+            self,
+            query_text,
+            tier_assignments,
+            *,
+            hot_budget_mib,
+            warm_config,
+            generation_config,
+            warm_scores=None,
+            query_id=None,
+            handle=None,
+            insertion_family="full_attention",
+            sliding_layer_indices=None,
+            sliding_head_indices=None,
+        ):
+            self.captured = {
+                "query_text": query_text,
+                "tier_count": len(tier_assignments),
+                "hot_budget_mib": hot_budget_mib,
+                "handle": handle,
+                "warm_scores": warm_scores,
+                "query_id": query_id,
+                "insertion_family": insertion_family,
+                "sliding_layer_indices": sliding_layer_indices,
+                "sliding_head_indices": sliding_head_indices,
+            }
+            return SimpleNamespace(
+                strict_assertions={
+                    "kv_direct_active": True,
+                    "mask_penalty_applied": False,
+                    "vram_peak_mib": 12,
+                    "vram_delta_mib": 4,
+                },
+                routing_mode="kv_direct",
+                source_session="sess-1",
+                window_id=2,
+                routing_score=0.99,
+                matched_window_text="matched window",
+                window_keywords=["saffron"],
+                generated_answer="retrieved answer",
+            )
+
+    class StubTokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            del text, add_special_tokens
+            return SimpleNamespace(input_ids=[1, 2, 3])
+
+    retriever = SelectorAwareRetriever()
+    chat = MemoryChat.__new__(MemoryChat)
+    chat.retriever = retriever
+    chat.tokenizer = StubTokenizer()
+    chat.max_new_tokens = 32
+    chat.plain_chat_turn = lambda _text: _imc.TurnMetadata(mode="plain")  # type: ignore[assignment]
+
+    candidate = SimpleNamespace(handle=retriever.handles[0], window_id=2)
+    assignment = SimpleNamespace(
+        candidate=candidate,
+        tier=SimpleNamespace(value="hot"),
+    )
+
+    import chuk_lazarus.session_retrieval as session_retrieval
+
+    monkeypatch.setattr(
+        session_retrieval,
+        "asi_route_candidates",
+        lambda *_args, **_kwargs: [candidate],
+    )
+    monkeypatch.setattr(
+        session_retrieval,
+        "assign_tiers",
+        lambda *_args, **_kwargs: [assignment],
+    )
+
+    meta = chat.kv_query_turn(
+        "remember the saffron sidecar",
+        insertion_family="sliding",
+        sliding_layer_indices=(11, 13),
+        sliding_head_indices=(0, 7),
+    )
+
+    assert retriever.captured == {
+        "query_text": "remember the saffron sidecar",
+        "tier_count": 1,
+        "hot_budget_mib": 32,
+        "handle": retriever.handles[0],
+        "warm_scores": None,
+        "query_id": None,
+        "insertion_family": "sliding",
+        "sliding_layer_indices": (11, 13),
+        "sliding_head_indices": (0, 7),
+    }
+    assert meta.mode == "kv_direct"
+    assert meta.selected_tier == "hot"
+    assert meta.no_silent_fallback is True
+    assert meta.kv_direct_active is True
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not _HAS_CUDA, reason="CUDA required for axis-5 KV-direct")
 def test_kv_query_turn_surfaces_real_axis6_fields(tmp_path: Path) -> None:
     """End-to-end: ``kv_query_turn`` must populate ``last_meta`` with REAL
     axis-5 field values (kv_direct_active True, no_silent_fallback True,
@@ -141,6 +307,8 @@ def test_kv_query_turn_surfaces_real_axis6_fields(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.cuda
+@pytest.mark.skipif(not _HAS_CUDA, reason="CUDA required for axis-5 KV-direct")
 def test_kv_query_turn_surfaces_silent_fallback_truthfully(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
