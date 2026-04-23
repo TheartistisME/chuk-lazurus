@@ -52,6 +52,49 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+def _assert_requested_kv_selector_is_truthful(
+    *,
+    insertion_family: Literal["full_attention", "sliding"],
+    materialization: Any,
+    handle: CheckpointHandle,
+) -> None:
+    """Reject surfaced selector requests the archived source cannot honor."""
+    if insertion_family != "sliding":
+        return
+
+    actual_family = getattr(materialization, "materialized_insertion_family", None)
+    if actual_family is None:
+        raise RuntimeError(
+            "kv_query insertion_family='sliding' cannot be honored for "
+            f"session {handle.session_id}: the archived materialization did "
+            "not report its source family. Lower-level runtime support must "
+            "surface truthful provenance before sliding can be requested here."
+        )
+
+    normalized_family = str(actual_family).strip().lower()
+    if normalized_family == "sliding":
+        return
+
+    source_layer = getattr(materialization, "materialized_source_layer", None)
+    source_layer_desc = "unknown"
+    if source_layer is not None:
+        source_layer_desc = str(int(source_layer))
+    raw_lineage = (
+        getattr(materialization, "materialized_lineage_layer_indices", ()) or ()
+    )
+    lineage = tuple(int(layer_idx) for layer_idx in raw_lineage)
+    lineage_desc = ",".join(str(layer_idx) for layer_idx in lineage) or "unknown"
+    raise RuntimeError(
+        "kv_query insertion_family='sliding' cannot be honored for "
+        f"session {handle.session_id}: archived source family is "
+        f"{normalized_family!r} (source_layer={source_layer_desc}, "
+        f"lineage={lineage_desc}). This surfaced route only supports "
+        "sliding when the archived checkpoint was materialized from a "
+        "sliding-source lineage. The shipped Gemma-4 /kv_query default "
+        "remains full_attention."
+    )
+
+
 @dataclass
 class QueryResult:
     """Structured return for every :class:`SessionRetriever` query.
@@ -569,19 +612,38 @@ class SessionRetriever:
         insertion_family:
             Runtime K/V insertion family. ``"full_attention"`` preserves
             the current default Gemma-4 path; ``"sliding"`` activates the
-            explicit sliding-layer insertion branch in the runtime.
+            explicit sliding-layer insertion branch in the runtime, but
+            only when the archived checkpoint itself was materialized from
+            a sliding-source lineage. Otherwise this method raises instead
+            of silently pretending the sliding selector ran.
         sliding_layer_indices:
             Sliding-attention decoder layers that should receive the
-            archived prefix when ``insertion_family="sliding"``.
+            archived prefix when ``insertion_family="sliding"``. Required
+            together with ``sliding_head_indices`` for surfaced sliding.
         sliding_head_indices:
             Attention-head indices that may attend to the archived prefix
-            when ``insertion_family="sliding"``.
+            when ``insertion_family="sliding"``. Required together with
+            ``sliding_layer_indices`` for surfaced sliding.
         """
+        if insertion_family == "sliding" and (
+            sliding_layer_indices is None or sliding_head_indices is None
+        ):
+            raise ValueError(
+                "answer_with_kv_direct: insertion_family='sliding' requires "
+                "both sliding_layer_indices and sliding_head_indices."
+            )
+
         # Materialize once; keep the concrete sequence for subsequent
         # tier-map construction so we do not double-iterate a generator.
         tier_seq = list(tier_assignments)
+        chosen_handle = handle if handle is not None else self.handles[0]
         residuals, materialization = self.prepare_kv_direct_materialization(
-            tier_seq, hot_budget_mib=hot_budget_mib, handle=handle,
+            tier_seq, hot_budget_mib=hot_budget_mib, handle=chosen_handle,
+        )
+        _assert_requested_kv_selector_is_truthful(
+            insertion_family=insertion_family,
+            materialization=materialization,
+            handle=chosen_handle,
         )
         tier_map = {
             int(a.candidate.window_id): a.tier for a in tier_seq
@@ -618,11 +680,10 @@ class SessionRetriever:
             sliding_head_indices=sliding_head_indices,
         )
 
-        chosen_handle = handle if handle is not None else self.handles[0]
         first_wid = next(iter(residuals.per_window_token_ranges.keys()), -1)
         metadata = getattr(result, "metadata", {}) or {}
         strict_assertions: dict[str, Any] = {
-            "kv_direct_active": True,
+            "kv_direct_active": bool(metadata.get("kv_direct_active", False)),
             "path_a_replay_count": int(metadata.get("path_a_replay_count", 0)),
             "hot_budget_mib_observed": int(
                 materialization.hot_budget_mib_observed

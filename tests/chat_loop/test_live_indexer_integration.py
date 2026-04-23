@@ -32,7 +32,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from chuk_lazarus.chat_loop.session import ChatLoopSession, ChunkBoundary
 from chuk_lazarus.inference.chat import Role

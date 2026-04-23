@@ -35,14 +35,21 @@ Commands (typed at the prompt):
   /entity <text>        entity-mention recall probe (no chat-history mutation)
   /kv_query <text>      axis-5 KV-direct query — runs the real ASI-router +
                         tier-policy + KV-direct runtime path. Defaults to the
-                        current Gemma-4 full-attention insertion path
+                        shipped Gemma-4 full-attention insertion path
                         (retrieval_layer=12, injection_layer=13).
-                        Use --insertion-family sliding plus optional
-                        --sliding-layer-indices / --sliding-head-indices to
-                        exercise the sliding selector explicitly. Surfaces the
-                        real axis-6 observability fields (selected_tier,
-                        mask_penalty_applied, kv_direct_active, vram_peak_mib,
-                        vram_delta_mib, no_silent_fallback) on self.last_meta.
+                        Explicit sliding requests require
+                        --insertion-family sliding plus BOTH
+                        --sliding-layer-indices and
+                        --sliding-head-indices. The surfaced route only
+                        honors sliding when the archived checkpoint was
+                        materialized from a sliding-source lineage; current
+                        Gemma-4 live indexing still emits the full-attention
+                        lineage by default, so selector mismatches WARN
+                        truthfully instead of pretending sliding ran.
+                        Surfaces the real axis-6 observability fields
+                        (selected_tier, mask_penalty_applied,
+                        kv_direct_active, vram_peak_mib, vram_delta_mib,
+                        no_silent_fallback) on self.last_meta.
                         Env overrides: LAZARUS_KV_CANDIDATE_POOL (default 16),
                         LAZARUS_KV_K_HOT (4), LAZARUS_KV_K_WARM (8),
                         LAZARUS_KV_HOT_BUDGET_MIB (32),
@@ -131,10 +138,10 @@ DEFAULT_STORE = "/tmp/interactive-memory"
 HEADER_W = 72
 KVInsertionFamily = Literal["full_attention", "sliding"]
 KV_QUERY_USAGE = (
-    "/kv_query "
-    "[--insertion-family {full_attention,sliding}] "
-    "[--sliding-layer-indices 13,15] "
-    "[--sliding-head-indices 0,7] "
+    "/kv_query <text> | "
+    "/kv_query --insertion-family sliding "
+    "--sliding-layer-indices 13,15 "
+    "--sliding-head-indices 0,7 "
     "<text>"
 )
 
@@ -234,6 +241,13 @@ def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
 
     if not query_tokens:
         raise ValueError(KV_QUERY_USAGE)
+    if insertion_family == "sliding" and (
+        sliding_layer_indices is None or sliding_head_indices is None
+    ):
+        raise ValueError(
+            "--insertion-family sliding requires both "
+            "--sliding-layer-indices and --sliding-head-indices"
+        )
     if insertion_family != "sliding" and (
         sliding_layer_indices is not None or sliding_head_indices is not None
     ):

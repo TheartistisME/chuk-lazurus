@@ -109,6 +109,64 @@ def test_kv_query_command_parses_explicit_sliding_selector() -> None:
     assert chat.last_meta is meta
 
 
+def test_kv_query_command_rejects_sliding_indices_without_sliding_family(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+
+    chat = MemoryChat.__new__(MemoryChat)
+    sentinel = object()
+    chat.last_meta = sentinel
+
+    def _unexpected_kv_query_turn(*_args, **_kwargs):
+        raise AssertionError("kv_query_turn must not run for invalid selector input")
+
+    chat.kv_query_turn = _unexpected_kv_query_turn  # type: ignore[assignment]
+
+    handled = chat._handle_command(
+        "/kv_query --sliding-layer-indices 11,13 "
+        "remember the saffron sidecar"
+    )
+
+    assert handled is False
+    assert chat.last_meta is sentinel
+    captured = capsys.readouterr()
+    assert (
+        "--sliding-layer-indices and --sliding-head-indices require "
+        "--insertion-family sliding"
+    ) in captured.out
+
+
+def test_kv_query_command_rejects_non_integer_sliding_head_selection(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+
+    chat = MemoryChat.__new__(MemoryChat)
+    sentinel = object()
+    chat.last_meta = sentinel
+
+    def _unexpected_kv_query_turn(*_args, **_kwargs):
+        raise AssertionError("kv_query_turn must not run for invalid selector input")
+
+    chat.kv_query_turn = _unexpected_kv_query_turn  # type: ignore[assignment]
+
+    handled = chat._handle_command(
+        "/kv_query --insertion-family sliding "
+        "--sliding-head-indices 0,seven "
+        "remember the saffron sidecar"
+    )
+
+    assert handled is False
+    assert chat.last_meta is sentinel
+    captured = capsys.readouterr()
+    assert (
+        "--sliding-head-indices must be a comma-separated list of integers"
+    ) in captured.out
+
+
 def test_kv_query_turn_propagates_selector_kwargs_to_retriever(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -447,4 +505,102 @@ def test_kv_query_turn_surfaces_silent_fallback_truthfully(
     assert simulated_reason in captured.out, (
         f"Expected the simulated reason {simulated_reason!r} in WARN output; "
         f"got:\n{captured.out[:2000]}"
+    )
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not _HAS_CUDA, reason="CUDA required for axis-5 KV-direct")
+def test_kv_query_turn_explicit_sliding_surfaces_truthful_outcome(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Explicit surfaced sliding selection must report either truthful
+    success or truthful rejection on the real chat path.
+
+    Worker 1 may make surfaced sliding executable end-to-end, or may reject
+    it explicitly when the archived-source lineage still resolves to the
+    full-attention branch. This test accepts either outcome, but it requires
+    the surfaced selector to be observable and truthful.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+
+    planted_phrase = "the saffron sidecar remembers hexagon gullies at sunrise."
+
+    chat = MemoryChat(
+        store_root=tmp_path / "store",
+        model_path=None,
+        max_new_tokens=64,
+        memory_mode="topical",
+        device="cuda",
+    )
+    chat.load_model()
+    chat.maybe_load_retriever()
+    chat.start_new_session()
+
+    scripted = [
+        "Reply with exactly this sentence and nothing else: ready for kv probe.",
+        (
+            "Reply with exactly this sentence and nothing else, with no quotation "
+            f"marks: {planted_phrase}"
+        ),
+        (
+            "Repeat the exact same sentence again, unchanged and with no extra "
+            f"words: {planted_phrase}"
+        ),
+    ]
+    for prompt in scripted:
+        chat.plain_chat_turn(prompt)
+
+    assert chat.save_current_session(rebuild_retriever=True), (
+        "save_current_session returned False — live indexer flush or "
+        "retriever refresh failed"
+    )
+
+    chat.start_new_session()
+    assert chat.retriever is not None, (
+        "Retriever must be available after /save"
+    )
+
+    meta = chat.kv_query_turn(
+        planted_phrase,
+        insertion_family="sliding",
+        sliding_layer_indices=(13, 15),
+        sliding_head_indices=(0, 7),
+    )
+    chat.last_meta = meta
+
+    captured = capsys.readouterr()
+    assert "kv_query selector: insertion_family=sliding" in captured.out, (
+        "Explicit selector runs must log the surfaced selector configuration"
+    )
+
+    if meta.mode == "kv_direct":
+        assert meta.kv_direct_active is True, (
+            "Explicit surfaced sliding success must report kv_direct_active=True"
+        )
+        assert meta.no_silent_fallback is True, (
+            "Explicit surfaced sliding success must report no_silent_fallback=True"
+        )
+        assert "[WARN] axis-6: SILENT FALLBACK DETECTED" not in captured.out
+        return
+
+    assert meta.mode == "none", (
+        f"truthful surfaced rejection must fall back with mode=none, got {meta.mode!r}"
+    )
+    assert meta.no_silent_fallback is False, (
+        "truthful surfaced rejection must report no_silent_fallback=False"
+    )
+    assert "[WARN] axis-6: SILENT FALLBACK DETECTED" in captured.out, (
+        "Explicit surfaced sliding rejection must emit the axis-6 WARN"
+    )
+    assert (
+        "insertion_family='sliding'" in captured.out
+        or "sliding_layer_indices" in captured.out
+        or "sliding-attention layer" in captured.out
+    ), (
+        "truthful surfaced rejection must mention the surfaced sliding selector "
+        f"reason, got:\n{captured.out[:2000]}"
     )
