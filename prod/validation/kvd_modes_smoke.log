@@ -1,0 +1,283 @@
+kvd_modes_smoke started_at=2026-04-23T03:43:22Z
+repo_root=/mnt/c/users/jehma/desktop/lazarus/chuk-lazurus
+model_path=/home/jehmal/.cache/huggingface/hub/models--google--gemma-4-E2B-it/snapshots/b4a601102c3d45e2b7b50e2057a6d5ec8ed4adcf
+seed_phrase=the saffron sidecar remembers hexagon gullies at sunrise.
+max_new_tokens=32
+
+ASSERT mode=a status=PASS expected_prefix=5 metadata={"kv_direct_active": true, "n_archived_slots": 2, "prefix_forwards_observed": 5, "propagation_mode": "a", "selected_tier": ["hot"]}
+===== MODE a =====
+[2026-04-23T03:43:24Z] loading model (device=cuda) — first load is slow…
+Loading weights:   0%|                                    | 0/2011 [00:00<?, ?it/s]Loading weights:  17%|████▏                   | 348/2011 [00:00<00:00, 3456.40it/s]Loading weights:  37%|████████▊               | 740/2011 [00:00<00:00, 3728.04it/s]Loading weights: 100%|███████████████████████| 2011/2011 [00:00<00:00, 9276.13it/s]
+[2026-04-23T03:43:31Z] model loaded in 7.5s
+[2026-04-23T03:43:31Z] store is empty at /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg/checkpoints — no retriever yet
+[2026-04-23T03:43:31Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-23T03:43:31Z] new session started · session_id=8b1ea21593184fef94bcbd46b1125f98
+
+===== STORE STATS ======================================================
+  store_root       : /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg
+  sessions indexed : 0
+  total_windows    : 0
+  total_tokens     : 0
+  current_session  : session_id=8b1ea21593184fef94bcbd46b1125f98  turns=0
+========================================================================
+
+════════════════════════════════════════════════════════════════════════
+ interactive memory chat ready. type /help for commands.
+════════════════════════════════════════════════════════════════════════
+
+you> Reply with exactly this sentence and nothing else, with no quotation marks: the saffron sidecar remembers hexagon gullies at sunrise.
+gemma> the saffron sidecar remembers hexagon gullies at sunrise
+  [plain turn] no retrieval · generated 10 tok in 1.39s
+you> /save
+[2026-04-23T03:43:35Z] saving session 8b1ea21593184fef94bcbd46b1125f98 · 2 turns
+[2026-04-23T03:43:35Z]   transcript -> /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg/transcripts/8b1ea21593184fef94bcbd46b1125f98.json
+[2026-04-23T03:43:35Z]   AUS3000 clauses -> 2 record(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg/inputs/8b1ea21593184fef94bcbd46b1125f98
+[2026-04-23T03:43:35Z]   live index flushed in 0.05s
+[2026-04-23T03:43:35Z]   save-state -> /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg/checkpoints/8b1ea21593184fef94bcbd46b1125f98/save-state.json
+[2026-04-23T03:43:35Z] found 1 checkpoint(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg/checkpoints — building retriever
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|                                    | 0/2011 [00:00<?, ?it/s]Loading weights:  17%|████▏                   | 350/2011 [00:00<00:00, 3495.28it/s]Loading weights:  36%|████████▋               | 732/2011 [00:00<00:00, 3619.91it/s]Loading weights: 100%|███████████████████████| 2011/2011 [00:00<00:00, 9015.91it/s]
+[2026-04-23T03:43:40Z] retriever ready: 1 session(s) indexed · crystal_layer=13 · loaded in 5.0s
+you> /new
+[2026-04-23T03:43:41Z] saving session 8b1ea21593184fef94bcbd46b1125f98 · 2 turns
+[2026-04-23T03:43:41Z]   transcript -> /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg/transcripts/8b1ea21593184fef94bcbd46b1125f98.json
+[2026-04-23T03:43:41Z]   AUS3000 clauses -> 2 record(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg/inputs/8b1ea21593184fef94bcbd46b1125f98
+[2026-04-23T03:43:41Z]   no live indexer to flush (session had no streamed windows)
+[2026-04-23T03:43:41Z]   live index flushed in 0.00s
+[2026-04-23T03:43:41Z]   save-state -> /tmp/kvd_modes_smoke.Z3CYV5/store_a.kPvrSg/checkpoints/8b1ea21593184fef94bcbd46b1125f98/save-state.json
+[2026-04-23T03:43:41Z]   retriever refreshed in 0.00s (+0 handle(s))
+[2026-04-23T03:43:41Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-23T03:43:41Z] new session started · session_id=109b1ddecb634851a920ebd2676db637
+[2026-04-23T03:43:41Z] fresh session started — try asking about prior sessions.
+you> /kv_query the saffron sidecar remembers hexagon gullies at sunrise.
+KVD_SMOKE_METADATA={"kv_direct_active": true, "n_archived_slots": 2, "prefix_forwards_observed": 5, "propagation_mode": "a", "selected_tier": ["hot"]}
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 8b1ea21593184fef94bcbd46b1125f98
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : 
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 19705
+    vram_delta_mib       : 85
+    no_silent_fallback   : True
+  timing (s)      : retrieve=1.07  generate=0.00  total=1.07
+  tokens          : prompt=71  generated=25
+========================================================================
+kv_direct> That sounds like a very evocative and poetic phrase. Is there anything specific you'd like to know or discuss about it?
+
+you> 
+ASSERT mode=b status=PASS expected_prefix=5 metadata={"kv_direct_active": true, "n_archived_slots": 2, "prefix_forwards_observed": 5, "propagation_mode": "b", "selected_tier": ["hot"]}
+===== MODE b =====
+[2026-04-23T03:43:45Z] loading model (device=cuda) — first load is slow…
+Loading weights:   0%|                                    | 0/2011 [00:00<?, ?it/s]Loading weights:  29%|██████▉                 | 582/2011 [00:00<00:00, 5812.76it/s]Loading weights:  58%|█████████████▎         | 1164/2011 [00:00<00:00, 5052.26it/s]Loading weights: 100%|███████████████████████| 2011/2011 [00:00<00:00, 8478.12it/s]
+[2026-04-23T03:43:52Z] model loaded in 7.2s
+[2026-04-23T03:43:52Z] store is empty at /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI/checkpoints — no retriever yet
+[2026-04-23T03:43:52Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-23T03:43:52Z] new session started · session_id=4bd7a57323e644c8a2bb99daaad24272
+
+===== STORE STATS ======================================================
+  store_root       : /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI
+  sessions indexed : 0
+  total_windows    : 0
+  total_tokens     : 0
+  current_session  : session_id=4bd7a57323e644c8a2bb99daaad24272  turns=0
+========================================================================
+
+════════════════════════════════════════════════════════════════════════
+ interactive memory chat ready. type /help for commands.
+════════════════════════════════════════════════════════════════════════
+
+you> Reply with exactly this sentence and nothing else, with no quotation marks: the saffron sidecar remembers hexagon gullies at sunrise.
+gemma> the saffron sidecar remembers hexagon gullies at sunrise
+  [plain turn] no retrieval · generated 10 tok in 1.28s
+you> /save
+[2026-04-23T03:43:56Z] saving session 4bd7a57323e644c8a2bb99daaad24272 · 2 turns
+[2026-04-23T03:43:56Z]   transcript -> /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI/transcripts/4bd7a57323e644c8a2bb99daaad24272.json
+[2026-04-23T03:43:56Z]   AUS3000 clauses -> 2 record(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI/inputs/4bd7a57323e644c8a2bb99daaad24272
+[2026-04-23T03:43:56Z]   live index flushed in 0.05s
+[2026-04-23T03:43:56Z]   save-state -> /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI/checkpoints/4bd7a57323e644c8a2bb99daaad24272/save-state.json
+[2026-04-23T03:43:56Z] found 1 checkpoint(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI/checkpoints — building retriever
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|                                    | 0/2011 [00:00<?, ?it/s]Loading weights:  25%|██████                  | 511/2011 [00:00<00:00, 5105.51it/s]Loading weights:  51%|███████████▋           | 1022/2011 [00:00<00:00, 4532.59it/s]Loading weights: 100%|███████████████████████| 2011/2011 [00:00<00:00, 6334.18it/s]
+[2026-04-23T03:44:01Z] retriever ready: 1 session(s) indexed · crystal_layer=13 · loaded in 5.1s
+you> /new
+[2026-04-23T03:44:02Z] saving session 4bd7a57323e644c8a2bb99daaad24272 · 2 turns
+[2026-04-23T03:44:02Z]   transcript -> /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI/transcripts/4bd7a57323e644c8a2bb99daaad24272.json
+[2026-04-23T03:44:02Z]   AUS3000 clauses -> 2 record(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI/inputs/4bd7a57323e644c8a2bb99daaad24272
+[2026-04-23T03:44:02Z]   no live indexer to flush (session had no streamed windows)
+[2026-04-23T03:44:02Z]   live index flushed in 0.00s
+[2026-04-23T03:44:02Z]   save-state -> /tmp/kvd_modes_smoke.Z3CYV5/store_b.EYW1tI/checkpoints/4bd7a57323e644c8a2bb99daaad24272/save-state.json
+[2026-04-23T03:44:02Z]   retriever refreshed in 0.00s (+0 handle(s))
+[2026-04-23T03:44:02Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-23T03:44:02Z] new session started · session_id=58be28721da9418898928021484d4b5f
+[2026-04-23T03:44:02Z] fresh session started — try asking about prior sessions.
+you> /kv_query the saffron sidecar remembers hexagon gullies at sunrise.
+KVD_SMOKE_METADATA={"kv_direct_active": true, "n_archived_slots": 2, "prefix_forwards_observed": 5, "propagation_mode": "b", "selected_tier": ["hot"]}
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 4bd7a57323e644c8a2bb99daaad24272
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : 
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 19705
+    vram_delta_mib       : 85
+    no_silent_fallback   : True
+  timing (s)      : retrieve=1.71  generate=0.00  total=1.71
+  tokens          : prompt=71  generated=25
+========================================================================
+kv_direct> That sounds like a very evocative and poetic phrase. Is there anything specific you'd like to know or discuss about it?
+
+you> 
+ASSERT mode=ab status=PASS expected_prefix=5 metadata={"kv_direct_active": true, "n_archived_slots": 2, "prefix_forwards_observed": 5, "propagation_mode": "ab", "selected_tier": ["hot"]}
+===== MODE ab =====
+[2026-04-23T03:44:07Z] loading model (device=cuda) — first load is slow…
+Loading weights:   0%|                                    | 0/2011 [00:00<?, ?it/s]Loading weights:  24%|█████▊                  | 489/2011 [00:00<00:00, 4874.11it/s]Loading weights:  49%|███████████▋            | 977/2011 [00:00<00:00, 3290.25it/s]Loading weights: 100%|███████████████████████| 2011/2011 [00:00<00:00, 6429.47it/s]
+[2026-04-23T03:44:14Z] model loaded in 7.3s
+[2026-04-23T03:44:14Z] store is empty at /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg/checkpoints — no retriever yet
+[2026-04-23T03:44:14Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-23T03:44:14Z] new session started · session_id=8f1a4334d0534df28801ea7c05bf418d
+
+===== STORE STATS ======================================================
+  store_root       : /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg
+  sessions indexed : 0
+  total_windows    : 0
+  total_tokens     : 0
+  current_session  : session_id=8f1a4334d0534df28801ea7c05bf418d  turns=0
+========================================================================
+
+════════════════════════════════════════════════════════════════════════
+ interactive memory chat ready. type /help for commands.
+════════════════════════════════════════════════════════════════════════
+
+you> Reply with exactly this sentence and nothing else, with no quotation marks: the saffron sidecar remembers hexagon gullies at sunrise.
+gemma> the saffron sidecar remembers hexagon gullies at sunrise
+  [plain turn] no retrieval · generated 10 tok in 1.33s
+you> /save
+[2026-04-23T03:44:18Z] saving session 8f1a4334d0534df28801ea7c05bf418d · 2 turns
+[2026-04-23T03:44:18Z]   transcript -> /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg/transcripts/8f1a4334d0534df28801ea7c05bf418d.json
+[2026-04-23T03:44:18Z]   AUS3000 clauses -> 2 record(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg/inputs/8f1a4334d0534df28801ea7c05bf418d
+[2026-04-23T03:44:18Z]   live index flushed in 0.03s
+[2026-04-23T03:44:18Z]   save-state -> /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg/checkpoints/8f1a4334d0534df28801ea7c05bf418d/save-state.json
+[2026-04-23T03:44:18Z] found 1 checkpoint(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg/checkpoints — building retriever
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|                                    | 0/2011 [00:00<?, ?it/s]Loading weights:  22%|█████▏                  | 436/2011 [00:00<00:00, 4359.02it/s]Loading weights:  43%|██████████▍             | 872/2011 [00:00<00:00, 3963.44it/s]Loading weights: 100%|███████████████████████| 2011/2011 [00:00<00:00, 7284.78it/s]
+[2026-04-23T03:44:23Z] retriever ready: 1 session(s) indexed · crystal_layer=13 · loaded in 5.1s
+you> /new
+[2026-04-23T03:44:24Z] saving session 8f1a4334d0534df28801ea7c05bf418d · 2 turns
+[2026-04-23T03:44:24Z]   transcript -> /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg/transcripts/8f1a4334d0534df28801ea7c05bf418d.json
+[2026-04-23T03:44:24Z]   AUS3000 clauses -> 2 record(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg/inputs/8f1a4334d0534df28801ea7c05bf418d
+[2026-04-23T03:44:24Z]   no live indexer to flush (session had no streamed windows)
+[2026-04-23T03:44:24Z]   live index flushed in 0.00s
+[2026-04-23T03:44:24Z]   save-state -> /tmp/kvd_modes_smoke.Z3CYV5/store_ab.53XxDg/checkpoints/8f1a4334d0534df28801ea7c05bf418d/save-state.json
+[2026-04-23T03:44:24Z]   retriever refreshed in 0.00s (+0 handle(s))
+[2026-04-23T03:44:24Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-23T03:44:24Z] new session started · session_id=d7261c6fee674575ababa4c0348ba72a
+[2026-04-23T03:44:24Z] fresh session started — try asking about prior sessions.
+you> /kv_query the saffron sidecar remembers hexagon gullies at sunrise.
+KVD_SMOKE_METADATA={"kv_direct_active": true, "n_archived_slots": 2, "prefix_forwards_observed": 5, "propagation_mode": "ab", "selected_tier": ["hot"]}
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 8f1a4334d0534df28801ea7c05bf418d
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : 
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 19705
+    vram_delta_mib       : 85
+    no_silent_fallback   : True
+  timing (s)      : retrieve=1.26  generate=0.00  total=1.26
+  tokens          : prompt=71  generated=25
+========================================================================
+kv_direct> That sounds like a very evocative and poetic phrase. Is there anything specific you'd like to know or discuss about it?
+
+you> 
+ASSERT mode=none status=PASS expected_prefix=1 metadata={"kv_direct_active": true, "n_archived_slots": 2, "prefix_forwards_observed": 1, "propagation_mode": "none", "selected_tier": ["hot"]}
+===== MODE none =====
+[2026-04-23T03:44:28Z] loading model (device=cuda) — first load is slow…
+Loading weights:   0%|                                    | 0/2011 [00:00<?, ?it/s]Loading weights:  38%|█████████               | 755/2011 [00:00<00:00, 7515.94it/s]Loading weights: 100%|██████████████████████| 2011/2011 [00:00<00:00, 12421.15it/s]
+[2026-04-23T03:44:36Z] model loaded in 7.4s
+[2026-04-23T03:44:36Z] store is empty at /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl/checkpoints — no retriever yet
+[2026-04-23T03:44:36Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-23T03:44:36Z] new session started · session_id=3e7de061d5514c76b39de44c532b2d70
+
+===== STORE STATS ======================================================
+  store_root       : /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl
+  sessions indexed : 0
+  total_windows    : 0
+  total_tokens     : 0
+  current_session  : session_id=3e7de061d5514c76b39de44c532b2d70  turns=0
+========================================================================
+
+════════════════════════════════════════════════════════════════════════
+ interactive memory chat ready. type /help for commands.
+════════════════════════════════════════════════════════════════════════
+
+you> Reply with exactly this sentence and nothing else, with no quotation marks: the saffron sidecar remembers hexagon gullies at sunrise.
+gemma> the saffron sidecar remembers hexagon gullies at sunrise
+  [plain turn] no retrieval · generated 10 tok in 1.53s
+you> /save
+[2026-04-23T03:44:39Z] saving session 3e7de061d5514c76b39de44c532b2d70 · 2 turns
+[2026-04-23T03:44:39Z]   transcript -> /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl/transcripts/3e7de061d5514c76b39de44c532b2d70.json
+[2026-04-23T03:44:39Z]   AUS3000 clauses -> 2 record(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl/inputs/3e7de061d5514c76b39de44c532b2d70
+[2026-04-23T03:44:39Z]   live index flushed in 0.01s
+[2026-04-23T03:44:39Z]   save-state -> /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl/checkpoints/3e7de061d5514c76b39de44c532b2d70/save-state.json
+[2026-04-23T03:44:39Z] found 1 checkpoint(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl/checkpoints — building retriever
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|                                    | 0/2011 [00:00<?, ?it/s]Loading weights:  16%|███▊                    | 323/2011 [00:00<00:00, 3091.99it/s]Loading weights: 100%|██████████████████████| 2011/2011 [00:00<00:00, 10025.25it/s]
+[2026-04-23T03:44:44Z] retriever ready: 1 session(s) indexed · crystal_layer=13 · loaded in 4.5s
+you> /new
+[2026-04-23T03:44:45Z] saving session 3e7de061d5514c76b39de44c532b2d70 · 2 turns
+[2026-04-23T03:44:45Z]   transcript -> /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl/transcripts/3e7de061d5514c76b39de44c532b2d70.json
+[2026-04-23T03:44:45Z]   AUS3000 clauses -> 2 record(s) under /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl/inputs/3e7de061d5514c76b39de44c532b2d70
+[2026-04-23T03:44:45Z]   no live indexer to flush (session had no streamed windows)
+[2026-04-23T03:44:45Z]   live index flushed in 0.00s
+[2026-04-23T03:44:45Z]   save-state -> /tmp/kvd_modes_smoke.Z3CYV5/store_none.tysGxl/checkpoints/3e7de061d5514c76b39de44c532b2d70/save-state.json
+[2026-04-23T03:44:45Z]   retriever refreshed in 0.00s (+0 handle(s))
+[2026-04-23T03:44:45Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-23T03:44:45Z] new session started · session_id=4893cbe0638141f1b0be1042d0559bf0
+[2026-04-23T03:44:45Z] fresh session started — try asking about prior sessions.
+you> /kv_query the saffron sidecar remembers hexagon gullies at sunrise.
+KVD_SMOKE_METADATA={"kv_direct_active": true, "n_archived_slots": 2, "prefix_forwards_observed": 1, "propagation_mode": "none", "selected_tier": ["hot"]}
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 3e7de061d5514c76b39de44c532b2d70
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : 
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 19705
+    vram_delta_mib       : 85
+    no_silent_fallback   : True
+  timing (s)      : retrieve=0.97  generate=0.00  total=0.97
+  tokens          : prompt=71  generated=25
+========================================================================
+kv_direct> That sounds like a very evocative and poetic phrase. Is there anything specific you'd like to know or discuss about it?
+
+you> 
+SUMMARY
+mode=a propagation_mode=a prefix_forwards_observed=5
+mode=b propagation_mode=b prefix_forwards_observed=5
+mode=ab propagation_mode=ab prefix_forwards_observed=5
+mode=none propagation_mode=none prefix_forwards_observed=1
