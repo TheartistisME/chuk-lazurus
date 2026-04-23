@@ -291,12 +291,30 @@ class GatheredResiduals:
         (``<checkpoint_dir>/boundaries/window_NNN.npy``). ORCH decision 4:
         provenance is rooted at the live checkpoint lineage, never at any
         torch_store-internal copy.
+    per_window_role:
+        Mapping from ``window_id`` to the author role recorded in
+        ``window_metadata``. Values are normalised to ``"user"``,
+        ``"assistant"``, or ``"unknown"``.
+    per_window_turn_index:
+        Mapping from ``window_id`` to the source turn index recorded in
+        ``window_metadata``. Missing / invalid values are recorded as ``-1``
+        (grammar-of-absence; do not fabricate).
+    per_window_source_positions:
+        Optional mapping from ``window_id`` to the originating-session
+        absolute token position (midpoint of ``start_token_offset`` and
+        ``end_token_offset`` from the store's ``window_metadata``). Present
+        iff every selected window carries both offsets; otherwise ``None``
+        so callers can degrade the ``"preserve"`` RoPE position strategy to
+        ``"monotonic"`` without re-reading the store.
     """
 
     per_window_residuals: dict[int, Any]
     per_window_token_ranges: dict[int, tuple[int, int]]
     source_layer: int
     archive_provenance: dict[int, str]
+    per_window_role: dict[int, str] = field(default_factory=dict)
+    per_window_turn_index: dict[int, int] = field(default_factory=dict)
+    per_window_source_positions: dict[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -322,6 +340,12 @@ class KVDirectMaterialization:
         Snapshot of :class:`PathAReplayGuard`'s fire counter taken AFTER
         the materialization projection. Always ``0`` in conformance — any
         non-zero value means the guard raised before returning.
+    per_window_role:
+        Materialized-window role metadata forwarded from
+        :class:`GatheredResiduals`, after any HOT/WARM budget truncation.
+    per_window_turn_index:
+        Materialized-window turn-index metadata forwarded from
+        :class:`GatheredResiduals`, after any HOT/WARM budget truncation.
     """
 
     K: Any
@@ -329,6 +353,8 @@ class KVDirectMaterialization:
     materialization_mode: str
     hot_budget_mib_observed: int
     path_a_replay_count: int
+    per_window_role: dict[int, str] = field(default_factory=dict)
+    per_window_turn_index: dict[int, int] = field(default_factory=dict)
 
 
 class PathAReplayGuard:
@@ -418,6 +444,29 @@ def _resolve_default_layers(model: Any) -> list[Any]:
     raise RuntimeError("Cannot resolve transformer layer stack on model.")
 
 
+def _extract_window_role_and_turn_index(window_meta: Any) -> tuple[str, int]:
+    """Return ``(role, turn_index)`` with grammar-of-absence defaults."""
+    role = "unknown"
+    turn_index = -1
+    if not isinstance(window_meta, dict):
+        return role, turn_index
+
+    raw_role = window_meta.get("role", window_meta.get("speaker_role"))
+    if isinstance(raw_role, str):
+        normalized_role = raw_role.strip().lower()
+        if normalized_role in {"user", "assistant"}:
+            role = normalized_role
+
+    raw_turn_index = window_meta.get("turn_index")
+    if raw_turn_index is not None and not isinstance(raw_turn_index, bool):
+        try:
+            turn_index = int(raw_turn_index)
+        except (TypeError, ValueError):
+            turn_index = -1
+
+    return role, turn_index
+
+
 def gather_selected_residuals(
     tier_assignments: Any,
     *,
@@ -481,6 +530,11 @@ def gather_selected_residuals(
     per_window_residuals: dict[int, Any] = {}
     per_window_token_ranges: dict[int, tuple[int, int]] = {}
     archive_provenance: dict[int, str] = {}
+    per_window_role: dict[int, str] = {}
+    per_window_turn_index: dict[int, int] = {}
+    per_window_source_positions: dict[int, int] = {}
+    any_window_missing_metadata = False
+    window_metadata = getattr(store, "window_metadata", None) or {}
     slot = 0
     for assignment in tier_assignments:
         if assignment.tier not in include_set:
@@ -494,6 +548,21 @@ def gather_selected_residuals(
                 checkpoint_handle.checkpoint_dir / "boundaries" / f"window_{wid:03d}.npy"
             ).as_posix()
         )
+        meta_entry = window_metadata.get(wid)
+        if meta_entry is None:
+            meta_entry = window_metadata.get(str(wid))
+        role, turn_index = _extract_window_role_and_turn_index(meta_entry)
+        per_window_role[wid] = role
+        per_window_turn_index[wid] = turn_index
+        start_off = None
+        end_off = None
+        if isinstance(meta_entry, dict):
+            start_off = meta_entry.get("start_token_offset")
+            end_off = meta_entry.get("end_token_offset")
+        if start_off is None or end_off is None:
+            any_window_missing_metadata = True
+        else:
+            per_window_source_positions[wid] = int((int(start_off) + int(end_off)) // 2)
         slot += 1
 
     return GatheredResiduals(
@@ -501,6 +570,12 @@ def gather_selected_residuals(
         per_window_token_ranges=per_window_token_ranges,
         source_layer=int(source_layer),
         archive_provenance=archive_provenance,
+        per_window_role=per_window_role,
+        per_window_turn_index=per_window_turn_index,
+        per_window_source_positions=(
+            None if any_window_missing_metadata or not per_window_source_positions
+            else per_window_source_positions
+        ),
     )
 
 
@@ -685,14 +760,116 @@ def materialize_kv_direct(
         materialization_mode="project_through_W_K_W_V_at_injection_layer",
         hot_budget_mib_observed=observed_mib,
         path_a_replay_count=int(guard.count),
+        per_window_role={
+            int(wid): str(residuals.per_window_role.get(wid, "unknown"))
+            for wid in ordered_wids
+        },
+        per_window_turn_index={
+            int(wid): int(residuals.per_window_turn_index.get(wid, -1))
+            for wid in ordered_wids
+        },
+    )
+
+
+KV_POSITION_STRATEGIES: tuple[str, ...] = (
+    "zero",
+    "negative",
+    "monotonic",
+    "preserve",
+    "stretched",
+)
+
+
+def build_archived_positions(
+    n: int,
+    strategy: str,
+    source_positions: Any = None,
+    stride: int = 128,
+    *,
+    device: Any = None,
+) -> Any:
+    """Build a 1-D ``torch.int64`` tensor of RoPE positions for ``n`` archived slots.
+
+    Parameters
+    ----------
+    n:
+        Number of archived slots (``N`` axis of the materialized K/V).
+    strategy:
+        One of ``KV_POSITION_STRATEGIES``:
+
+        * ``"zero"`` — all slots at position 0 (legacy, position-less archived K).
+        * ``"negative"`` — slots at ``-N, -(N-1), ..., -1``. Explicit "past".
+        * ``"monotonic"`` — slots at ``0, 1, ..., N-1``.
+        * ``"preserve"`` — each slot at its caller-supplied source position.
+          Requires ``source_positions`` with at least ``n`` entries; caller
+          is responsible for deciding fallback to ``"monotonic"`` if any
+          per-window metadata was missing.
+        * ``"stretched"`` — slots at ``0, stride, 2*stride, ..., (n-1)*stride``.
+    source_positions:
+        Sequence of ``n`` integer positions for the ``"preserve"`` strategy.
+        Ignored for every other strategy. Indexed in slot order.
+    stride:
+        Per-slot stride for the ``"stretched"`` strategy. Ignored otherwise.
+    device:
+        Optional target device for the returned tensor. If ``None``, the
+        tensor is left on CPU — the caller is responsible for moving it.
+
+    Returns
+    -------
+    torch.Tensor
+        1-D ``torch.int64`` tensor of shape ``(n,)``.
+    """
+    import torch
+
+    if int(n) <= 0:
+        raise ValueError(f"build_archived_positions: n must be positive, got {n!r}")
+    if strategy not in KV_POSITION_STRATEGIES:
+        raise ValueError(
+            "build_archived_positions: strategy must be one of "
+            f"{KV_POSITION_STRATEGIES}; got {strategy!r}"
+        )
+
+    kwargs: dict[str, Any] = {"dtype": torch.int64}
+    if device is not None:
+        kwargs["device"] = device
+
+    if strategy == "zero":
+        return torch.zeros(int(n), **kwargs)
+    if strategy == "monotonic":
+        return torch.arange(int(n), **kwargs)
+    if strategy == "negative":
+        # -N, -(N-1), ..., -1 — preserves ordering among slots and
+        # extrapolates to negative RoPE positions.
+        return torch.arange(-int(n), 0, **kwargs)
+    if strategy == "stretched":
+        stride_i = int(stride)
+        return torch.arange(0, int(n) * stride_i, stride_i, **kwargs)[: int(n)]
+    # strategy == "preserve"
+    if source_positions is None:
+        raise ValueError(
+            "build_archived_positions: strategy='preserve' requires "
+            "source_positions; caller must fall back to 'monotonic' when "
+            "metadata is missing."
+        )
+    positions_list = list(source_positions)
+    if len(positions_list) < int(n):
+        raise ValueError(
+            "build_archived_positions: source_positions has fewer entries "
+            f"({len(positions_list)}) than required slots ({int(n)})."
+        )
+    return torch.tensor(
+        [int(positions_list[i]) for i in range(int(n))],
+        **kwargs,
     )
 
 
 __all__ = [
     "GatheredResiduals",
     "KVDirectMaterialization",
+    "KV_POSITION_STRATEGIES",
     "PathAReplayGuard",
     "ResidualBoundedState",
+    "build_archived_positions",
     "estimate_kv_bytes_per_token",
     "gather_selected_residuals",
     "install_boundary_residual_capture_hook",

@@ -365,6 +365,7 @@ class _StubTorchKnowledgeStore:
         )
         self._hidden = int(hidden)
         self._seed = int(seed)
+        self.window_metadata: dict[int, dict[str, object]] = {}
 
     def load_boundary(self, window_id: int, *, device: str = "cuda") -> torch.Tensor:
         # Deterministic per-window tensor so eviction tests can verify which
@@ -411,6 +412,9 @@ class TestAxis5GatherAndMaterialize:
             "per_window_token_ranges",
             "source_layer",
             "archive_provenance",
+            "per_window_role",
+            "per_window_turn_index",
+            "per_window_source_positions",
         }
         with pytest.raises(dataclasses.FrozenInstanceError):
             residuals.source_layer = 99  # type: ignore[misc]
@@ -430,6 +434,8 @@ class TestAxis5GatherAndMaterialize:
             "materialization_mode",
             "hot_budget_mib_observed",
             "path_a_replay_count",
+            "per_window_role",
+            "per_window_turn_index",
         }
         with pytest.raises(dataclasses.FrozenInstanceError):
             mat.path_a_replay_count = 99  # type: ignore[misc]
@@ -480,6 +486,9 @@ class TestAxis5GatherAndMaterialize:
         # Archive provenance is rooted at the live checkpoint dir.
         assert result.archive_provenance[0].endswith("boundaries/window_000.npy")
         assert result.archive_provenance[1].endswith("boundaries/window_001.npy")
+        # Missing metadata defaults to grammar-of-absence values.
+        assert result.per_window_role == {0: "unknown", 1: "unknown"}
+        assert result.per_window_turn_index == {0: -1, 1: -1}
         # Every residual is on CUDA.
         for tensor in result.per_window_residuals.values():
             assert tensor.device.type == "cuda"

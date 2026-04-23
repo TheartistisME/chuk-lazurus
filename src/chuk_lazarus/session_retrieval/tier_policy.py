@@ -146,6 +146,8 @@ def _candidate_to_dict(candidate: AsiRouterCandidate) -> dict[str, Any]:
         "island_id": int(candidate.island_id),
         "visit_count": int(candidate.visit_count),
         "mean_reward": float(candidate.mean_reward),
+        "role": str(candidate.role),
+        "turn_index": int(candidate.turn_index),
         "handle": _handle_to_dict(candidate.handle),
     }
 
@@ -165,6 +167,8 @@ def _candidate_from_dict(data: dict[str, Any]) -> AsiRouterCandidate:
         island_id=int(data["island_id"]),
         visit_count=int(data["visit_count"]),
         mean_reward=float(data["mean_reward"]),
+        role=str(data.get("role", "unknown")),
+        turn_index=int(data.get("turn_index", -1)),
     )
 
 

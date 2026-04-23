@@ -752,6 +752,53 @@ class MemoryChat:
                     "no tier assignments owned by top-ranked candidate's handle"
                 )
 
+            # ── KV-DIRECT INSPECTION BLOCK ────────────────────────────────
+            # Print the actual text + scores behind each HOT/WARM/COLD
+            # label so the user can see WHAT was picked, not just rank
+            # counts. Opt-out via LAZARUS_KV_QUIET=1.
+            if not os.environ.get("LAZARUS_KV_QUIET"):
+                try:
+                    from chuk_lazarus.session_retrieval.enumeration import load_store
+                    _store_for_top = load_store(top_handle)
+                    _tokenizer_for_windows = self.retriever.tokenizer
+                    section("KV-DIRECT TIER SELECTION (archived windows fed to attention)")
+                    print(f"  candidate_pool={candidate_pool}  K_HOT={k_hot}  K_WARM={k_warm}")
+                    print(f"  source_session={top_handle.session_id[:8]}…  "
+                          f"total_candidates={len(tier_assignments)}  "
+                          f"same_session={len(assignments_for_handle)}")
+                    print(rule("─"))
+                    for ta in assignments_for_handle:
+                        wid = int(ta.candidate.window_id)
+                        tier = ta.tier.value.upper()
+                        role = str(getattr(ta.candidate, "role", "unknown"))
+                        turn_index = int(getattr(ta.candidate, "turn_index", -1))
+                        raw_s = float(ta.candidate.raw_router_score)
+                        ucb = float(ta.candidate.ucb1_score)
+                        ucb_str = (
+                            "+inf" if ucb == float("inf") else f"{ucb:7.4f}"
+                        )
+                        try:
+                            text = _store_for_top.get_window_text(
+                                wid, _tokenizer_for_windows
+                            ) or ""
+                        except Exception as exc:  # noqa: BLE001
+                            text = f"<text-load-failed: {exc!r}>"
+                        tier_tag = (
+                            "\033[91mHOT \033[0m" if tier == "HOT"
+                            else "\033[93mWARM\033[0m" if tier == "WARM"
+                            else "\033[94mCOLD\033[0m"
+                        )
+                        preview = truncate(text.replace("\n", " ↵ "), 200)
+                        print(
+                            f"  rank={ta.rank:2d} {tier_tag} wid={wid:3d} "
+                            f"role={role:<9} turn={turn_index:3d}  "
+                            f"raw_score={raw_s:6.3f}  ucb={ucb_str}"
+                        )
+                        print(f"       └─ \"{preview}\"")
+                    print("=" * HEADER_W)
+                except Exception as exc:  # noqa: BLE001
+                    info(f"  tier-inspection print failed (non-fatal): {exc!r}")
+
             warm_config = WarmPenaltyConfig()
             gen_config = GenerationConfig(
                 max_new_tokens=int(self.max_new_tokens),
