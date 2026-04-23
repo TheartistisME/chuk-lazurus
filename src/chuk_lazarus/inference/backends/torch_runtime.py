@@ -9,7 +9,7 @@ import json
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from chuk_lazarus.session_retrieval.tier_policy import TierLabel
 
@@ -1845,10 +1845,9 @@ class TorchInferenceRuntime(InferenceRuntime):
         * Fresh K/V follow the normal path: ``k_proj`` → ``k_norm`` →
           rotary → transpose → cache update.
         * Archived K/V are aligned with fresh by applying ``k_norm`` /
-          ``v_norm`` before concat but NOT rotary. This matches the
-          research methodology: archived residuals are position-less,
-          Markov-sufficient summaries. Their attention weight is
-          determined by content (W_K·R projection), not position.
+          ``v_norm`` before concat. Archived keys then receive a
+          position-0 rotary transform so the injected prefix re-enters
+          the same rotary domain the live layer expects.
         * Combined K/V is written to ``shared_kv_states`` when
           ``store_full_length_kv`` is set, so downstream shared layers
           see the prefix too.
@@ -1881,8 +1880,9 @@ class TorchInferenceRuntime(InferenceRuntime):
             ak = archived_K_raw.to(device=key_states.device, dtype=key_states.dtype)
             av = archived_V_raw.to(device=value_states.device, dtype=value_states.dtype)
 
-            # The archived K/V were materialized through the source full-attention
-            # layer, so shared followers must normalize them into that same domain.
+            # The archived K/V were materialized through the source attention
+            # layer, so each consumer re-enters that layer's normalized /
+            # rotary domain before concat.
             ak = prefix_attn_module.k_norm(ak.transpose(1, 2))  # (1, N, Hkv, hd)
             av = prefix_attn_module.v_norm(av.transpose(1, 2))  # (1, N, Hkv, hd)
 
@@ -1893,6 +1893,24 @@ class TorchInferenceRuntime(InferenceRuntime):
             ak = ak.transpose(1, 2)  # → (1, Hkv, N, hd)
             av = av.transpose(1, 2)  # V gets no rotary
             return ak, av
+
+        def _apply_selected_head_prefix_mask(prefix_slice):
+            selected_head_indices = propagation_state.get("selected_head_indices", ())
+            if not selected_head_indices:
+                return prefix_slice
+
+            num_heads = int(prefix_slice.shape[1])
+            selected_mask = torch.zeros(num_heads, dtype=torch.bool, device=prefix_slice.device)
+            selected_mask[list(selected_head_indices)] = True
+            if bool(selected_mask.all()):
+                return prefix_slice
+
+            blocked_prefix = torch.full_like(prefix_slice, torch.finfo(prefix_slice.dtype).min)
+            return torch.where(
+                selected_mask.view(1, num_heads, 1, 1),
+                prefix_slice,
+                blocked_prefix,
+            )
 
         def _pad_attention_mask_for_prefix(attention_mask, fresh_kv_len: int, prefix_len: int):
             if attention_mask is None or prefix_len <= 0 or attention_mask.ndim != 4:
@@ -1927,8 +1945,9 @@ class TorchInferenceRuntime(InferenceRuntime):
             is_target_layer = module_layer_idx == int(
                 propagation_state.get("target_layer_idx", -1)
             )
-            is_shared_follower = module_layer_idx in set(
-                propagation_state.get("shared_layer_indices", [])
+            is_shared_follower = module_layer_idx in propagation_state.get(
+                "shared_layer_indices_set",
+                frozenset(),
             )
 
             cos, sin = position_embeddings
@@ -1999,7 +2018,7 @@ class TorchInferenceRuntime(InferenceRuntime):
             if ak is not None and av is not None:
                 prefix_already_present = bool(
                     is_shared_follower
-                    and propagation_state.get("mode") in {"a", "ab"}
+                    and propagation_state.get("propagate_shared_prefix", False)
                     and int(key_states.shape[-2]) > int(fresh_kv_len)
                 )
                 if not prefix_already_present:
@@ -2011,7 +2030,7 @@ class TorchInferenceRuntime(InferenceRuntime):
                 fire_counter.setdefault("prefix_layers", set()).add(module_layer_idx)
 
             if shared_kv_states is not None and is_target_layer:
-                if propagation_state.get("mode") in {"a", "ab"} and prefix_present > 0:
+                if propagation_state.get("propagate_shared_prefix", False) and prefix_present > 0:
                     shared_kv_states[module_layer_idx] = (key_states, value_states)
                     fire_counter.setdefault("prefix_layers", set()).update(
                         propagation_state.get("full_attention_layer_indices", [])
@@ -2029,7 +2048,7 @@ class TorchInferenceRuntime(InferenceRuntime):
             attn_weights = torch.matmul(query_states, key_rep.transpose(2, 3)) * module_self.scaling
 
             selected_attention_mask = attention_mask
-            if propagation_state.get("mode") in {"a", "ab"} and (
+            if propagation_state.get("use_prefixed_full_attention_mask", False) and (
                 is_target_layer or is_shared_follower
             ):
                 selected_attention_mask = propagation_state.get(
@@ -2046,13 +2065,18 @@ class TorchInferenceRuntime(InferenceRuntime):
                 attn_weights = attn_weights + full_mask
 
             # Axis-4 tier mask over the [0, N) prefix portion.
-            if prefix_present > 0 and mask_inputs_local is not None:
+            if prefix_present > 0 and (
+                mask_inputs_local is not None
+                or propagation_state.get("selected_head_indices", ())
+            ):
                 prefix_slice = attn_weights[..., :prefix_present].contiguous()
-                masked_prefix = apply_tier_attention_mask(prefix_slice, mask_inputs_local)
+                if mask_inputs_local is not None:
+                    prefix_slice = apply_tier_attention_mask(prefix_slice, mask_inputs_local)
+                    fire_counter["mask_applied"] = fire_counter.get("mask_applied", 0) + 1
+                prefix_slice = _apply_selected_head_prefix_mask(prefix_slice)
                 attn_weights = torch.cat(
-                    [masked_prefix, attn_weights[..., prefix_present:]], dim=-1
+                    [prefix_slice, attn_weights[..., prefix_present:]], dim=-1
                 )
-                fire_counter["mask_applied"] = fire_counter.get("mask_applied", 0) + 1
 
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
                 query_states.dtype
@@ -2079,6 +2103,9 @@ class TorchInferenceRuntime(InferenceRuntime):
         source_layer: int,
         warm_scores: dict[int, float] | None = None,
         query_id: str | None = None,
+        insertion_family: Literal["full_attention", "sliding"] = "full_attention",
+        sliding_layer_indices: tuple[int, ...] | None = None,
+        sliding_head_indices: tuple[int, ...] | None = None,
     ) -> "KvDirectGenerationResult":
         """Generate using archived-residual K/V for context, NO archived-text replay.
 
@@ -2131,6 +2158,18 @@ class TorchInferenceRuntime(InferenceRuntime):
             per-window penalty scaling; not applied here.
         query_id:
             Optional opaque id echoed onto the result metadata.
+        insertion_family:
+            Runtime K/V insertion family. ``"full_attention"`` preserves
+            the existing Gemma-4 propagation path. ``"sliding"`` patches
+            only the explicitly selected sliding-attention layers and
+            gates the archived prefix to the selected heads.
+        sliding_layer_indices:
+            Explicit decoder-layer indices for the sliding-family path.
+            Ignored when ``insertion_family="full_attention"``.
+        sliding_head_indices:
+            Explicit attention-head indices allowed to see the archived
+            prefix on the sliding-family path. Ignored when
+            ``insertion_family="full_attention"``.
 
         Returns
         -------
@@ -2149,6 +2188,13 @@ class TorchInferenceRuntime(InferenceRuntime):
 
         torch = self._torch
         model = self._model
+        insertion_family = str(insertion_family).strip().lower()
+        if insertion_family not in {"full_attention", "sliding"}:
+            raise RuntimeError(
+                "generate_with_kv_direct_materialization: insertion_family "
+                "must be one of {'full_attention', 'sliding'}; "
+                f"got {insertion_family!r}."
+            )
         propagation_mode = str(
             _os.environ.get("LAZARUS_KV_PROPAGATION_MODE", "a")
         ).strip().lower()
@@ -2231,31 +2277,162 @@ class TorchInferenceRuntime(InferenceRuntime):
         def _resolve_self_attn(layer) -> Any | None:
             return getattr(layer, "self_attn", None) or getattr(layer, "attention", None)
 
+        def _normalize_index_tuple(
+            values: tuple[int, ...] | None,
+            *,
+            name: str,
+        ) -> tuple[int, ...] | None:
+            if values is None:
+                return None
+            normalized = tuple(dict.fromkeys(int(value) for value in values))
+            if not normalized:
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: "
+                    f"{name} cannot be empty when provided."
+                )
+            if any(value < 0 for value in normalized):
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: "
+                    f"{name} must contain only non-negative indices."
+                )
+            return normalized
+
         text_config = model.config.get_text_config() if hasattr(model.config, "get_text_config") else model.config
         layer_types = list(getattr(text_config, "layer_types", []))
-        target_layer_type = layer_types[target_idx] if target_idx < len(layer_types) else None
-        full_attention_layer_indices = [target_idx]
-        for layer_idx in range(target_idx + 1, len(layers)):
-            layer_self_attn = _resolve_self_attn(layers[layer_idx])
+        target_layer_type = (
+            getattr(target_self_attn, "layer_type", None)
+            or (layer_types[target_idx] if target_idx < len(layer_types) else None)
+        )
+
+        def _layer_type_for(layer_idx: int, layer_self_attn: Any | None = None) -> str | None:
             if layer_self_attn is None:
-                continue
-            same_layer_type = (
-                target_layer_type is not None
-                and layer_idx < len(layer_types)
-                and layer_types[layer_idx] == target_layer_type
+                layer_self_attn = _resolve_self_attn(layers[layer_idx])
+            layer_type = getattr(layer_self_attn, "layer_type", None)
+            if layer_type is not None:
+                return str(layer_type)
+            if layer_idx < len(layer_types):
+                return str(layer_types[layer_idx])
+            return None
+
+        def _is_sliding_layer(layer_idx: int, layer_self_attn: Any | None = None) -> bool:
+            if layer_self_attn is None:
+                layer_self_attn = _resolve_self_attn(layers[layer_idx])
+            if layer_self_attn is None:
+                return False
+            if bool(getattr(layer_self_attn, "is_sliding", False)):
+                return True
+            return _layer_type_for(layer_idx, layer_self_attn) == "sliding_attention"
+
+        full_attention_layer_indices: list[int] = []
+        patch_targets: list[Any] = []
+        selected_head_indices: tuple[int, ...] = ()
+        selected_layer_indices: tuple[int, ...] = ()
+        if insertion_family == "full_attention":
+            full_attention_layer_indices = [target_idx]
+            for layer_idx in range(target_idx + 1, len(layers)):
+                layer_self_attn = _resolve_self_attn(layers[layer_idx])
+                if layer_self_attn is None:
+                    continue
+                same_layer_type = _layer_type_for(layer_idx, layer_self_attn) == target_layer_type
+                shares_from_target = getattr(layer_self_attn, "kv_shared_layer_index", None) == target_idx
+                if same_layer_type or shares_from_target:
+                    full_attention_layer_indices.append(layer_idx)
+            full_attention_layer_indices = list(dict.fromkeys(full_attention_layer_indices))
+            full_attention_self_attn_modules = [
+                _resolve_self_attn(layers[layer_idx]) for layer_idx in full_attention_layer_indices
+            ]
+            full_attention_self_attn_modules = [
+                module for module in full_attention_self_attn_modules if module is not None
+            ]
+            patch_targets = (
+                full_attention_self_attn_modules
+                if propagation_mode in {"a", "b", "ab"}
+                else [target_self_attn]
             )
-            shares_from_target = getattr(layer_self_attn, "kv_shared_layer_index", None) == target_idx
-            if same_layer_type or shares_from_target:
-                full_attention_layer_indices.append(layer_idx)
-        full_attention_layer_indices = list(dict.fromkeys(full_attention_layer_indices))
-        full_attention_self_attn_modules = [
-            _resolve_self_attn(layers[layer_idx]) for layer_idx in full_attention_layer_indices
-        ]
-        full_attention_self_attn_modules = [
-            module for module in full_attention_self_attn_modules if module is not None
-        ]
+            selected_layer_indices = tuple(full_attention_layer_indices)
+            shared_layer_indices = full_attention_layer_indices[1:]
+        else:
+            if target_layer_type != "sliding_attention" and not bool(
+                getattr(target_self_attn, "is_sliding", False)
+            ):
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: insertion_family='sliding' "
+                    "requires source_layer+1 to resolve to a sliding-attention layer; "
+                    f"got layer {target_idx} type {target_layer_type!r}."
+                )
+
+            normalized_sliding_layer_indices = _normalize_index_tuple(
+                sliding_layer_indices,
+                name="sliding_layer_indices",
+            )
+            normalized_sliding_head_indices = _normalize_index_tuple(
+                sliding_head_indices,
+                name="sliding_head_indices",
+            )
+            if normalized_sliding_layer_indices is None or normalized_sliding_head_indices is None:
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: insertion_family='sliding' "
+                    "requires both sliding_layer_indices and sliding_head_indices."
+                )
+
+            q_proj = getattr(target_self_attn, "q_proj", None)
+            q_proj_out_features = getattr(q_proj, "out_features", None)
+            if q_proj_out_features is None:
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: target layer has no q_proj "
+                    "out_features to validate sliding_head_indices."
+                )
+            target_num_attention_heads = int(q_proj_out_features) // int(target_self_attn.head_dim)
+            invalid_head_indices = [
+                head_idx
+                for head_idx in normalized_sliding_head_indices
+                if head_idx >= target_num_attention_heads
+            ]
+            if invalid_head_indices:
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: sliding_head_indices "
+                    f"{tuple(invalid_head_indices)!r} out of range for {target_num_attention_heads} "
+                    "attention heads."
+                )
+
+            shared_layer_indices = []
+            for layer_idx in normalized_sliding_layer_indices:
+                if layer_idx >= len(layers):
+                    raise RuntimeError(
+                        "generate_with_kv_direct_materialization: sliding_layer_indices "
+                        f"contains out-of-range layer {layer_idx} for model with {len(layers)} layers."
+                    )
+                layer_self_attn = _resolve_self_attn(layers[layer_idx])
+                if layer_self_attn is None:
+                    raise RuntimeError(
+                        "generate_with_kv_direct_materialization: sliding layer "
+                        f"{layer_idx} has no .self_attn/.attention module to hook."
+                    )
+                if not _is_sliding_layer(layer_idx, layer_self_attn):
+                    raise RuntimeError(
+                        "generate_with_kv_direct_materialization: sliding_layer_indices "
+                        f"must contain only sliding-attention layers; layer {layer_idx} "
+                        f"resolved to type {_layer_type_for(layer_idx, layer_self_attn)!r}."
+                    )
+                patch_targets.append(layer_self_attn)
+                if getattr(layer_self_attn, "kv_shared_layer_index", None) is not None:
+                    shared_layer_indices.append(layer_idx)
+            selected_layer_indices = normalized_sliding_layer_indices
+            selected_head_indices = normalized_sliding_head_indices
+            full_attention_self_attn_modules = patch_targets
+
+        patch_targets = list(dict.fromkeys(patch_targets))
         propagation_state["full_attention_layer_indices"] = full_attention_layer_indices
-        propagation_state["shared_layer_indices"] = full_attention_layer_indices[1:]
+        propagation_state["shared_layer_indices"] = shared_layer_indices
+        propagation_state["shared_layer_indices_set"] = frozenset(shared_layer_indices)
+        propagation_state["selected_head_indices"] = selected_head_indices
+        propagation_state["selected_layer_indices"] = selected_layer_indices
+        propagation_state["use_prefixed_full_attention_mask"] = (
+            insertion_family == "full_attention" and propagation_mode in {"a", "ab"}
+        )
+        propagation_state["propagate_shared_prefix"] = (
+            insertion_family == "full_attention" and propagation_mode in {"a", "ab"}
+        )
 
         def _build_prefixed_full_attention_mask(
             current_input_ids,
@@ -2306,7 +2483,7 @@ class TorchInferenceRuntime(InferenceRuntime):
             return torch.cat([prefix_mask, fresh_mask], dim=-1)
 
         def _build_generation_attention_mask(current_input_ids, current_fresh_attention_mask):
-            if propagation_state["mode"] in {"a", "ab"}:
+            if propagation_state.get("use_prefixed_full_attention_mask", False):
                 propagation_state["prefixed_full_attention_mask"] = (
                     _build_prefixed_full_attention_mask(
                         current_input_ids,
@@ -2320,11 +2497,6 @@ class TorchInferenceRuntime(InferenceRuntime):
         # Install the patched forward on the target attention module.
         # Fire counter records truthful axis-6 observability.
         fire_counter: dict[str, Any] = {"prefix_layers": set(), "mask_applied": 0}
-        patch_targets = (
-            full_attention_self_attn_modules
-            if propagation_mode in {"a", "b", "ab"}
-            else [target_self_attn]
-        )
         installed_patches: list[tuple[str, Any, Any]] = []
         patched = self._kv_direct_patched_forward_factory(fire_counter, propagation_state)
         for module in patch_targets:
@@ -2445,13 +2617,13 @@ class TorchInferenceRuntime(InferenceRuntime):
                     patch_target.__kwdefaults__ = original_value
                 else:
                     patch_target.forward = original_value  # type: ignore[assignment]
-            for module in full_attention_self_attn_modules:
+            for module in patch_targets:
                 for attr in tuple(name for name in vars(module).keys() if name.startswith("_lazarus_")):
                     try:
                         delattr(module, attr)
                     except AttributeError:
                         pass
-            for module in full_attention_self_attn_modules:
+            for module in patch_targets:
                 leaked_attrs = [
                     name for name in vars(module).keys() if name.startswith("_lazarus_")
                 ]
@@ -2488,6 +2660,7 @@ class TorchInferenceRuntime(InferenceRuntime):
             "selected_tier": selected_tier_labels,
             "mask_penalty_applied": mask_penalty_applied,
             "kv_direct_active": kv_direct_active,
+            "insertion_family": insertion_family,
             "vram_peak_mib": int(vram_peak_mib),
             "vram_delta_mib": int(vram_delta_mib),
             "path_a_replay_count": int(
@@ -2496,6 +2669,12 @@ class TorchInferenceRuntime(InferenceRuntime):
             "query_id": query_id,
             "n_archived_slots": int(n_archived),
             "propagation_mode": propagation_mode,
+            "sliding_layer_indices": [int(layer_idx) for layer_idx in selected_layer_indices]
+            if insertion_family == "sliding"
+            else [],
+            "sliding_head_indices": [int(head_idx) for head_idx in selected_head_indices]
+            if insertion_family == "sliding"
+            else [],
             "prefix_forwards_observed": prefix_forwards,
             "mask_applied_count": mask_applied_count,
             "per_window_token_ranges": {

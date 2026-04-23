@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from chuk_lazarus.inference.backends import (
     LazarusBackend,
@@ -529,6 +529,9 @@ class SessionRetriever:
         warm_scores: dict[int, float] | None = None,
         query_id: str | None = None,
         handle: CheckpointHandle | None = None,
+        insertion_family: Literal["full_attention", "sliding"] = "full_attention",
+        sliding_layer_indices: tuple[int, ...] | None = None,
+        sliding_head_indices: tuple[int, ...] | None = None,
     ) -> QueryResult:
         """Run the axis-5 KV-direct generation path end-to-end.
 
@@ -563,6 +566,16 @@ class SessionRetriever:
             Optional opaque id echoed onto the result metadata.
         handle:
             Defaults to ``self.handles[0]``.
+        insertion_family:
+            Runtime K/V insertion family. ``"full_attention"`` preserves
+            the current default Gemma-4 path; ``"sliding"`` activates the
+            explicit sliding-layer insertion branch in the runtime.
+        sliding_layer_indices:
+            Sliding-attention decoder layers that should receive the
+            archived prefix when ``insertion_family="sliding"``.
+        sliding_head_indices:
+            Attention-head indices that may attend to the archived prefix
+            when ``insertion_family="sliding"``.
         """
         # Materialize once; keep the concrete sequence for subsequent
         # tier-map construction so we do not double-iterate a generator.
@@ -600,6 +613,9 @@ class SessionRetriever:
             warm_scores=warm_scores,
             source_layer=residuals.source_layer,
             query_id=query_id,
+            insertion_family=insertion_family,
+            sliding_layer_indices=sliding_layer_indices,
+            sliding_head_indices=sliding_head_indices,
         )
 
         chosen_handle = handle if handle is not None else self.handles[0]
