@@ -29,7 +29,7 @@ def test_save_and_load_numpy_residual_state(tmp_path):
     path = save_residual_state(tmp_path / "residual", state)
     loaded = load_residual_state(path)
 
-    assert path.suffix == ".safetensors"
+    assert path.suffix == ".npz"
     assert loaded.backend == LazarusBackend.MLX
     assert loaded.layer_index == 3
     assert np.allclose(loaded.tensor, state.tensor)

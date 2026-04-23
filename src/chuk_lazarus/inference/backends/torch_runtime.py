@@ -8,7 +8,7 @@ import inspect
 import json
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from chuk_lazarus.session_retrieval.tier_policy import TierLabel
@@ -1887,19 +1887,9 @@ class TorchInferenceRuntime(InferenceRuntime):
             av = prefix_attn_module.v_norm(av.transpose(1, 2))  # (1, N, Hkv, hd)
 
             N = int(ak.shape[1])
-            # Archived-K rotary cos/sin. Precomputed cos/sin on module_self is
-            # the non-"zero" path (negative / monotonic / preserve / stretched
-            # strategies); when absent we fall back to the legacy position-0
-            # expand so strategy="zero" (default) remains bit-identical.
-            archived_cos = getattr(module_self, "_lazarus_archived_cos", None)
-            archived_sin = getattr(module_self, "_lazarus_archived_sin", None)
-            if archived_cos is not None and archived_sin is not None:
-                ak_cos = archived_cos.to(device=cos.device, dtype=cos.dtype)
-                ak_sin = archived_sin.to(device=sin.device, dtype=sin.dtype)
-            else:
-                ak_cos = cos[:, 0:1, :].expand(cos.shape[0], N, cos.shape[-1])
-                ak_sin = sin[:, 0:1, :].expand(sin.shape[0], N, sin.shape[-1])
-            ak = apply_rotary_pos_emb(ak, ak_cos, ak_sin, unsqueeze_dim=2)
+            cos0 = cos[:, 0:1, :].expand(cos.shape[0], N, cos.shape[-1])
+            sin0 = sin[:, 0:1, :].expand(sin.shape[0], N, sin.shape[-1])
+            ak = apply_rotary_pos_emb(ak, cos0, sin0, unsqueeze_dim=2)
             ak = ak.transpose(1, 2)  # → (1, Hkv, N, hd)
             av = av.transpose(1, 2)  # V gets no rotary
             return ak, av
@@ -2086,11 +2076,9 @@ class TorchInferenceRuntime(InferenceRuntime):
         per_window_token_ranges: dict[int, tuple[int, int]],
         tier_assignments: dict[int, "TierLabel"],
         warm_config,
-        hot_config: HotBoostConfig | None = None,
         source_layer: int,
         warm_scores: dict[int, float] | None = None,
         query_id: str | None = None,
-        per_window_source_positions: dict[int, int] | None = None,
     ) -> "KvDirectGenerationResult":
         """Generate using archived-residual K/V for context, NO archived-text replay.
 
@@ -2107,11 +2095,11 @@ class TorchInferenceRuntime(InferenceRuntime):
         ``materialization.K`` / ``materialization.V`` are prepended at the
         source full-attention layer and may also propagate through the
         shared-K/V full-attention followers depending on
-        ``LAZARUS_KV_PROPAGATION_MODE``. HOT windows remain byte-identical
-        when ``hot_config.boost_value == 0.0``; positive boost values add a
-        uniform HOT-tier logit offset. COLD windows are excluded
-        pre-softmax and WARM windows receive the configured subtractive
-        penalty through the axis-4 mask path.
+        ``LAZARUS_KV_PROPAGATION_MODE``. HOT windows thereby appear
+        byte-identical
+        in attention logits; COLD windows were already excluded at
+        gather-time; WARM penalty is recorded for observability but not
+        additively applied here (out-of-scope for leg-3).
 
         Parameters
         ----------
@@ -2130,12 +2118,10 @@ class TorchInferenceRuntime(InferenceRuntime):
         tier_assignments:
             ``window_id -> TierLabel`` for every included window.
         warm_config:
-            :class:`WarmPenaltyConfig` controlling subtractive WARM-tier
-            logit penalties applied inside :func:`apply_tier_attention_mask`.
-        hot_config:
-            Optional :class:`HotBoostConfig`. ``None`` resolves to
-            ``HotBoostConfig()`` so the default path preserves the
-            current HOT-tier identity behavior.
+            :class:`WarmPenaltyConfig`. ``mask_penalty_applied`` is set
+            ``True`` iff a non-zero penalty config is provided; the
+            subtractive logit scaling is not wired into the live
+            attention path in this leg (documentary field).
         source_layer:
             ``injection_layer`` at which residuals were captured;
             ``source_layer + 1`` is the attention layer that receives
@@ -2212,17 +2198,11 @@ class TorchInferenceRuntime(InferenceRuntime):
         selected_tier_labels = sorted(
             {TierLabel(tier).value for tier in tier_assignments.values()}
         )
-        resolved_hot_config = HotBoostConfig() if hot_config is None else hot_config
-        has_hot = any(
-            TierLabel(t) == TierLabel.HOT for t in tier_assignments.values()
-        )
         has_warm = any(
             TierLabel(t) == TierLabel.WARM for t in tier_assignments.values()
         )
         penalty_value = float(getattr(warm_config, "penalty_value", 0.0))
         mask_penalty_will_apply = bool(has_warm and penalty_value > 0.0)
-        hot_boost_value = float(getattr(resolved_hot_config, "boost_value", 0.0))
-        hot_boost_applied = bool(has_hot and hot_boost_value > 0.0)
 
         # Build the AttentionTierMaskInputs that the patched forward reads.
         _normalized_tier_map = {
@@ -2235,7 +2215,6 @@ class TorchInferenceRuntime(InferenceRuntime):
             },
             tier_assignments=_normalized_tier_map,
             warm_config=warm_config,
-            hot_config=resolved_hot_config,
             warm_scores=(
                 None if warm_scores is None
                 else {int(wid): float(s) for wid, s in warm_scores.items()}
@@ -2248,102 +2227,6 @@ class TorchInferenceRuntime(InferenceRuntime):
         propagation_state["n_archived"] = n_archived
         propagation_state["prefix_attn_module"] = target_self_attn
         propagation_state["target_layer_idx"] = target_idx
-
-        # ── RoPE position strategy for archived slots ──────────────────────
-        # LAZARUS_KV_POSITION_STRATEGY (default "zero") selects the per-slot
-        # rotary positions applied to archived K during the patched forward.
-        # LAZARUS_KV_POSITION_STRIDE (default 128) is only consumed by
-        # strategy="stretched". "zero" is bit-identical to the legacy path.
-        from ._torch_residual_bounded import (
-            KV_POSITION_STRATEGIES,
-            build_archived_positions,
-        )
-
-        raw_strategy = str(
-            _os.environ.get("LAZARUS_KV_POSITION_STRATEGY", "zero")
-        ).strip().lower()
-        if raw_strategy not in KV_POSITION_STRATEGIES:
-            raise RuntimeError(
-                "generate_with_kv_direct_materialization: "
-                "LAZARUS_KV_POSITION_STRATEGY must be one of "
-                f"{KV_POSITION_STRATEGIES}; got {raw_strategy!r}."
-            )
-        try:
-            stride_val = int(
-                _os.environ.get("LAZARUS_KV_POSITION_STRIDE", "128")
-            )
-        except ValueError as exc:
-            raise RuntimeError(
-                "generate_with_kv_direct_materialization: "
-                "LAZARUS_KV_POSITION_STRIDE must be a base-10 integer; "
-                f"got {_os.environ.get('LAZARUS_KV_POSITION_STRIDE')!r}"
-            ) from exc
-        try:
-            user_role_boost = float(
-                _os.environ.get("LAZARUS_KV_USER_ROLE_BOOST", "1.0")
-            )
-        except ValueError as exc:
-            raise RuntimeError(
-                "generate_with_kv_direct_materialization: "
-                "LAZARUS_KV_USER_ROLE_BOOST must be a float; "
-                f"got {_os.environ.get('LAZARUS_KV_USER_ROLE_BOOST')!r}"
-            ) from exc
-
-        # Slot-ordered window ids → source positions for "preserve" strategy.
-        slot_to_wid: dict[int, int] = {}
-        for wid, (slot_start, _slot_end) in per_window_token_ranges.items():
-            slot_to_wid[int(slot_start)] = int(wid)
-        ordered_wids_by_slot = [
-            slot_to_wid[s] for s in sorted(slot_to_wid.keys())
-            if s < n_archived
-        ]
-
-        position_strategy_fallback = False
-        effective_strategy = raw_strategy
-        source_positions_list: list[int] | None = None
-        if raw_strategy == "preserve":
-            if per_window_source_positions is None:
-                position_strategy_fallback = True
-            else:
-                try:
-                    source_positions_list = [
-                        int(per_window_source_positions[wid])
-                        for wid in ordered_wids_by_slot
-                    ]
-                except KeyError:
-                    position_strategy_fallback = True
-                    source_positions_list = None
-            if position_strategy_fallback:
-                effective_strategy = "monotonic"
-
-        first_param = next(model.parameters())
-        model_device = first_param.device
-        model_dtype = first_param.dtype
-
-        archived_positions_tensor = build_archived_positions(
-            n_archived,
-            effective_strategy,
-            source_positions=source_positions_list,
-            stride=stride_val,
-            device=model_device,
-        )
-        archived_positions_list: list[int] = [
-            int(v) for v in archived_positions_tensor.tolist()
-        ]
-
-        # Only precompute and stash cos/sin for non-"zero" strategies; "zero"
-        # falls through to the legacy position-0 expand path in
-        # _prepare_archived_prefix for strict A1 bit-identity.
-        archived_cos_stashed = None
-        archived_sin_stashed = None
-        if effective_strategy != "zero":
-            archived_cos_stashed, archived_sin_stashed = (
-                self._compute_archived_rotary(
-                    archived_positions_tensor,
-                    device=model_device,
-                    dtype=model_dtype,
-                )
-            )
 
         def _resolve_self_attn(layer) -> Any | None:
             return getattr(layer, "self_attn", None) or getattr(layer, "attention", None)
@@ -2459,10 +2342,6 @@ class TorchInferenceRuntime(InferenceRuntime):
             module._lazarus_archived_K = archived_K  # type: ignore[attr-defined]
             module._lazarus_archived_V = archived_V  # type: ignore[attr-defined]
             module._lazarus_mask_inputs = mask_inputs  # type: ignore[attr-defined]
-            module._lazarus_hot_config = resolved_hot_config  # type: ignore[attr-defined]
-            if archived_cos_stashed is not None and archived_sin_stashed is not None:
-                module._lazarus_archived_cos = archived_cos_stashed  # type: ignore[attr-defined]
-                module._lazarus_archived_sin = archived_sin_stashed  # type: ignore[attr-defined]
 
         stop_reason = StopReason.MAX_TOKENS
         generated_token_ids: list[int] = []
@@ -2608,8 +2487,6 @@ class TorchInferenceRuntime(InferenceRuntime):
         metadata: dict[str, Any] = {
             "selected_tier": selected_tier_labels,
             "mask_penalty_applied": mask_penalty_applied,
-            "hot_boost_applied": hot_boost_applied,
-            "hot_boost_value": float(hot_boost_value),
             "kv_direct_active": kv_direct_active,
             "vram_peak_mib": int(vram_peak_mib),
             "vram_delta_mib": int(vram_delta_mib),
@@ -2639,112 +2516,9 @@ class TorchInferenceRuntime(InferenceRuntime):
             "input_tokens": int(input_length),
             "output_tokens": int(output_length),
             "stop_reason": stop_reason.value if hasattr(stop_reason, "value") else str(stop_reason),
-            "position_strategy": effective_strategy,
-            "archived_positions_used": list(archived_positions_list),
-            "position_strategy_fallback": bool(position_strategy_fallback),
-            "per_window_role": {
-                int(wid): str(role)
-                for wid, role in getattr(materialization, "per_window_role", {}).items()
-            },
-            "per_window_turn_index": {
-                int(wid): int(turn_index)
-                for wid, turn_index in getattr(
-                    materialization, "per_window_turn_index", {}
-                ).items()
-            },
-            "user_role_boost": float(user_role_boost),
         }
 
         return KvDirectGenerationResult(text=generated_text, metadata=metadata)
-
-    def _resolve_model_rotary_emb(self) -> Any:
-        """Locate the TEXT decoder's global/full-attention rotary embedding.
-
-        Gemma-4 is multimodal: a naive walk picks up the vision tower's
-        ``Gemma4VisionRotaryEmbedding`` which expects 3-D position ids.
-        The text rotary embedding lives on the same submodule that owns
-        ``.layers`` (the text Gemma4Model) — we find the layer-bearing
-        submodule first and read its ``rotary_emb``.
-        """
-        model = self._model
-        text_module_candidates = (
-            ("model", "language_model", "model"),
-            ("model", "language_model"),
-            ("language_model", "model"),
-            ("language_model",),
-            ("model",),
-        )
-        text_module = None
-        for path in text_module_candidates:
-            target = model
-            ok = True
-            for attr in path:
-                target = getattr(target, attr, None)
-                if target is None:
-                    ok = False
-                    break
-            if not ok:
-                continue
-            layers_attr = getattr(target, "layers", None)
-            if layers_attr is None or not hasattr(layers_attr, "__len__"):
-                continue
-            if getattr(target, "rotary_emb", None) is not None:
-                text_module = target
-                break
-        if text_module is not None:
-            return text_module.rotary_emb
-        # Fallback: a submodule has inv_freq AND lives on the same parent
-        # that holds .layers. We pick the rotary with the largest inv_freq
-        # buffer length (matches head_dim/2) as a sanity check.
-        for path in text_module_candidates:
-            target = model
-            ok = True
-            for attr in path:
-                target = getattr(target, attr, None)
-                if target is None:
-                    ok = False
-                    break
-            if not ok:
-                continue
-            if not hasattr(target, "layers"):
-                continue
-            for child in target.modules():
-                inv_freq = getattr(child, "inv_freq", None)
-                if inv_freq is not None and inv_freq.dim() == 1:
-                    return child
-        raise RuntimeError(
-            "generate_with_kv_direct_materialization: could not locate a "
-            "text rotary_emb module on the model for RoPE position-strategy "
-            "computation."
-        )
-
-    def _compute_archived_rotary(
-        self,
-        positions,
-        *,
-        device,
-        dtype,
-    ):
-        """Compute ``(cos, sin)`` for arbitrary int positions via the model's rotary_emb.
-
-        ``positions`` is a 1-D ``torch.int64`` tensor. The returned cos/sin
-        have shape ``(1, N, head_dim)`` matching the ``position_embeddings``
-        the patched attention forward normally receives from the Gemma-4
-        text model. All patched layers (14, 19, 24, 29, 34) are
-        ``layer_type == "full_attention"``; we pass that layer_type
-        explicitly because Gemma-4 keeps per-layer-type ``inv_freq``
-        buffers and the default ``layer_type=None`` branch raises.
-        """
-        torch = self._torch
-        rotary_emb = self._resolve_model_rotary_emb()
-        N = int(positions.numel())
-        pos_ids = positions.to(device=device, dtype=torch.long).unsqueeze(0)
-        dummy = torch.zeros(1, N, 1, device=device, dtype=dtype)
-        try:
-            cos, sin = rotary_emb(dummy, pos_ids, layer_type="full_attention")
-        except TypeError:
-            cos, sin = rotary_emb(dummy, pos_ids)
-        return cos, sin
 
     def clear_cache(self) -> None:
         if self._device.type == "cuda":
@@ -2776,7 +2550,7 @@ class KvDirectGenerationResult:
 # the per-query transparency observation builder.
 #
 # Tier semantics (contract-literal):
-#   * HOT  — identity when ``boost_value == 0.0``; otherwise additive boost
+#   * HOT  — identity: logits are byte-identical to the unmasked baseline
 #   * WARM — subtractive logit penalty (``logit -= penalty_value``), optional
 #            per-window scaling by ``(1 - score)`` and optional ``clamp_min``
 #   * COLD — pre-softmax exclusion: slice set to ``-inf`` in the input dtype
@@ -2801,20 +2575,6 @@ class WarmPenaltyConfig:
 
 
 @dataclass(frozen=True)
-class HotBoostConfig:
-    """Additive attention-logit boost for HOT-tier windows.
-
-    ``boost_value=0.0`` preserves the legacy HOT-tier identity behavior.
-    ``per_hot_uniform`` is reserved for symmetry with ``WarmPenaltyConfig``;
-    the current implementation applies a uniform additive offset whenever
-    ``boost_value > 0``.
-    """
-
-    boost_value: float = 0.0
-    per_hot_uniform: bool = True
-
-
-@dataclass(frozen=True)
 class AttentionTierMaskInputs:
     """Per-query inputs for :func:`apply_tier_attention_mask`.
 
@@ -2826,16 +2586,13 @@ class AttentionTierMaskInputs:
     ``warm_scores`` is optional; it maps ``window_id -> normalized router
     score in [0.0, 1.0]`` and is consulted only when
     ``warm_config.per_warm_uniform is False`` to scale the warm penalty by
-    ``(1 - score)``. ``hot_config`` controls optional additive HOT-tier
-    boosts; the default ``HotBoostConfig()`` keeps HOT slices byte-identical
-    to the baseline.
+    ``(1 - score)``.
     """
 
     per_window_token_ranges: dict[int, tuple[int, int]]
     tier_assignments: dict[int, "TierLabel"]
     warm_config: WarmPenaltyConfig
     warm_scores: dict[int, float] | None = None
-    hot_config: HotBoostConfig = field(default_factory=HotBoostConfig)
 
 
 def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
@@ -2845,9 +2602,8 @@ def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
     ``attn_logits`` (the ``kv_len`` axis); any leading dimensions are
     preserved as-is. Returns a new tensor (never modifies in place).
 
-    * HOT windows: slices are untouched on the cloned tensor when
-      ``inputs.hot_config.boost_value == 0.0``; otherwise a uniform
-      additive offset is applied to the HOT slice.
+    * HOT windows: slices are untouched on the cloned tensor → byte-identity
+      with the unmasked baseline.
     * COLD windows: slices are set to ``-inf`` (dtype-stable) — pre-softmax
       exclusion removes them from the effective attention budget.
     * WARM windows: slices have ``warm_config.penalty_value`` subtracted.
@@ -2890,7 +2646,6 @@ def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
             )
 
     warm_config = inputs.warm_config
-    hot_config = inputs.hot_config
     if not warm_config.per_warm_uniform:
         warm_window_ids = [
             wid
@@ -2921,10 +2676,7 @@ def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
     for window_id, tier in inputs.tier_assignments.items():
         start, end = inputs.per_window_token_ranges[window_id]
         if tier == TierLabel.HOT:
-            # Preserve byte-identity when boost_value==0.0; otherwise add the
-            # configured uniform HOT-tier offset.
-            if float(hot_config.boost_value) > 0.0:
-                out[..., start:end] = out[..., start:end] + float(hot_config.boost_value)
+            # Identity: leave the cloned slice untouched for byte-identity.
             continue
         if tier == TierLabel.COLD:
             # Pre-softmax exclusion via additive -inf on the input dtype.
@@ -2964,8 +2716,6 @@ def attention_tier_mask_inputs_to_dict(
           "warm_config": {"penalty_value": float,
                           "per_warm_uniform": bool,
                           "clamp_min": float|null},
-          "hot_config": {"boost_value": float,
-                         "per_hot_uniform": bool},
           "warm_scores": {"<wid>": score, ...} | null,
         }
     """
@@ -2986,10 +2736,6 @@ def attention_tier_mask_inputs_to_dict(
             else float(inputs.warm_config.clamp_min)
         ),
     }
-    hot_config_dict: dict[str, Any] = {
-        "boost_value": float(inputs.hot_config.boost_value),
-        "per_hot_uniform": bool(inputs.hot_config.per_hot_uniform),
-    }
     if inputs.warm_scores is None:
         warm_scores_dict: dict[str, float] | None = None
     else:
@@ -3001,7 +2747,6 @@ def attention_tier_mask_inputs_to_dict(
         "per_window_token_ranges": ranges_dict,
         "tier_assignments": tier_dict,
         "warm_config": warm_config_dict,
-        "hot_config": hot_config_dict,
         "warm_scores": warm_scores_dict,
     }
 
@@ -3066,19 +2811,6 @@ def attention_tier_mask_inputs_from_dict(
         clamp_min=None if clamp_min_raw is None else float(clamp_min_raw),
     )
 
-    raw_hot_config = data.get("hot_config")
-    if raw_hot_config is None:
-        hot_config = HotBoostConfig()
-    else:
-        if not isinstance(raw_hot_config, dict):
-            raise ValueError(
-                "attention_tier_mask_inputs_from_dict: hot_config must be a dict."
-            )
-        hot_config = HotBoostConfig(
-            boost_value=float(raw_hot_config.get("boost_value", 0.0)),
-            per_hot_uniform=bool(raw_hot_config.get("per_hot_uniform", True)),
-        )
-
     raw_warm_scores = data.get("warm_scores", None)
     if raw_warm_scores is None:
         warm_scores: dict[int, float] | None = None
@@ -3097,7 +2829,6 @@ def attention_tier_mask_inputs_from_dict(
         tier_assignments=tier_assignments,
         warm_config=warm_config,
         warm_scores=warm_scores,
-        hot_config=hot_config,
     )
 
 

@@ -73,7 +73,6 @@ from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle, load_st
 
 ASI_ROUTER_STATE_FILENAME: str = "asi_router_state.json"
 _STATE_SCHEMA_VERSION: int = 1
-USER_ROLE_BOOST_ENV_VAR: str = "LAZARUS_KV_USER_ROLE_BOOST"
 
 
 @dataclass(frozen=True)
@@ -87,8 +86,6 @@ class AsiRouterCandidate:
     island_id: int
     visit_count: int
     mean_reward: float
-    role: str = "unknown"
-    turn_index: int = -1
 
 
 @dataclass
@@ -263,42 +260,8 @@ def _session_age_seconds(handle: CheckpointHandle) -> float:
         return 0.0
 
 
-def _extract_window_role_and_turn_index(window_meta: Any) -> tuple[str, int]:
-    """Return ``(role, turn_index)`` with grammar-of-absence defaults."""
-    role = "unknown"
-    turn_index = -1
-    if not isinstance(window_meta, dict):
-        return role, turn_index
-
-    raw_role = window_meta.get("role", window_meta.get("speaker_role"))
-    if isinstance(raw_role, str):
-        normalized_role = raw_role.strip().lower()
-        if normalized_role in {"user", "assistant"}:
-            role = normalized_role
-
-    raw_turn_index = window_meta.get("turn_index")
-    if raw_turn_index is not None and not isinstance(raw_turn_index, bool):
-        try:
-            turn_index = int(raw_turn_index)
-        except (TypeError, ValueError):
-            turn_index = -1
-
-    return role, turn_index
-
-
-def _user_role_boost() -> float:
-    raw_value = os.environ.get(USER_ROLE_BOOST_ENV_VAR, "1.0")
-    try:
-        return float(raw_value)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(
-            f"asi_route_candidates: {USER_ROLE_BOOST_ENV_VAR} must be a float, "
-            f"got {raw_value!r}"
-        ) from exc
-
-
-# (raw_score, session_id, window_id, handle, keyword_count, role, turn_index)
-_RawRow = tuple[float, str, int, CheckpointHandle, int, str, int]
+# (raw_score, session_id, window_id, handle, keyword_count)
+_RawRow = tuple[float, str, int, CheckpointHandle, int]
 
 
 def _score_all_windows(
@@ -324,9 +287,6 @@ def _score_all_windows(
             )
         router = TFIDFRouter(window_tokens, idf)
         store_keywords: dict[int, list[str]] = getattr(store, "keywords", {}) or {}
-        store_window_metadata: dict[int, dict[str, Any]] = (
-            getattr(store, "window_metadata", {}) or {}
-        )
         num_windows = int(getattr(store, "num_windows", 0) or 0)
         if num_windows <= 0:
             num_windows = max(window_tokens.keys(), default=-1) + 1
@@ -335,19 +295,7 @@ def _score_all_windows(
                 continue
             raw_score = float(router.score_window(query_ids, int(window_id)))
             kc = len(store_keywords.get(int(window_id), []))
-            meta = store_window_metadata.get(int(window_id), {})
-            role, turn_index = _extract_window_role_and_turn_index(meta)
-            raw.append(
-                (
-                    raw_score,
-                    handle.session_id,
-                    int(window_id),
-                    handle,
-                    int(kc),
-                    role,
-                    turn_index,
-                )
-            )
+            raw.append((raw_score, handle.session_id, int(window_id), handle, int(kc)))
     return raw
 
 
@@ -410,23 +358,11 @@ def asi_route_candidates(
     else:
         span = hi - lo
         normalised = [(v - lo) / span for v in raw_values]
-    user_role_boost = _user_role_boost()
 
     advance_island(state)
 
     candidates: list[AsiRouterCandidate] = []
-    for (
-        raw_score,
-        session_id,
-        window_id,
-        handle,
-        kc,
-        role,
-        turn_index,
-    ), q_w in zip(pool, normalised):
-        boosted_q_w = float(q_w)
-        if user_role_boost > 1.0 and role == "user":
-            boosted_q_w *= float(user_role_boost)
+    for (raw_score, session_id, window_id, handle, kc), q_w in zip(pool, normalised):
         composite_key = f"{session_id}:{window_id}"
         n_w = int(state.visit_counts.get(composite_key, 0))
         if composite_key in state.mean_rewards:
@@ -434,7 +370,7 @@ def asi_route_candidates(
             q_for_ucb = mean_reward
         else:
             mean_reward = 0.0
-            q_for_ucb = boosted_q_w
+            q_for_ucb = float(q_w)
         ucb1_score = compute_ucb1(q_for_ucb, n_w, int(state.total_selections), ucb1_c=ucb1_c)
         island_id = assign_island(
             session_id, int(window_id),
@@ -444,11 +380,9 @@ def asi_route_candidates(
         )
         candidates.append(AsiRouterCandidate(
             handle=handle, window_id=int(window_id),
-            ucb1_score=float(ucb1_score), raw_router_score=boosted_q_w,
+            ucb1_score=float(ucb1_score), raw_router_score=float(q_w),
             island_id=int(island_id), visit_count=int(n_w),
             mean_reward=float(mean_reward),
-            role=str(role),
-            turn_index=int(turn_index),
         ))
 
     # Primary: ucb1_score desc. At cold start every ucb1_score == +inf so

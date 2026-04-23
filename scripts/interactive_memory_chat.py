@@ -36,13 +36,11 @@ Commands (typed at the prompt):
   /kv_query <text>      axis-5 KV-direct query — runs the real ASI-router +
                         tier-policy + KV-direct runtime path. Surfaces the
                         real axis-6 observability fields (selected_tier,
-                        mask_penalty_applied, hot_boost_applied,
-                        hot_boost_value, kv_direct_active, vram_peak_mib,
+                        mask_penalty_applied, kv_direct_active, vram_peak_mib,
                         vram_delta_mib, no_silent_fallback) on self.last_meta.
                         Env overrides: LAZARUS_KV_CANDIDATE_POOL (default 16),
                         LAZARUS_KV_K_HOT (4), LAZARUS_KV_K_WARM (8),
-                        LAZARUS_KV_HOT_BUDGET_MIB (32),
-                        LAZARUS_KV_HOT_BOOST (0.0).
+                        LAZARUS_KV_HOT_BUDGET_MIB (32).
   /stats                print store summary
   /last                 print last turn's routing metadata
   /history              dump the current session transcript
@@ -56,7 +54,6 @@ Environment overrides:
   LAZARUS_MODEL              model id/path (default: local Gemma snapshot -> hub id)
   LAZARUS_MAX_NEW_TOKENS     decode length (default 180)
   LAZARUS_MEMORY_MODE        one of: topical (default) | entity_mention | off
-  LAZARUS_KV_HOT_BOOST       additive HOT-tier logit boost for /kv_query (default 0.0)
 
 Example session:
 
@@ -180,8 +177,6 @@ class TurnMetadata:
     # is always computed truthfully.
     selected_tier: str = "not-implemented-yet"
     mask_penalty_applied: bool = False
-    hot_boost_applied: bool = False
-    hot_boost_value: float = 0.0
     kv_direct_active: bool = False
     vram_peak_mib: Optional[float] = None
     vram_delta_mib: Optional[float] = None
@@ -220,8 +215,6 @@ class TurnMetadata:
         print(f"  axis-6 observability:")
         print(f"    selected_tier        : {self.selected_tier}{_sent}")
         print(f"    mask_penalty_applied : {self.mask_penalty_applied}{_sent}")
-        print(f"    hot_boost_applied    : {self.hot_boost_applied}{_sent}")
-        print(f"    hot_boost_value      : {self.hot_boost_value}{_sent}")
         print(f"    kv_direct_active     : {self.kv_direct_active}{_sent}")
         print(f"    vram_peak_mib        : {self.vram_peak_mib}{_sent}")
         print(f"    vram_delta_mib       : {self.vram_delta_mib}{_sent}")
@@ -707,10 +700,7 @@ class MemoryChat:
             info("kv_query skipped: no retriever (store is empty — /save something first)")
             return TurnMetadata(mode="none", no_silent_fallback=False)
 
-        from chuk_lazarus.inference.backends.torch_runtime import (
-            HotBoostConfig,
-            WarmPenaltyConfig,
-        )
+        from chuk_lazarus.inference.backends.torch_runtime import WarmPenaltyConfig
         from chuk_lazarus.inference.generation import GenerationConfig
         from chuk_lazarus.session_retrieval import (
             asi_route_candidates,
@@ -721,7 +711,6 @@ class MemoryChat:
         k_hot = int(os.environ.get("LAZARUS_KV_K_HOT", "4"))
         k_warm = int(os.environ.get("LAZARUS_KV_K_WARM", "8"))
         hot_budget_mib = int(os.environ.get("LAZARUS_KV_HOT_BUDGET_MIB", "32"))
-        hot_boost_value = float(os.environ.get("LAZARUS_KV_HOT_BOOST", "0.0"))
 
         t_total_start = time.time()
         t_retrieve_start = time.time()
@@ -763,55 +752,7 @@ class MemoryChat:
                     "no tier assignments owned by top-ranked candidate's handle"
                 )
 
-            # ── KV-DIRECT INSPECTION BLOCK ────────────────────────────────
-            # Print the actual text + scores behind each HOT/WARM/COLD
-            # label so the user can see WHAT was picked, not just rank
-            # counts. Opt-out via LAZARUS_KV_QUIET=1.
-            if not os.environ.get("LAZARUS_KV_QUIET"):
-                try:
-                    from chuk_lazarus.session_retrieval.enumeration import load_store
-                    _store_for_top = load_store(top_handle)
-                    _tokenizer_for_windows = self.retriever.tokenizer
-                    section("KV-DIRECT TIER SELECTION (archived windows fed to attention)")
-                    print(f"  candidate_pool={candidate_pool}  K_HOT={k_hot}  K_WARM={k_warm}")
-                    print(f"  source_session={top_handle.session_id[:8]}…  "
-                          f"total_candidates={len(tier_assignments)}  "
-                          f"same_session={len(assignments_for_handle)}")
-                    print(rule("─"))
-                    for ta in assignments_for_handle:
-                        wid = int(ta.candidate.window_id)
-                        tier = ta.tier.value.upper()
-                        role = str(getattr(ta.candidate, "role", "unknown"))
-                        turn_index = int(getattr(ta.candidate, "turn_index", -1))
-                        raw_s = float(ta.candidate.raw_router_score)
-                        ucb = float(ta.candidate.ucb1_score)
-                        ucb_str = (
-                            "+inf" if ucb == float("inf") else f"{ucb:7.4f}"
-                        )
-                        try:
-                            text = _store_for_top.get_window_text(
-                                wid, _tokenizer_for_windows
-                            ) or ""
-                        except Exception as exc:  # noqa: BLE001
-                            text = f"<text-load-failed: {exc!r}>"
-                        tier_tag = (
-                            "\033[91mHOT \033[0m" if tier == "HOT"
-                            else "\033[93mWARM\033[0m" if tier == "WARM"
-                            else "\033[94mCOLD\033[0m"
-                        )
-                        preview = truncate(text.replace("\n", " ↵ "), 200)
-                        print(
-                            f"  rank={ta.rank:2d} {tier_tag} wid={wid:3d} "
-                            f"role={role:<9} turn={turn_index:3d}  "
-                            f"raw_score={raw_s:6.3f}  ucb={ucb_str}"
-                        )
-                        print(f"       └─ \"{preview}\"")
-                    print("=" * HEADER_W)
-                except Exception as exc:  # noqa: BLE001
-                    info(f"  tier-inspection print failed (non-fatal): {exc!r}")
-
             warm_config = WarmPenaltyConfig()
-            hot_config = HotBoostConfig(boost_value=hot_boost_value)
             gen_config = GenerationConfig(
                 max_new_tokens=int(self.max_new_tokens),
                 temperature=0.0,
@@ -823,7 +764,6 @@ class MemoryChat:
                 assignments_for_handle,
                 hot_budget_mib=hot_budget_mib,
                 warm_config=warm_config,
-                hot_config=hot_config,
                 generation_config=gen_config,
                 handle=top_handle,
             )
@@ -860,8 +800,6 @@ class MemoryChat:
         # axis-6 observability fields — REAL values from result.
         meta.kv_direct_active = bool(kv_strict.get("kv_direct_active", False))
         meta.mask_penalty_applied = bool(kv_strict.get("mask_penalty_applied", False))
-        meta.hot_boost_applied = bool(kv_strict.get("hot_boost_applied", False))
-        meta.hot_boost_value = float(kv_strict.get("hot_boost_value", 0.0) or 0.0)
         meta.vram_peak_mib = kv_strict.get("vram_peak_mib", None)
         meta.vram_delta_mib = kv_strict.get("vram_delta_mib", None)
         # selected_tier: derive from the tier assignments used for this
