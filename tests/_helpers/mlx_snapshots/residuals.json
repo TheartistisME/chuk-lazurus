@@ -286,5 +286,57 @@
       7
     ],
     "timestamp": ""
+  },
+  {
+    "atol": 0.0,
+    "dtype": "str",
+    "input_hash": "",
+    "max_abs_err": 0.0,
+    "op": "inference.loader.StandardWeightConverter",
+    "rtol": 0.0,
+    "rtol_violation_count": 0,
+    "shape": [
+      7
+    ],
+    "timestamp": ""
+  },
+  {
+    "atol": 0.0,
+    "dtype": "str",
+    "input_hash": "",
+    "max_abs_err": 0.0,
+    "op": "inference.loader.StandardWeightConverter",
+    "rtol": 0.0,
+    "rtol_violation_count": 0,
+    "shape": [
+      7
+    ],
+    "timestamp": ""
+  },
+  {
+    "atol": 0.0,
+    "dtype": "str",
+    "input_hash": "",
+    "max_abs_err": 0.0,
+    "op": "inference.loader.StandardWeightConverter",
+    "rtol": 0.0,
+    "rtol_violation_count": 0,
+    "shape": [
+      7
+    ],
+    "timestamp": ""
+  },
+  {
+    "atol": 0.0,
+    "dtype": "str",
+    "input_hash": "",
+    "max_abs_err": 0.0,
+    "op": "inference.loader.StandardWeightConverter",
+    "rtol": 0.0,
+    "rtol_violation_count": 0,
+    "shape": [
+      7
+    ],
+    "timestamp": ""
   }
 ]

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,13 +41,15 @@ OWNED_BY: Literal["lazarus"] = "lazarus"
 
 # ── Role literals (OpenAI wire format) ────────────────────────────────────────
 
-OpenAIRole = Literal["system", "user", "assistant", "tool", "function"]
+OpenAIRole = Literal["system", "developer", "user", "assistant", "tool", "function"]
 
 _ROLE_MAP: dict[str, MessageRole] = {
     "system": MessageRole.SYSTEM,
+    "developer": MessageRole.SYSTEM,
     "user": MessageRole.USER,
     "assistant": MessageRole.ASSISTANT,
     "tool": MessageRole.TOOL,
+    "function": MessageRole.TOOL,
 }
 
 
@@ -102,11 +104,50 @@ class OpenAIToolCall(BaseModel):
 # ── Request ───────────────────────────────────────────────────────────────────
 
 
+class OpenAITextContentPart(BaseModel):
+    type: Literal["text", "input_text"] = "text"
+    text: str
+
+
+class OpenAIImageURLContent(BaseModel):
+    url: str
+    detail: str | None = None
+
+
+class OpenAIImageURLContentPart(BaseModel):
+    type: Literal["image_url"] = "image_url"
+    image_url: OpenAIImageURLContent
+
+
+OpenAIContentPart = Annotated[
+    OpenAITextContentPart | OpenAIImageURLContentPart,
+    Field(discriminator="type"),
+]
+
+
+def _flatten_content_parts(
+    content: str | list[OpenAIContentPart] | None,
+) -> str | None:
+    if content is None or isinstance(content, str):
+        return content
+
+    pieces: list[str] = []
+    for part in content:
+        if isinstance(part, OpenAITextContentPart):
+            text = part.text.strip()
+            if text:
+                pieces.append(text)
+        elif isinstance(part, OpenAIImageURLContentPart):
+            pieces.append("[image]")
+
+    return "\n".join(pieces) if pieces else None
+
+
 class OpenAIMessage(BaseModel):
     """A single message in the OpenAI chat format."""
 
     role: OpenAIRole
-    content: str | None = None
+    content: str | list[OpenAIContentPart] | None = None
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list[OpenAIToolCall] | None = None
@@ -126,7 +167,7 @@ class OpenAIMessage(BaseModel):
             ]
         return InternalMessage(
             role=_ROLE_MAP.get(self.role, MessageRole.USER),
-            content=self.content,
+            content=_flatten_content_parts(self.content),
             name=self.name,
             tool_call_id=self.tool_call_id,
             tool_calls=internal_tool_calls,
@@ -146,11 +187,15 @@ class ChatCompletionRequest(BaseModel):
     tools: list[OpenAITool] | None = None
     tool_choice: str | dict | None = None  # "auto", "none", or specific function
     n: int = Field(1, description="Only n=1 is supported")
+    chat_template_kwargs: dict[str, Any] | None = None
+    stream_options: dict[str, Any] | None = None
+    store: bool | None = None
 
     # Accepted but not used for local inference
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
     user: str | None = None
+    reasoning_effort: str | None = None
 
     def to_internal(self, default_max_tokens: int = 512) -> InternalRequest:
         stop: list[str] | None = None
@@ -161,6 +206,14 @@ class ChatCompletionRequest(BaseModel):
         if self.tools:
             internal_tools = [t.to_internal() for t in self.tools]
 
+        # The OpenAI ``user`` field is the natural per-session key and is
+        # honoured by every mainstream MCP client. When unset, the torch
+        # residual-bounded runtime falls back to a prefix-hash of the
+        # tokenised prompt (see ``_residual_session_cache``).
+        conversation_id: str | None = None
+        if self.user is not None and self.user.strip():
+            conversation_id = self.user.strip()
+
         return InternalRequest(
             messages=[m.to_internal() for m in self.messages],
             model=self.model,
@@ -170,6 +223,8 @@ class ChatCompletionRequest(BaseModel):
             stream=self.stream,
             stop=stop,
             tools=internal_tools,
+            chat_template_kwargs=self.chat_template_kwargs,
+            conversation_id=conversation_id,
         )
 
 

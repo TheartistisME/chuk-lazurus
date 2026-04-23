@@ -95,3 +95,7 @@ artifacts/
 # Tier-3 ephemeral parity test artefacts (supervisor artifact-class policy: EPHEMERAL)
 tests/_helpers/mlx_snapshots/*-junit.xml
 tests/_helpers/mlx_snapshots/parity-junit.xml
+
+# Larql vindex directories (large, don't commit)
+*.vindex/
+*.vindex

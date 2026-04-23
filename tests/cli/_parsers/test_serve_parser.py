@@ -17,10 +17,24 @@ def _root_with_serve() -> argparse.ArgumentParser:
 def test_serve_subcommand_accepts_backend_and_device():
     parser = _root_with_serve()
     ns = parser.parse_args(
-        ["serve", "--model", "m", "--backend", "torch", "--device", "cuda:0"]
+        [
+            "serve",
+            "--model",
+            "m",
+            "--backend",
+            "torch",
+            "--device",
+            "cuda:0",
+            "--engine",
+            "bounded_kv_direct",
+            "--hot-budget-mib",
+            "1024",
+        ]
     )
     assert ns.backend == "torch"
     assert ns.device == "cuda:0"
+    assert ns.engine == "bounded_kv_direct"
+    assert ns.hot_budget_mib == 1024
 
 
 def test_serve_subcommand_accepts_mlx_backend():
@@ -36,3 +50,40 @@ def test_serve_subcommand_rejects_unknown_backend():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["serve", "--model", "m", "--backend", "tpu"])
+
+
+def test_serve_subcommand_accepts_residual_bounded_kv_direct():
+    """Qwen residual-backed bounded KV-direct must be a first-class --engine choice."""
+    parser = _root_with_serve()
+    ns = parser.parse_args(
+        [
+            "serve",
+            "--model",
+            "m",
+            "--backend",
+            "torch",
+            "--engine",
+            "residual_bounded_kv_direct",
+            "--hot-budget-mib",
+            "150",
+        ]
+    )
+    assert ns.engine == "residual_bounded_kv_direct"
+    assert ns.hot_budget_mib == 150
+
+
+def test_serve_subcommand_accepts_session_cache_size():
+    """``--session-cache-size`` sizes the WARM residual session cache."""
+    parser = _root_with_serve()
+    ns = parser.parse_args(
+        [
+            "serve",
+            "--model",
+            "m",
+            "--engine",
+            "residual_bounded_kv_direct",
+            "--session-cache-size",
+            "12",
+        ]
+    )
+    assert ns.session_cache_size == 12

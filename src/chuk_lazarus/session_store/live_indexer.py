@@ -129,6 +129,17 @@ _TOKENS_SHARD_FMT: str = "tokens_{:05d}.jsonl"
 _KEYWORDS_SHARD_FMT: str = "keywords_{:05d}.jsonl"
 _METADATA_SHARD_FMT: str = "window_metadata_{:05d}.jsonl"
 
+# axis-1 (asi-kv-direct-chat): per-window selection-ready RS descriptor.
+# Single JSON object per window (NOT a JSONL accumulator). Mirrors the
+# boundaries/ layout under the same checkpoint_dir. Readiness gate for
+# axes 2-5 is the manifest, not these files; they are additive observers.
+_SELECTION_READY_DIRNAME: str = "selection_ready"
+_SELECTION_READY_FMT: str = "window_{:03d}.json"
+_SELECTION_READY_SCHEMA_VERSION: int = 1
+_KV_DIRECT_PENDING_REASON: str = (
+    "axes 2-5 runtime fields not yet landed (lead-runtime-router scope)"
+)
+
 _REQUIRED_ARCH_CONFIG_KEYS: tuple[str, ...] = (
     "retrieval_layer",
     "query_head",
@@ -336,6 +347,13 @@ class LiveIndexer:
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         (self._checkpoint_dir / BOUNDARIES_DIR).mkdir(parents=True, exist_ok=True)
         (self._checkpoint_dir / _SHARDS_DIRNAME).mkdir(parents=True, exist_ok=True)
+        # axis-1 (asi-kv-direct-chat): per-window selection-ready RS descriptor
+        # dir. Created here so _process_one's best-effort write does not have
+        # to mkdir on the hot path. Additive: presence is not a readiness
+        # gate; manifest.json remains the only one.
+        (self._checkpoint_dir / _SELECTION_READY_DIRNAME).mkdir(
+            parents=True, exist_ok=True
+        )
 
         self._crystal_layer: int = int(crystal_layer)
         self._window_size: int = int(window_size)
@@ -568,6 +586,25 @@ class LiveIndexer:
             {"window_id": int(window_id), **{str(k): v for k, v in clause_metadata.items()}},
         )
 
+        # 4b. axis-1 (asi-kv-direct-chat): write per-window selection-ready RS
+        # descriptor. Best-effort: a failure here MUST NOT block window write
+        # nor break the manifest-last invariant. Sibling of boundaries/ under
+        # checkpoint_dir; one JSON object per window (NOT a JSONL accumulator).
+        try:
+            self._write_selection_ready_descriptor(
+                window_id=int(window_id),
+                token_ids=token_ids,
+                keywords=keywords,
+                clause_metadata=clause_metadata,
+                array=array,
+                boundary_path=boundary_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - additive observer; never fatal
+            sys.stderr.write(
+                f"[LiveIndexer] WARN: selection_ready descriptor write failed "
+                f"for window {int(window_id)}: {exc!r}; continuing.\n"
+            )
+
         # 5. Bookkeeping.
         with self._state_lock:
             self._windows_written += 1
@@ -605,6 +642,121 @@ class LiveIndexer:
         if self._adapter is not None:
             self._adapter.check_pause()
         # default/CUDA path: no-op.
+
+    # ------------------------------------------------------------------
+    # axis-1 (asi-kv-direct-chat): per-window selection-ready descriptor.
+    # ------------------------------------------------------------------
+
+    def _write_selection_ready_descriptor(
+        self,
+        *,
+        window_id: int,
+        token_ids: list[int],
+        keywords: list[str],
+        clause_metadata: dict[str, Any],
+        array: Any,
+        boundary_path: Path,
+    ) -> None:
+        """Persist a single-object JSON descriptor describing the boundary RS.
+
+        Schema is owned by axis-1 of the asi-kv-direct-chat goal. The descriptor
+        is intentionally additive: it summarises the residual that was JUST
+        written to ``boundary_path`` plus enough per-window context for a
+        future selection step. ``kv_direct_ready`` is hard-coded ``False``
+        because axes 2-5 (runtime fields) have not landed yet — see
+        ``_KV_DIRECT_PENDING_REASON``.
+
+        Compatibility:
+        * Default (CUDA) adapter writes fp32 numpy → ``residual_dtype="float32"``.
+        * MobileAdapter (axis-3) writes int8 — detected from ``array.dtype``.
+          Stats are computed on the (raw) int8 array in that case and the
+          companion key ``residual_stats_on_quantized=True`` is set so
+          downstream readers can dequantize before comparison.
+        """
+        # Resolve as numpy for stats. ``array`` may already be ndarray (CUDA
+        # path) or any array-like the adapter chose; ``np.asarray`` keeps the
+        # underlying dtype intact (no fp32 coercion here — that would lie about
+        # what was written to disk for int8).
+        np_array = np.asarray(array)
+        dtype_str = str(np_array.dtype)
+        is_quantized = np.issubdtype(np_array.dtype, np.integer)
+
+        # Stats source: prefer dequantized values for int8 if the adapter
+        # exposes a ``dequantize`` method (duck-typed). Otherwise fall back
+        # to raw values and record that fact via ``residual_stats_on_quantized``.
+        stats_source = np_array
+        residual_stats_on_quantized = False
+        if is_quantized:
+            dequantize = getattr(self._adapter, "dequantize", None)
+            if callable(dequantize):
+                try:
+                    stats_source = np.asarray(dequantize(np_array), dtype=np.float64)
+                except Exception:  # noqa: BLE001 - best-effort dequant
+                    stats_source = np_array
+                    residual_stats_on_quantized = True
+            else:
+                residual_stats_on_quantized = True
+
+        # Cast to float64 for stable norm/mean/std even on int8 arrays.
+        stats_f = np.asarray(stats_source, dtype=np.float64)
+        residual_norm_l2 = float(np.linalg.norm(stats_f))
+        residual_mean = float(stats_f.mean()) if stats_f.size else 0.0
+        residual_std = float(stats_f.std()) if stats_f.size else 0.0
+
+        # token_count / keyword_count: prefer the metadata token_count we
+        # already wrote (matches the per-window metadata shard) but fall
+        # back to len(token_ids) if absent.
+        token_count = int(clause_metadata.get("token_count", len(token_ids)))
+        keyword_count = int(len(keywords))
+
+        # session_id / shard_id are best-effort from clause_metadata; the
+        # spec says shard_id defaults to 0 if not provided.
+        session_id = str(clause_metadata.get("session_id", ""))
+        shard_id = int(clause_metadata.get("shard_id", 0))
+
+        # residual_path is RELATIVE to checkpoint_dir (which is the per-session
+        # torch_store/ root and the same dir selection_ready/ lives under).
+        try:
+            relative_residual = str(
+                boundary_path.relative_to(self._checkpoint_dir).as_posix()
+            )
+        except ValueError:
+            # Defensive: if the boundary path is not under checkpoint_dir
+            # (shouldn't happen in any default path) fall back to the
+            # canonical relative form.
+            relative_residual = f"{BOUNDARIES_DIR}/window_{int(window_id):03d}.npy"
+
+        descriptor: dict[str, Any] = {
+            "schema_version": _SELECTION_READY_SCHEMA_VERSION,
+            "kind": "selection_ready_rs_descriptor",
+            "window_id": int(window_id),
+            "session_id": session_id,
+            "shard_id": shard_id,
+            "residual_path": relative_residual,
+            "residual_dtype": "int8" if is_quantized else dtype_str,
+            "residual_shape": [int(d) for d in np_array.shape],
+            "residual_norm_l2": residual_norm_l2,
+            "residual_mean": residual_mean,
+            "residual_std": residual_std,
+            "token_count": token_count,
+            "keyword_count": keyword_count,
+            "kv_direct_ready": False,
+            "kv_direct_pending_reason": _KV_DIRECT_PENDING_REASON,
+        }
+        if residual_stats_on_quantized:
+            descriptor["residual_stats_on_quantized"] = True
+
+        descriptor_path = (
+            self._checkpoint_dir
+            / _SELECTION_READY_DIRNAME
+            / _SELECTION_READY_FMT.format(int(window_id))
+        )
+        # Atomic .tmp + replace via the existing helper. One JSON object per
+        # window, NOT a JSONL accumulator — overwrites cleanly on retry.
+        _atomic_write_text_via_tmp(
+            descriptor_path,
+            json.dumps(descriptor, ensure_ascii=False, indent=2),
+        )
 
     # ------------------------------------------------------------------
     # Manifest + compaction.

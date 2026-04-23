@@ -79,4 +79,55 @@ def route_topical(
     return top_handle, top_window, top_score
 
 
-__all__ = ["route_topical"]
+def route_candidates(
+    handles: Sequence[CheckpointHandle],
+    query_text: str,
+    tokenizer: Any,
+    *,
+    top_k_per_checkpoint: int | None = None,
+    max_candidates: int | None = None,
+) -> list[tuple[CheckpointHandle, int, float]]:
+    """Return full ranked candidate set (descending score) from across all handles.
+
+    Internals mirror route_topical but emit all scored (handle, window_id, score)
+    tuples up to top_k_per_checkpoint per handle (None = all windows), then globally
+    rank and optionally truncate to max_candidates.
+    """
+    scored: list[tuple[float, str, int, CheckpointHandle]] = []
+    query_ids = _encode_token_ids(tokenizer, query_text)
+
+    for handle in handles:
+        store = load_store(handle)
+        router = store._get_tfidf_router()
+
+        if top_k_per_checkpoint is None:
+            # Score every window the store knows about.
+            window_ids = sorted(int(wid) for wid in store.window_tokens)
+        else:
+            if top_k_per_checkpoint <= 0:
+                continue
+            window_ids = [
+                int(wid) for wid in store.route_top_k(
+                    query_text, tokenizer, k=int(top_k_per_checkpoint)
+                )
+            ]
+        if not window_ids:
+            continue
+
+        for window_id in window_ids:
+            score = float(router.score_window(query_ids, int(window_id)))
+            scored.append((score, handle.session_id, int(window_id), handle))
+
+    if not scored:
+        return []
+
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    ranked: list[tuple[CheckpointHandle, int, float]] = [
+        (handle, window_id, score) for score, _sid, window_id, handle in scored
+    ]
+    if max_candidates is not None and max_candidates >= 0:
+        ranked = ranked[: int(max_candidates)]
+    return ranked
+
+
+__all__ = ["route_candidates", "route_topical"]

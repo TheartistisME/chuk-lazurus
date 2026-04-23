@@ -459,6 +459,178 @@ class SessionRetriever:
             routing_score=routing_score,
         )
 
+    def prepare_kv_direct_materialization(
+        self,
+        tier_assignments,
+        *,
+        hot_budget_mib: int,
+        handle: CheckpointHandle | None = None,
+    ):
+        """Gather residuals and materialize K/V for one checkpoint's windows.
+
+        Frozen contract: axis-5 ``ve-ins-0mo9pb4f5000004cc67``. Reads
+        per-window residuals from the LIVE checkpoint archive via
+        :class:`TorchKnowledgeStore.load_boundary`, then projects them
+        through ``W_K`` / ``W_V`` at ``injection_layer+1`` under the
+        Path-A replay guard. Does NOT invoke the model on archived
+        tokens.
+
+        Parameters
+        ----------
+        tier_assignments:
+            Iterable of ``TierAssignment`` for a SINGLE checkpoint. For
+            cross-checkpoint queries, group assignments by handle and
+            call this method once per group.
+        hot_budget_mib:
+            Hard ceiling on the materialized K + V footprint in MiB.
+        handle:
+            Defaults to ``self.handles[0]``. Must be the checkpoint from
+            which ``tier_assignments`` was produced.
+
+        Returns
+        -------
+        tuple[GatheredResiduals, KVDirectMaterialization]
+        """
+        from chuk_lazarus.inference.backends._torch_residual_bounded import (
+            gather_selected_residuals,
+            materialize_kv_direct,
+        )
+
+        target = handle if handle is not None else self.handles[0]
+        store = load_store(target)
+        source_layer = int(store.config.injection_layer)
+        # Concrete-materialize so downstream calls that iterate twice
+        # (gather + budget-preserving materialize) are both fed the full
+        # sequence even when the caller passes a generator.
+        tier_seq = list(tier_assignments)
+        residuals = gather_selected_residuals(
+            tier_seq,
+            checkpoint_handle=target,
+            store=store,
+            source_layer=source_layer,
+            device=self.device,
+        )
+        materialization = materialize_kv_direct(
+            residuals,
+            self.runtime,
+            hot_budget_mib=int(hot_budget_mib),
+            tier_assignments=tier_seq,
+        )
+        return residuals, materialization
+
+    def answer_with_kv_direct(
+        self,
+        query_text: str,
+        tier_assignments,
+        *,
+        hot_budget_mib: int,
+        warm_config,
+        generation_config,
+        warm_scores: dict[int, float] | None = None,
+        query_id: str | None = None,
+        handle: CheckpointHandle | None = None,
+    ) -> QueryResult:
+        """Run the axis-5 KV-direct generation path end-to-end.
+
+        Pipeline
+        --------
+        1. :meth:`prepare_kv_direct_materialization` — reads residuals
+           and projects K/V (Path-A guard active).
+        2. :meth:`TorchInferenceRuntime.generate_with_kv_direct_materialization`
+           — generates from the fresh query with the archived K/V
+           prepended at ``source_layer+1``.
+        3. Returns a :class:`QueryResult` whose
+           ``strict_assertions`` dict reports the axis-5 conformance
+           invariants (Path-A replay count, observed hot budget, VRAM
+           deltas, tier counts).
+
+        Parameters
+        ----------
+        query_text:
+            Fresh user query. Never touches archived tokens.
+        tier_assignments:
+            Iterable of ``TierAssignment`` for a single checkpoint.
+        hot_budget_mib:
+            Hard K+V footprint ceiling (MiB).
+        warm_config:
+            :class:`WarmPenaltyConfig` — currently documented only; live
+            subtractive penalty is follow-up work.
+        generation_config:
+            :class:`GenerationConfig` — sampling + ``max_new_tokens``.
+        warm_scores:
+            Optional per-window scores for eventual per-warm scaling.
+        query_id:
+            Optional opaque id echoed onto the result metadata.
+        handle:
+            Defaults to ``self.handles[0]``.
+        """
+        # Materialize once; keep the concrete sequence for subsequent
+        # tier-map construction so we do not double-iterate a generator.
+        tier_seq = list(tier_assignments)
+        residuals, materialization = self.prepare_kv_direct_materialization(
+            tier_seq, hot_budget_mib=hot_budget_mib, handle=handle,
+        )
+        tier_map = {
+            int(a.candidate.window_id): a.tier for a in tier_seq
+        }
+
+        # Wrap the raw query in a chat template so the model emits an
+        # assistant turn instead of an empty turn-boundary sequence. The
+        # archived KV prefix provides the memory context; the system prompt
+        # still guides answer style.
+        try:
+            templated_prompt = self.tokenizer.apply_chat_template(
+                [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": query_text},
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:  # noqa: BLE001 - fall back to raw query on any issue
+            templated_prompt = query_text
+
+        result = self.runtime.generate_with_kv_direct_materialization(
+            templated_prompt,
+            generation_config,
+            materialization=materialization,
+            per_window_token_ranges=dict(residuals.per_window_token_ranges),
+            tier_assignments=tier_map,
+            warm_config=warm_config,
+            warm_scores=warm_scores,
+            source_layer=residuals.source_layer,
+            query_id=query_id,
+        )
+
+        chosen_handle = handle if handle is not None else self.handles[0]
+        first_wid = next(iter(residuals.per_window_token_ranges.keys()), -1)
+        metadata = getattr(result, "metadata", {}) or {}
+        strict_assertions: dict[str, Any] = {
+            "kv_direct_active": True,
+            "path_a_replay_count": int(metadata.get("path_a_replay_count", 0)),
+            "hot_budget_mib_observed": int(
+                materialization.hot_budget_mib_observed
+            ),
+            "vram_peak_mib": int(metadata.get("vram_peak_mib", 0)),
+            "vram_delta_mib": int(metadata.get("vram_delta_mib", 0)),
+            "tier_counts_selected": int(
+                len(residuals.per_window_token_ranges)
+            ),
+            "mask_penalty_applied": bool(
+                metadata.get("mask_penalty_applied", False)
+            ),
+        }
+        return QueryResult(
+            routing_mode="kv_direct",
+            source_session=chosen_handle.session_id,
+            window_id=int(first_wid),
+            matched_window_text="",
+            window_keywords=[],
+            generated_answer=result.text,
+            strict_assertions=strict_assertions,  # type: ignore[arg-type]
+            routing_score=None,
+        )
+
     def refresh_handles(
         self,
         checkpoint_root: Path,

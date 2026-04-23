@@ -244,6 +244,30 @@ def build_execution(query_text: str, planted_phrase: str, result: Any) -> Any:
     )
 
 
+def axis6_fields_for_result(result: Any, *, exception_caught: bool = False) -> dict[str, Any]:
+    """Return the 6 axis-6 (repl-observability) fields for the EXACT-ID probe.
+
+    This helper remains for the exact-ID row ONLY. The KV-direct probe
+    uses the typed :class:`QueryExecution` carrying native axis-6 fields
+    via ``build_kv_direct_execution``; no splice is required for that row.
+
+    TRUTHFULNESS: the exact-ID path does NOT drive axis-5 (no router, no
+    tiering, no KV-direct materialization), so the first five fields
+    remain sentinel values. ``no_silent_fallback`` is computed truthfully
+    — True iff a window was selected AND no recall exception was caught.
+    """
+    window_id = getattr(result, "window_id", None)
+    no_silent_fallback = (not exception_caught) and (window_id is not None)
+    return {
+        "selected_tier": getattr(result, "selected_tier", "not-implemented-yet"),
+        "mask_penalty_applied": bool(getattr(result, "mask_penalty_applied", False)),
+        "kv_direct_active": bool(getattr(result, "kv_direct_active", False)),
+        "vram_peak_mib": getattr(result, "vram_peak_mib", None),
+        "vram_delta_mib": getattr(result, "vram_delta_mib", None),
+        "no_silent_fallback": bool(no_silent_fallback),
+    }
+
+
 def run_harness(
     *,
     output_root: Path,
@@ -251,8 +275,12 @@ def run_harness(
     model_path: str | None,
     max_new_tokens: int,
     planted_phrase: str,
+    kv_direct_probe: bool = True,
 ) -> dict[str, Any]:
     from chuk_lazarus.cross_session_demo.report import build_report
+    from chuk_lazarus.cross_session_demo.verification import (
+        build_kv_direct_execution,
+    )
     from interactive_memory_chat import MemoryChat
 
     if output_root.exists():
@@ -302,19 +330,140 @@ def run_harness(
     if chat.retriever is None:
         raise RuntimeError("Retriever was not available after saving the live-indexed session")
 
+    # The exact-id retrieval has no recall-fallback shim in this harness:
+    # if query_exact_id raises, the exception propagates and run_harness
+    # fails fast (HARNESS_FAIL is printed by main()). Reaching this line
+    # therefore implies no exception was caught for this query.
+    exception_caught = False
     result = chat.retriever.query_exact_id(planted_clause["clause_id"])
     execution = build_execution(planted_clause["clause_id"], planted_phrase, result)
+    axis6_fields = axis6_fields_for_result(
+        result, exception_caught=exception_caught
+    )
+
+    # ── axis-6 final-impl: real axis-5 KV-direct probe ────────────────────
+    # Call the REAL axis-5 KV-direct runtime path using the same retriever.
+    # If axis-5 raises, the exception propagates (no silent fallback). The
+    # typed QueryExecution returned by build_kv_direct_execution carries
+    # real axis-6 fields natively — no post-serialisation splice required.
+    executions: list[Any] = [execution]
+    kv_execution_summary: dict[str, Any] | None = None
+    if kv_direct_probe:
+        from chuk_lazarus.inference.backends.torch_runtime import (
+            WarmPenaltyConfig,
+        )
+        from chuk_lazarus.inference.generation import GenerationConfig
+        from chuk_lazarus.session_retrieval import (
+            asi_route_candidates,
+            assign_tiers,
+        )
+
+        # Use the planted clause content as the routing query_text so the
+        # one-session harness reliably lands on the planted window.
+        kv_query_text = planted_clause["clause_content"]
+
+        candidate_pool = int(os.environ.get("LAZARUS_KV_CANDIDATE_POOL", "16"))
+        k_hot = int(os.environ.get("LAZARUS_KV_K_HOT", "4"))
+        k_warm = int(os.environ.get("LAZARUS_KV_K_WARM", "8"))
+        hot_budget_mib = int(os.environ.get("LAZARUS_KV_HOT_BUDGET_MIB", "32"))
+
+        candidates = asi_route_candidates(
+            chat.retriever.handles,
+            kv_query_text,
+            chat.retriever.tokenizer,
+            candidate_pool=candidate_pool,
+        )
+        if not candidates:
+            raise RuntimeError(
+                "axis-6 KV-direct probe: asi_route_candidates returned empty "
+                "for the planted clause content"
+            )
+
+        tier_assignments = assign_tiers(
+            candidates,
+            K_HOT=k_hot,
+            K_WARM=k_warm,
+            candidate_pool=candidate_pool,
+        )
+
+        top_handle = tier_assignments[0].candidate.handle
+        assignments_for_handle = [
+            a for a in tier_assignments
+            if a.candidate.handle.session_id == top_handle.session_id
+        ]
+
+        warm_config = WarmPenaltyConfig()
+        gen_config = GenerationConfig(
+            max_new_tokens=int(max_new_tokens),
+            temperature=0.0,
+            top_p=1.0,
+        )
+
+        kv_result = chat.retriever.answer_with_kv_direct(
+            kv_query_text,
+            assignments_for_handle,
+            hot_budget_mib=hot_budget_mib,
+            warm_config=warm_config,
+            generation_config=gen_config,
+            handle=top_handle,
+        )
+
+        # Derive selected_tier override from assignments grouping.
+        tiers_used = {a.tier.value for a in assignments_for_handle}
+        if len(tiers_used) == 1:
+            selected_tier_override = next(iter(tiers_used))
+        elif tiers_used == {"hot", "warm"}:
+            selected_tier_override = "hot+warm"
+        else:
+            selected_tier_override = "mixed"
+
+        kv_execution = build_kv_direct_execution(
+            kv_query_text,
+            planted_phrase,
+            kv_result,
+            selected_tier_override=selected_tier_override,
+            exception_caught=False,
+        )
+        executions.append(kv_execution)
+        kv_execution_summary = {
+            "selected_tier": kv_execution.selected_tier,
+            "kv_direct_active": kv_execution.kv_direct_active,
+            "mask_penalty_applied": kv_execution.mask_penalty_applied,
+            "vram_peak_mib": kv_execution.vram_peak_mib,
+            "vram_delta_mib": kv_execution.vram_delta_mib,
+            "tier_counts_selected": kv_execution.tier_counts_selected,
+            "path_a_replay_count": kv_execution.path_a_replay_count,
+            "hot_budget_mib_observed": kv_execution.hot_budget_mib_observed,
+            "no_silent_fallback": kv_execution.no_silent_fallback,
+            "verbatim_hit": kv_execution.verbatim_hit,
+            "generated_answer": kv_execution.generated_answer,
+            "source_session": kv_execution.source_session,
+            "window_id": kv_execution.window_id,
+        }
+
     report = build_report(
         sessions=[{"session_id": saved_session_id}],
         total_tokens=total_tokens,
-        executions=[execution],
+        executions=executions,
         repo_root=REPO_ROOT,
     )
 
     report_path = output_root / "report.json"
-    report_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    # axis-6 (final-impl): the KV-direct QueryExecution now carries its
+    # axis-6 fields natively via the typed Pydantic model — no splice
+    # required for that row. The exact-ID row (index 0) still splices
+    # because its non-kv path produces sentinel values.
+    report_dict = json.loads(report.model_dump_json())
+    axis6_per_execution = [axis6_fields]  # only the exact-ID row
+    for idx, qe in enumerate(report_dict.get("query_executions", [])):
+        if idx < len(axis6_per_execution):
+            for k, v in axis6_per_execution[idx].items():
+                qe[k] = v
+    report_path.write_text(
+        json.dumps(report_dict, indent=2), encoding="utf-8"
+    )
 
-    return {
+    summary: dict[str, Any] = {
         "output_root": str(output_root),
         "report_json": str(report_path),
         "live_store_checkpoints_root": str(chat.checkpoints_root),
@@ -331,7 +480,11 @@ def run_harness(
         "generated_answer": result.generated_answer,
         "matched_window_text": result.matched_window_text,
         "turn_outputs": turn_outputs,
+        "kv_direct_probe_enabled": bool(kv_direct_probe),
     }
+    if kv_execution_summary is not None:
+        summary["kv_direct_execution"] = kv_execution_summary
+    return summary
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -355,6 +508,19 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_PLANTED_PHRASE,
         help="Phrase that must appear verbatim in one assistant clause",
     )
+    parser.add_argument(
+        "--kv-direct-probe",
+        dest="kv_direct_probe",
+        action="store_true",
+        default=True,
+        help="Run the axis-5 KV-direct probe after the exact-ID probe (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-kv-direct-probe",
+        dest="kv_direct_probe",
+        action="store_false",
+        help="Skip the axis-5 KV-direct probe.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -364,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
             model_path=args.model_path,
             max_new_tokens=args.max_new_tokens,
             planted_phrase=args.planted_phrase,
+            kv_direct_probe=args.kv_direct_probe,
         )
     except Exception as exc:  # noqa: BLE001
         print("HARNESS_FAIL")

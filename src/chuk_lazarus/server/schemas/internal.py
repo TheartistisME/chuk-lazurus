@@ -122,6 +122,15 @@ class InternalRequest(BaseModel):
     stream: bool = False
     stop: list[str] | None = None
     tools: list[Tool] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
+    conversation_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional per-conversation identifier used by the torch "
+            "residual-bounded KV-direct runtime to key the WARM residual "
+            "cache so multi-turn chats can skip the split-prefill forward."
+        ),
+    )
 
 
 # ── Response ──────────────────────────────────────────────────────────────────

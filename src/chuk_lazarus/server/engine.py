@@ -48,15 +48,21 @@ logger = logging.getLogger(__name__)
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
 
-def _build_pipeline_config(backend: str | None, device: str | None):
+def _build_pipeline_config(
+    backend: str | None,
+    device: str | None,
+    engine: str | None = None,
+    hot_budget_mib: int | None = None,
+):
     """Build an optional UnifiedPipelineConfig from server overrides."""
-    if backend is None and device is None:
+    if backend is None and device is None and engine is None and hot_budget_mib is None:
         return None
 
     from chuk_lazarus.inference import UnifiedPipelineConfig
     from chuk_lazarus.inference.backends.types import LazarusBackend
+    from chuk_lazarus.inference.unified import EngineMode
 
-    kwargs: dict[str, str | LazarusBackend] = {}
+    kwargs: dict[str, str | int | LazarusBackend | EngineMode] = {}
 
     if backend is not None:
         normalized_backend = backend.strip().lower()
@@ -73,6 +79,12 @@ def _build_pipeline_config(backend: str | None, device: str | None):
 
     if device is not None:
         kwargs["device"] = device
+
+    if engine is not None:
+        kwargs["engine"] = EngineMode(engine)
+
+    if hot_budget_mib is not None:
+        kwargs["hot_budget_mib"] = hot_budget_mib
 
     return UnifiedPipelineConfig(**kwargs)
 
@@ -132,8 +144,28 @@ def _stream_tokens(model, tokenizer, prompt: str, config):
         mx.eval(output.logits)
 
 
-def _stream_tokens_torch(runtime, prompt: str, config):
-    """Token streamer for the torch runtime using Hugging Face's text streamer."""
+def _stream_tokens_torch(runtime, prompt: str, config, *, conversation_id: str | None = None):
+    """Token streamer for the torch runtime using Hugging Face's text streamer.
+
+    ``conversation_id`` is forwarded to :meth:`TorchInferenceRuntime.stream_generate`
+    so the residual-bounded KV-direct path can key its WARM session cache.
+    Runtimes without the kwarg (older shims, mocks) gracefully degrade.
+    """
+    if getattr(runtime, "engine_mode", "standard") != "standard" and hasattr(
+        runtime, "stream_generate"
+    ):
+        if conversation_id is not None:
+            try:
+                yield from runtime.stream_generate(
+                    prompt, config, conversation_id=conversation_id
+                )
+                return
+            except TypeError:
+                # Runtime didn't accept the kwarg — fall through to plain call.
+                pass
+        yield from runtime.stream_generate(prompt, config)
+        return
+
     from transformers import TextIteratorStreamer
 
     model_inputs = runtime._tokenize_prompt(prompt)
@@ -204,6 +236,10 @@ def _apply_template(tokenizer, request: InternalRequest) -> str:
         messages.append(entry)
 
     kwargs: dict = {"tokenize": False, "add_generation_prompt": True}
+    if request.chat_template_kwargs:
+        kwargs.update(request.chat_template_kwargs)
+        kwargs["tokenize"] = False
+        kwargs["add_generation_prompt"] = True
     if request.tools:
         kwargs["tools"] = [t.model_dump() for t in request.tools]
 
@@ -282,16 +318,81 @@ class ModelEngine:
             ...
     """
 
-    def __init__(self, pipeline: UnifiedPipeline, model_id: str) -> None:
+    def __init__(
+        self,
+        pipeline: UnifiedPipeline,
+        model_id: str,
+        source_model_id: str | None = None,
+        session_cache_size: int | None = None,
+    ) -> None:
         self._pipeline = pipeline
         self._model_id = model_id
+        self._source_model_id = source_model_id or model_id
         self._lock = threading.Lock()
+        # The WARM residual session cache is only live for the torch
+        # ``residual_bounded_kv_direct`` engine. For every other path the
+        # attribute stays ``None`` and the runtime behaves as before.
+        self._session_cache = None
+        self._session_cache_size = session_cache_size
+        self._maybe_install_session_cache()
 
     # ── Properties ────────────────────────────────────────────────────────────
 
     @property
     def model_id(self) -> str:
         return self._model_id
+
+    @property
+    def source_model_id(self) -> str:
+        return self._source_model_id
+
+    @property
+    def session_cache(self):
+        """The WARM residual session cache if one is installed, else ``None``."""
+        return self._session_cache
+
+    # ── Session cache ─────────────────────────────────────────────────────────
+
+    def _maybe_install_session_cache(self) -> None:
+        """Lazily build and attach a residual session cache when applicable.
+
+        The cache is only meaningful when the runtime engine mode is
+        ``residual_bounded_kv_direct`` — the only path that both bounds the
+        hot KV and keeps a boundary residual on GPU. For every other engine
+        mode this is a no-op and ``self._session_cache`` stays ``None``.
+        """
+        runtime = getattr(self._pipeline, "runtime", None) if self._pipeline else None
+        if runtime is None:
+            return
+        engine_mode = getattr(runtime, "engine_mode", None)
+        if engine_mode != "residual_bounded_kv_direct":
+            return
+        attach = getattr(runtime, "attach_session_cache", None)
+        if not callable(attach):
+            return
+
+        from ._residual_session_cache import DEFAULT_MAX_SESSIONS, ResidualSessionCache
+
+        max_sessions = (
+            int(self._session_cache_size)
+            if self._session_cache_size is not None
+            else DEFAULT_MAX_SESSIONS
+        )
+
+        eviction_hook = None
+        try:
+            from chuk_lazarus.inference.backends._torch_residual_session import (
+                make_cuda_eviction_hook,
+            )
+
+            eviction_hook = make_cuda_eviction_hook()
+        except Exception:  # pragma: no cover - torch import paths
+            eviction_hook = None
+
+        self._session_cache = ResidualSessionCache(
+            max_sessions=max_sessions, eviction_hook=eviction_hook
+        )
+        attach(self._session_cache)
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -302,6 +403,10 @@ class ModelEngine:
         verbose: bool = True,
         backend: str | None = None,
         device: str | None = None,
+        engine: str | None = None,
+        hot_budget_mib: int | None = None,
+        served_model_name: str | None = None,
+        session_cache_size: int | None = None,
     ) -> ModelEngine:
         """Async factory — loads the model in a thread pool."""
         loop = asyncio.get_running_loop()
@@ -312,6 +417,10 @@ class ModelEngine:
                 verbose,
                 backend=backend,
                 device=device,
+                engine=engine,
+                hot_budget_mib=hot_budget_mib,
+                served_model_name=served_model_name,
+                session_cache_size=session_cache_size,
             ),
         )
 
@@ -322,16 +431,25 @@ class ModelEngine:
         verbose: bool,
         backend: str | None = None,
         device: str | None = None,
+        engine: str | None = None,
+        hot_budget_mib: int | None = None,
+        served_model_name: str | None = None,
+        session_cache_size: int | None = None,
     ) -> ModelEngine:
         from chuk_lazarus.inference import UnifiedPipeline
 
-        pipeline_config = _build_pipeline_config(backend, device)
+        pipeline_config = _build_pipeline_config(backend, device, engine, hot_budget_mib)
         pipeline = UnifiedPipeline.from_pretrained(
             model_id,
             pipeline_config=pipeline_config,
             verbose=verbose,
         )
-        return cls(pipeline, model_id)
+        return cls(
+            pipeline,
+            served_model_name or model_id,
+            source_model_id=model_id,
+            session_cache_size=session_cache_size,
+        )
 
     # ── Private sync generation ───────────────────────────────────────────────
 
@@ -347,7 +465,9 @@ class ModelEngine:
         )
 
         with self._lock:
-            result = self._pipeline.generate(prompt, config=config)
+            result = self._pipeline.generate(
+                prompt, config=config, conversation_id=request.conversation_id
+            )
 
         usage = InternalUsage(
             prompt_tokens=result.stats.input_tokens,
@@ -405,7 +525,12 @@ class ModelEngine:
             try:
                 runtime = self._pipeline.runtime
                 if runtime.backend.value == "cuda":
-                    token_stream = _stream_tokens_torch(runtime, prompt, config)
+                    token_stream = _stream_tokens_torch(
+                        runtime,
+                        prompt,
+                        config,
+                        conversation_id=request.conversation_id,
+                    )
                 else:
                     token_stream = _stream_tokens(
                         self._pipeline.model,

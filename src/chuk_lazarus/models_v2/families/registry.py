@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from .constants import HFModelType
+from .constants import HFArchitecture, HFModelType
 
 if TYPE_CHECKING:
     pass
@@ -150,6 +150,7 @@ MODEL_TYPE_PATTERNS = {
     "starcoder2": ModelFamilyType.STARCODER2,
     "qwen3": ModelFamilyType.QWEN3,
     "qwen2": ModelFamilyType.QWEN3,  # Qwen2 uses same arch
+    "qwen3_5_moe": ModelFamilyType.QWEN3,  # Qwen3.5/3.6 MoE uses Qwen path
     "gpt2": ModelFamilyType.GPT2,
     "gpt_neo": ModelFamilyType.GPT_NEO,
     "gpt_neox": ModelFamilyType.GPT_NEOX,
@@ -200,6 +201,7 @@ ARCHITECTURE_PATTERNS = {
     "Starcoder2ForCausalLM": ModelFamilyType.STARCODER2,
     "Qwen2ForCausalLM": ModelFamilyType.QWEN3,
     "Qwen3ForCausalLM": ModelFamilyType.QWEN3,
+    "Qwen3_5MoeForConditionalGeneration": ModelFamilyType.QWEN3,
     "GPT2LMHeadModel": ModelFamilyType.GPT2,
     "GPTNeoForCausalLM": ModelFamilyType.GPT_NEO,
     "GPTNeoXForCausalLM": ModelFamilyType.GPT_NEOX,
@@ -418,8 +420,16 @@ class ModelFamilyRegistry:
                 family_type=ModelFamilyType.QWEN3,
                 config_class=lazy(".qwen3.config", "Qwen3Config"),
                 model_class=lazy(".qwen3.model", "Qwen3ForCausalLM"),
-                model_types=[HFModelType.QWEN2.value, HFModelType.QWEN3.value],
-                architectures=["Qwen2ForCausalLM", "Qwen3ForCausalLM"],
+                model_types=[
+                    HFModelType.QWEN2.value,
+                    HFModelType.QWEN3.value,
+                    HFModelType.QWEN3_5_MOE.value,
+                ],
+                architectures=[
+                    HFArchitecture.QWEN2_FOR_CAUSAL_LM,
+                    HFArchitecture.QWEN3_FOR_CAUSAL_LM,
+                    HFArchitecture.QWEN3_5_MOE_FOR_CONDITIONAL_GENERATION,
+                ],
             )
         )
 

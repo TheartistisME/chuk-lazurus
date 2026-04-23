@@ -62,3 +62,18 @@ def test_torch_host_can_resolve_gpt2_config_without_loading_mlx(monkeypatch):
     assert "chuk_lazarus.models_v2.families.gpt2.convert" not in sys.modules
     assert "chuk_lazarus.models_v2.families.gemma.convert" not in sys.modules
     assert "mlx.core" not in sys.modules
+
+
+def test_torch_host_detects_qwen35_moe_as_qwen_family(monkeypatch):
+    """Qwen3.5/3.6 MoE checkpoints should route through the Qwen family."""
+    monkeypatch.setenv("CHUK_BACKEND", "torch")
+    _clear_modules("chuk_lazarus.models_v2.families.registry", "mlx")
+
+    registry = importlib.import_module("chuk_lazarus.models_v2.families.registry")
+
+    assert registry.detect_model_family(
+        {"model_type": "qwen3_5_moe"}
+    ) == registry.ModelFamilyType.QWEN3
+    assert registry.detect_model_family(
+        {"architectures": ["Qwen3_5MoeForConditionalGeneration"]}
+    ) == registry.ModelFamilyType.QWEN3

@@ -32,3 +32,29 @@ def test_openai_router_exports_router():
     assert router is not None
     paths = {r.path for r in router.routes}
     assert any("chat/completions" in p for p in paths)
+
+
+def test_chat_completion_request_accepts_structured_user_content():
+    from chuk_lazarus.server.schemas.openai import ChatCompletionRequest
+
+    request = ChatCompletionRequest.model_validate(
+        {
+            "model": "qwen3.6-35b-local",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hi"},
+                        {"type": "text", "text": "there"},
+                    ],
+                }
+            ],
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
+    )
+
+    internal = request.to_internal(default_max_tokens=321)
+
+    assert internal.messages[0].content == "hi\nthere"
+    assert internal.chat_template_kwargs == {"enable_thinking": True}
+    assert internal.max_tokens == 321

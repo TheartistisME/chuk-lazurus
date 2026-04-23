@@ -33,6 +33,14 @@ Commands (typed at the prompt):
   /query <text>         topical recall probe (no chat-history mutation)
   /exact  <dotted-id>   exact-id recall probe (no chat-history mutation)
   /entity <text>        entity-mention recall probe (no chat-history mutation)
+  /kv_query <text>      axis-5 KV-direct query — runs the real ASI-router +
+                        tier-policy + KV-direct runtime path. Surfaces the
+                        real axis-6 observability fields (selected_tier,
+                        mask_penalty_applied, kv_direct_active, vram_peak_mib,
+                        vram_delta_mib, no_silent_fallback) on self.last_meta.
+                        Env overrides: LAZARUS_KV_CANDIDATE_POOL (default 16),
+                        LAZARUS_KV_K_HOT (4), LAZARUS_KV_K_WARM (8),
+                        LAZARUS_KV_HOT_BUDGET_MIB (32).
   /stats                print store summary
   /last                 print last turn's routing metadata
   /history              dump the current session transcript
@@ -162,6 +170,17 @@ class TurnMetadata:
     prompt_tokens: int = 0
     generated_tokens: int = 0
     generated_answer: str | None = None
+    # ── axis-6 (repl-observability) fields ─────────────────────────────────
+    # Defaults are only sentinel values for non-KV retrieval paths.
+    # The real `/kv_query` path overwrites these with truthful runtime
+    # values from router/tier/KV-direct execution. `no_silent_fallback`
+    # is always computed truthfully.
+    selected_tier: str = "not-implemented-yet"
+    mask_penalty_applied: bool = False
+    kv_direct_active: bool = False
+    vram_peak_mib: Optional[float] = None
+    vram_delta_mib: Optional[float] = None
+    no_silent_fallback: bool = False
 
     def pretty_print(self) -> None:
         if self.mode == "plain":
@@ -184,6 +203,22 @@ class TurnMetadata:
         if self.strict_assertions:
             asserts = " ".join(f"{k}={v}" for k, v in self.strict_assertions.items())
             print(f"  strict_asserts  : {asserts}")
+        # ── axis-6 observability ───────────────────────────────────────────
+        # Sentinel tag flags non-KV retrieval paths. When the real
+        # KV-direct path ran (``kv_direct_active`` True OR
+        # mode == "kv_direct"), the fields below carry real values and
+        # the sentinel tag is omitted.
+        # ``no_silent_fallback`` is always computed truthfully so it
+        # carries no sentinel tag regardless.
+        real_kv = bool(self.kv_direct_active) or self.mode == "kv_direct"
+        _sent = "" if real_kv else " (sentinel: non-kv path)"
+        print(f"  axis-6 observability:")
+        print(f"    selected_tier        : {self.selected_tier}{_sent}")
+        print(f"    mask_penalty_applied : {self.mask_penalty_applied}{_sent}")
+        print(f"    kv_direct_active     : {self.kv_direct_active}{_sent}")
+        print(f"    vram_peak_mib        : {self.vram_peak_mib}{_sent}")
+        print(f"    vram_delta_mib       : {self.vram_delta_mib}{_sent}")
+        print(f"    no_silent_fallback   : {self.no_silent_fallback}")
         print(f"  timing (s)      : retrieve={self.retrieve_time:.2f}  generate={self.generate_time:.2f}  total={self.total_time:.2f}")
         print(f"  tokens          : prompt={self.prompt_tokens}  generated={self.generated_tokens}")
         print("=" * HEADER_W)
@@ -308,14 +343,35 @@ class MemoryChat:
         (line ~148). Falls back to the empirically validated Gemma 4 E2B
         (35-layer) defaults if ArchitectureConfig cannot resolve the model.
         """
-        # Gemma-4 E2B safety-net defaults.
-        retrieval_layer = 28
-        query_head = 7
-        injection_layer = 29
-        hidden_dim = 1536
-        head_dim = 256
-        crystal_layer = 29
-        window_size = 512
+        # Gemma-4 E2B requires KV-sharing-aware injection config.
+        # Only layers 0-14 have their own k_proj/v_proj. Layers 15-34 reuse K/V
+        # from layer 13 (sliding) or layer 14 (full). Axis-5 KV-direct targets
+        # layer 14 (full-attention master, store_full_length_kv=True); its K/V
+        # is inherited by all downstream full-attention layers (19, 24, 29, 34)
+        # via shared_kv_states. Therefore injection_layer=13 (→ target=14).
+        #
+        # Detect model family and force KV-direct-compatible values.
+        model_family = type(self.model).__name__.lower()
+        is_gemma4 = "gemma4" in model_family
+
+        # Start with family-appropriate defaults.
+        if is_gemma4:
+            retrieval_layer = 12
+            query_head = 7
+            injection_layer = 13
+            hidden_dim = 1536
+            head_dim = 256
+            crystal_layer = 13
+            window_size = 512
+        else:
+            # Legacy Gemma-3 / other defaults.
+            retrieval_layer = 28
+            query_head = 7
+            injection_layer = 29
+            hidden_dim = 1536
+            head_dim = 256
+            crystal_layer = 29
+            window_size = 512
 
         try:
             from chuk_lazarus.inference.context.knowledge.config import (
@@ -323,27 +379,35 @@ class MemoryChat:
             )
 
             ac = ArchitectureConfig.from_model_config(self.model.config)
-            retrieval_layer = int(getattr(ac, "retrieval_layer", retrieval_layer))
-            query_head = int(getattr(ac, "query_head", query_head))
-            injection_layer = int(getattr(ac, "injection_layer", injection_layer))
-            # hidden_dim / head_dim may be 0 on the registry entry; only
-            # overwrite the defaults when positive.
+            # For Gemma-4, DO NOT let the registry override our KV-sharing-aware
+            # layer picks — the registry was set up for non-KV-sharing Gemma-3
+            # geometry. Only consume hidden_dim / head_dim / window_size.
+            if not is_gemma4:
+                retrieval_layer = int(getattr(ac, "retrieval_layer", retrieval_layer))
+                query_head = int(getattr(ac, "query_head", query_head))
+                injection_layer = int(getattr(ac, "injection_layer", injection_layer))
+                ac_crystal_layer = int(getattr(ac, "crystal_layer", -1))
+                if ac_crystal_layer >= 0:
+                    crystal_layer = ac_crystal_layer
             ac_hidden_dim = int(getattr(ac, "hidden_dim", 0) or 0)
             if ac_hidden_dim > 0:
                 hidden_dim = ac_hidden_dim
             ac_head_dim = int(getattr(ac, "head_dim", 0) or 0)
             if ac_head_dim > 0:
                 head_dim = ac_head_dim
-            ac_crystal_layer = int(getattr(ac, "crystal_layer", -1))
-            if ac_crystal_layer >= 0:
-                crystal_layer = ac_crystal_layer
             ac_window_size = int(getattr(ac, "window_size", window_size))
             if ac_window_size > 0:
                 window_size = ac_window_size
         except Exception as exc:  # noqa: BLE001
             info(
-                f"  arch_config fallback engaged ({exc!r}); using hard-coded Gemma-4 E2B defaults"
+                f"  arch_config fallback engaged ({exc!r}); using hard-coded defaults "
+                f"(family_is_gemma4={is_gemma4})"
             )
+        info(
+            f"  arch_config: family_is_gemma4={is_gemma4} "
+            f"retrieval_layer={retrieval_layer} injection_layer={injection_layer} "
+            f"crystal_layer={crystal_layer}"
+        )
 
         arch_config = {
             "retrieval_layer": int(retrieval_layer),
@@ -547,6 +611,15 @@ class MemoryChat:
             # No candidate — fall back to plain chat. Still produce a reply.
             meta.mode = "none"
             info(f"recall fallback: {exc}")
+            # axis-6: SILENT FALLBACK is a first-class failure verdict.
+            # Surface it as a WARN (not an info line) so operators see it
+            # plainly. no_silent_fallback stays False (the default) here
+            # because the intended retrieval path did NOT run end-to-end.
+            print(
+                f"[WARN] axis-6: SILENT FALLBACK DETECTED — mode={self.memory_mode} "
+                f"reason=recall_exception",
+                flush=True,
+            )
             # Rewind the session/history to avoid duplicate user turn
             self.session.turns.pop()
             if self.history.messages:
@@ -588,6 +661,18 @@ class MemoryChat:
         # split out the non-retrieve path inside the retriever; report total.)
         meta.generate_time = max(0.0, meta.total_time - meta.retrieve_time)
 
+        # axis-6: compute no_silent_fallback truthfully. The intended
+        # retrieval-path actually ran end-to-end iff the mode is not 'none'
+        # AND a window was selected AND we reached this point without the
+        # except-branch having returned (we are below the except block, so
+        # by construction no recall exception was caught this turn).
+        # selected_tier remains the sentinel on this non-KV path.
+        # Deriving a tier here would fabricate evidence; only /kv_query
+        # carries real tier data.
+        meta.no_silent_fallback = (
+            meta.mode != "none" and meta.window_id is not None
+        )
+
         # Append assistant turn to session/history
         assistant_turn = self.session.begin_turn(Role.ASSISTANT, result.generated_answer)
         self.session.finish_turn(assistant_turn)
@@ -596,6 +681,167 @@ class MemoryChat:
         # Print debug block BEFORE the reply so you see routing first
         meta.pretty_print()
         print(f"gemma> {result.generated_answer}\n", flush=True)
+        return meta
+
+    # ── axis-5 KV-direct recall turn ───────────────────────────────────────
+
+    def kv_query_turn(self, query_text: str) -> TurnMetadata:
+        """Run a single axis-5 KV-direct query. Used by ``/kv_query`` and by
+        the REPL integration tests.
+
+        Returns a :class:`TurnMetadata` populated with the REAL axis-6
+        observability fields from ``result.strict_assertions``. On
+        silent-fallback conditions (router returns nothing, or
+        ``answer_with_kv_direct`` raises), prints a first-class WARN,
+        sets ``no_silent_fallback=False``, and falls back to plain chat
+        (same pattern as ``recall_chat_turn``).
+        """
+        if self.retriever is None:
+            info("kv_query skipped: no retriever (store is empty — /save something first)")
+            return TurnMetadata(mode="none", no_silent_fallback=False)
+
+        from chuk_lazarus.inference.backends.torch_runtime import WarmPenaltyConfig
+        from chuk_lazarus.inference.generation import GenerationConfig
+        from chuk_lazarus.session_retrieval import (
+            asi_route_candidates,
+            assign_tiers,
+        )
+
+        candidate_pool = int(os.environ.get("LAZARUS_KV_CANDIDATE_POOL", "16"))
+        k_hot = int(os.environ.get("LAZARUS_KV_K_HOT", "4"))
+        k_warm = int(os.environ.get("LAZARUS_KV_K_WARM", "8"))
+        hot_budget_mib = int(os.environ.get("LAZARUS_KV_HOT_BUDGET_MIB", "32"))
+
+        t_total_start = time.time()
+        t_retrieve_start = time.time()
+
+        # Build a meta stub; populate fields as we progress.
+        meta = TurnMetadata(mode="kv_direct")
+
+        try:
+            candidates = asi_route_candidates(
+                self.retriever.handles,
+                query_text,
+                self.retriever.tokenizer,
+                candidate_pool=candidate_pool,
+            )
+            if not candidates:
+                raise RuntimeError("asi_route_candidates returned no candidates")
+
+            tier_assignments = assign_tiers(
+                candidates,
+                K_HOT=k_hot,
+                K_WARM=k_warm,
+                candidate_pool=candidate_pool,
+            )
+            if not tier_assignments:
+                raise RuntimeError("assign_tiers produced zero assignments")
+
+            # Group assignments by the handle that owns the candidate.
+            # The top-ranked candidate's handle is used as the target
+            # checkpoint; all tier assignments for that same handle are
+            # passed to materialization (axis-5 requires single-handle
+            # assignments per prepare_kv_direct_materialization call).
+            top_handle = tier_assignments[0].candidate.handle
+            assignments_for_handle = [
+                a for a in tier_assignments
+                if a.candidate.handle.session_id == top_handle.session_id
+            ]
+            if not assignments_for_handle:
+                raise RuntimeError(
+                    "no tier assignments owned by top-ranked candidate's handle"
+                )
+
+            warm_config = WarmPenaltyConfig()
+            gen_config = GenerationConfig(
+                max_new_tokens=int(self.max_new_tokens),
+                temperature=0.0,
+                top_p=1.0,
+            )
+
+            result = self.retriever.answer_with_kv_direct(
+                query_text,
+                assignments_for_handle,
+                hot_budget_mib=hot_budget_mib,
+                warm_config=warm_config,
+                generation_config=gen_config,
+                handle=top_handle,
+            )
+        except (ValueError, RuntimeError) as exc:
+            # axis-6: SILENT FALLBACK DETECTED — first-class WARN.
+            print(
+                f"[WARN] axis-6: SILENT FALLBACK DETECTED — mode=kv_direct "
+                f"reason={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            meta.mode = "none"
+            meta.no_silent_fallback = False
+            info(f"kv_direct fallback to plain chat: {exc}")
+            return self.plain_chat_turn(query_text)
+
+        t_retrieve = time.time() - t_retrieve_start
+
+        # Populate metadata with the REAL axis-5 strict_assertions payload.
+        kv_strict = dict(result.strict_assertions or {})
+        meta.routing_mode = result.routing_mode
+        meta.source_session = result.source_session
+        meta.window_id = result.window_id
+        meta.routing_score = result.routing_score
+        meta.matched_window_text = result.matched_window_text or ""
+        meta.window_keywords = list(result.window_keywords or [])
+        # Keep legacy strict_assertions dict available for the pretty-print
+        # `strict_asserts` line; these are the axis-5 KV-direct keys, NOT
+        # the six strict-mode booleans (the strict booleans do not apply
+        # to the KV-direct path — axis-5 defines its own invariants).
+        meta.strict_assertions = {k: bool(v) for k, v in kv_strict.items()}
+        meta.generated_answer = result.generated_answer
+        meta.retrieve_time = t_retrieve
+
+        # axis-6 observability fields — REAL values from result.
+        meta.kv_direct_active = bool(kv_strict.get("kv_direct_active", False))
+        meta.mask_penalty_applied = bool(kv_strict.get("mask_penalty_applied", False))
+        meta.vram_peak_mib = kv_strict.get("vram_peak_mib", None)
+        meta.vram_delta_mib = kv_strict.get("vram_delta_mib", None)
+        # selected_tier: derive from the tier assignments used for this
+        # handle. When the assignments span HOT + WARM we label "hot+warm"
+        # (or "mixed" when COLD sneaks in). Single-tier sets return the
+        # single label.
+        tiers_used = {a.tier.value for a in assignments_for_handle}
+        if not tiers_used:
+            meta.selected_tier = "kv_direct"
+        elif len(tiers_used) == 1:
+            meta.selected_tier = next(iter(tiers_used))
+        elif tiers_used == {"hot", "warm"}:
+            meta.selected_tier = "hot+warm"
+        else:
+            meta.selected_tier = "mixed"
+
+        # no_silent_fallback: True iff window_id is set (>= 0) AND KV-direct
+        # path actually ran (kv_direct_active flag from the runtime).
+        meta.no_silent_fallback = bool(
+            meta.window_id is not None
+            and int(meta.window_id) != -1
+            and meta.kv_direct_active
+        )
+
+        # Token counts for the reply.
+        gen_ids = self.tokenizer(
+            result.generated_answer, add_special_tokens=False
+        ).input_ids
+        meta.generated_tokens = len(gen_ids)
+        # Prompt tokens approximation: system + query.
+        prompt_preview = (
+            (self.retriever.system_prompt or "") + "\n" + query_text
+        )
+        meta.prompt_tokens = len(
+            self.tokenizer(prompt_preview, add_special_tokens=False).input_ids
+        )
+        meta.total_time = time.time() - t_total_start
+        meta.generate_time = max(0.0, meta.total_time - meta.retrieve_time)
+
+        # Print debug block, then the answer.
+        meta.pretty_print()
+        print(f"kv_direct> {result.generated_answer}\n", flush=True)
         return meta
 
     def _format_recent_history_for_routing(self, user_text: str, n_recent: int = 4) -> str:
@@ -682,6 +928,87 @@ class MemoryChat:
             info("  no live indexer to flush (session had no streamed windows)")
         dt = time.time() - t0
         info(f"  live index flushed in {dt:.2f}s")
+
+        # 3b. axis-1+axis-6 (asi-kv-direct-chat): write per-session
+        # save-state.json checkpoint artifact. Best-effort: a failure here
+        # MUST NOT block /save. Captures completion of the indexer flush
+        # plus all the metadata available at this moment. kv_direct_ready
+        # is hard-coded False; axes 2-5 (runtime fields) have not landed.
+        try:
+            session_root = self.checkpoints_root / sid
+            torch_store_dir = session_root / "torch_store"
+            manifest_abs = torch_store_dir / "manifest.json"
+            boundaries_abs = torch_store_dir / "boundaries"
+            selection_ready_abs = torch_store_dir / "selection_ready"
+
+            # Window count: prefer the manifest the indexer just wrote, fall
+            # back to counting boundary files if manifest is missing/unreadable.
+            window_count = 0
+            try:
+                if manifest_abs.exists():
+                    manifest_obj = json.loads(
+                        manifest_abs.read_text(encoding="utf-8")
+                    )
+                    window_count = int(
+                        manifest_obj.get(
+                            "num_entries", manifest_obj.get("num_windows", 0)
+                        )
+                    )
+            except Exception:  # noqa: BLE001 - best-effort; counting fallback
+                window_count = 0
+
+            boundary_residual_count = (
+                sum(1 for _ in boundaries_abs.glob("window_*.npy"))
+                if boundaries_abs.exists()
+                else 0
+            )
+            selection_ready_descriptor_count = (
+                sum(1 for _ in selection_ready_abs.glob("window_*.json"))
+                if selection_ready_abs.exists()
+                else 0
+            )
+            if window_count == 0:
+                window_count = boundary_residual_count
+
+            save_state = {
+                "schema_version": 1,
+                "kind": "asi_kv_direct_chat_save_state",
+                "session_id": sid,
+                "saved_at_iso": datetime.now(timezone.utc).isoformat(),
+                "entrypoint": (
+                    "scripts/interactive_memory_chat.py::"
+                    "MemoryChat.save_current_session"
+                ),
+                "torch_store_path": "torch_store",
+                "manifest_path": "torch_store/manifest.json",
+                "window_count": int(window_count),
+                "selection_ready_descriptor_dir": "torch_store/selection_ready",
+                "selection_ready_descriptor_count": int(
+                    selection_ready_descriptor_count
+                ),
+                "boundary_residual_dir": "torch_store/boundaries",
+                "boundary_residual_count": int(boundary_residual_count),
+                "transcript_path": str(transcript_path),
+                "aus3000_clauses_count": int(len(written)),
+                "indexer_flush_seconds": float(dt),
+                "kv_direct_ready": False,
+                "kv_direct_pending_reason": (
+                    "axes 2-5 runtime fields not yet landed "
+                    "(lead-runtime-router scope)"
+                ),
+                "axis_1_closure_artifact": True,
+                "baseline_copy_artifact_id": "ve-ins-0mo9oppka000042c2c9",
+                "manifest_id": "ve-ins-0mo9oke0k0000ec93cc",
+            }
+            save_state_path = session_root / "save-state.json"
+            session_root.mkdir(parents=True, exist_ok=True)
+            save_state_path.write_text(
+                json.dumps(save_state, indent=2),
+                encoding="utf-8",
+            )
+            info(f"  save-state -> {save_state_path}")
+        except Exception as exc:  # noqa: BLE001 - additive; never block /save
+            info(f"  save-state write FAILED (non-fatal): {exc!r}")
 
         # 4. Refresh retriever so subsequent turns can see the new session.
         #    First-save path: no retriever exists yet — lazy-load once
@@ -891,6 +1218,14 @@ class MemoryChat:
                 info("usage: /entity <text>")
                 return False
             self.probe("entity_mention", arg)
+            return False
+
+        if head == "/kv_query":
+            if not arg:
+                info("usage: /kv_query <text>")
+                return False
+            meta = self.kv_query_turn(arg)
+            self.last_meta = meta
             return False
 
         info(f"unknown command {head!r} — try /help")

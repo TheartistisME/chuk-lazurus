@@ -62,6 +62,18 @@ class EngineMode(str, Enum):
     KV_DIRECT = "kv_direct"
     """Stateful KVDirectGenerator — works with any supported model family."""
 
+    BOUNDED_KV_DIRECT = "bounded_kv_direct"
+    """Torch KV-direct with a bounded hot KV window."""
+
+    RESIDUAL_BOUNDED_KV_DIRECT = "residual_bounded_kv_direct"
+    """Torch KV-direct bounded by the hot budget, with a residual-backed
+    rebuild path.  Evicted KV is not dropped outright: a
+    Markov-sufficient residual snapshot is kept in device memory and used to
+    re-anchor the hot window via a layer-0 residual-seeded prefill.  Ports
+    the research methodology from
+    ``chuk_lazarus.inference.context.research.bounded_engine`` onto the
+    Qwen torch serve path."""
+
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizer
@@ -102,6 +114,11 @@ class UnifiedPipelineConfig(BaseModel):
 
     # Engine
     engine: EngineMode = Field(EngineMode.STANDARD, description="Inference engine mode")
+    hot_budget_mib: int | None = Field(
+        None,
+        ge=1,
+        description="Optional hot-tier KV budget in MiB for bounded_kv_direct",
+    )
 
     @model_validator(mode="after")
     def _bridge_backend_name(self) -> UnifiedPipelineConfig:
@@ -139,6 +156,52 @@ class IntrospectionResult(BaseModel):
 
     # Pre-head activations
     pre_head_activations: Any | None = None
+
+
+import re as _re
+
+
+_EXPERT_WEIGHT_KEY_RE = _re.compile(
+    r"(?:^|\.)mlp\.experts\.\d+\.(?:gate_proj|up_proj|down_proj)\.weight$"
+)
+
+
+def _raise_if_experts_random_init(loading_info: dict[str, Any], *, log=None) -> None:
+    """Guard against silent MoE expert random-init on compressed-tensors loads.
+
+    ``AutoModelForCausalLM.from_pretrained(..., output_loading_info=True)``
+    returns ``{"missing_keys": [...], "unexpected_keys": [...], ...}``.
+    If the model's expert projections (``…mlp.experts.N.{gate,up,down}_proj.weight``)
+    land in ``missing_keys``, the compressed-tensors quantizer did NOT
+    replace the patched Linears with ``CompressedLinear`` — every expert
+    is random-initialised and the server will either produce token salad
+    or hang inside the Python per-expert dispatch loop.  Better to fail
+    loud than serve garbage.
+    """
+    if not isinstance(loading_info, dict):
+        return
+
+    missing = list(loading_info.get("missing_keys") or [])
+    missing_experts = [key for key in missing if _EXPERT_WEIGHT_KEY_RE.search(key)]
+    if missing_experts:
+        sample = ", ".join(missing_experts[:3])
+        raise RuntimeError(
+            "Compressed-tensors MoE load left expert projections random-initialised "
+            f"({len(missing_experts)} of {len(missing)} missing keys are expert weights; "
+            f"sample: {sample}). Compressed-tensors' CompressedLinear.from_linear did not "
+            "fire on the patched per-expert Linears — check that "
+            "AutoModelForCausalLM.from_pretrained is not using device_map= or "
+            "low_cpu_mem_usage=True on the compressed-tensors branch, because meta-init "
+            "there defeats the quantizer's weight replacement."
+        )
+
+    # Non-expert missing keys are usually benign (tied embeddings etc.).
+    if log is not None:
+        unexpected = list(loading_info.get("unexpected_keys") or [])
+        log(
+            f"   Load report: missing={len(missing)} unexpected={len(unexpected)} "
+            f"(expert-weight MISSING keys: 0 — compressed-tensors replacement OK)"
+        )
 
 
 class UnifiedPipeline:
@@ -206,6 +269,7 @@ class UnifiedPipeline:
                 device=pipeline_config.device or "cuda",
                 engine=pipeline_config.engine.value,
                 family_type=family_type,
+                hot_budget_mib=pipeline_config.hot_budget_mib,
             )
         return MLXInferenceRuntime(model, tokenizer)
 
@@ -394,6 +458,12 @@ class UnifiedPipeline:
         import torch
         from transformers import AutoConfig, AutoModelForCausalLM
 
+        from .backends._torch_qwen_support import (
+            compressed_tensors_quant_method,
+            install_blackwell_causal_conv1d_workaround,
+            install_qwen3_5_moe_per_expert_patch,
+        )
+
         family_info = get_family_info(family_type)
         if family_info is None:
             raise ValueError(f"No family info registered for {family_type}")
@@ -411,7 +481,7 @@ class UnifiedPipeline:
         log("\n2. Detecting model family...")
         log(f"   Detected: {family_type.value}")
         log("\n3. Loading configuration...")
-        model_config = AutoConfig.from_pretrained(str(model_path))
+        model_config = AutoConfig.from_pretrained(str(model_path), trust_remote_code=True)
         # VLM wrappers (Gemma 4, Gemma 3 VLM, PaliGemma, ...) keep the
         # text-backbone dimensions under `text_config` rather than on the
         # top-level config. Unwrap for logging so we don't print None.
@@ -449,14 +519,49 @@ class UnifiedPipeline:
         else:
             torch_dtype = torch.float32
 
-        model = AutoModelForCausalLM.from_pretrained(
-            str(model_path),
-            dtype=torch_dtype,
-            low_cpu_mem_usage=True,
+        quant_method = compressed_tensors_quant_method(model_config)
+        model_type = str(getattr(model_config, "model_type", "") or "").lower()
+        architectures = [str(arch).lower() for arch in getattr(model_config, "architectures", [])]
+        is_qwen35_moe = model_type == "qwen3_5_moe" or any(
+            "qwen3_5moe" in arch for arch in architectures
         )
 
-        to_kwargs = {"non_blocking": True} if resolved_device.startswith("cuda") else {}
-        model = model.to(resolved_device, **to_kwargs)
+        if quant_method == "compressed-tensors" and is_qwen35_moe:
+            log("   Applying Qwen3.5-MoE compressed-tensors load patches...")
+            patch_status = install_qwen3_5_moe_per_expert_patch()
+            workaround_status = install_blackwell_causal_conv1d_workaround()
+            log(f"   Patch      : {patch_status}")
+            log(f"   Workaround : {workaround_status}")
+            # NO ``device_map`` and NO ``low_cpu_mem_usage`` here.  Those
+            # two flags together trigger a meta-init path that runs
+            # BEFORE the compressed-tensors quantizer walks modules with
+            # ``apply_quantization_config`` — the patched per-expert
+            # ``nn.Linear`` leaves are on ``meta`` when that walk happens
+            # and ``CompressedLinear.from_linear``'s ``delattr(module,
+            # "weight")`` step silently no-ops.  The result is every
+            # expert projection ending up random-initialised and the
+            # forward pass routing through all 256 experts in a Python
+            # loop — which is what previously hung the server.  Eager
+            # init on host + explicit ``.to(cuda)`` lets the quantizer
+            # see real Linears and actually swap in ``CompressedLinear``.
+            model, loading_info = AutoModelForCausalLM.from_pretrained(
+                str(model_path),
+                trust_remote_code=True,
+                dtype=torch.float16,
+                output_loading_info=True,
+            )
+            _raise_if_experts_random_init(loading_info, log=log)
+            model = model.to(resolved_device, non_blocking=True)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                str(model_path),
+                trust_remote_code=True,
+                torch_dtype=torch_dtype,
+                low_cpu_mem_usage=True,
+            )
+
+            to_kwargs = {"non_blocking": True} if resolved_device.startswith("cuda") else {}
+            model = model.to(resolved_device, **to_kwargs)
         model.eval()
 
         runtime = TorchInferenceRuntime(
@@ -465,6 +570,7 @@ class UnifiedPipeline:
             device=resolved_device,
             engine=pipeline_config.engine.value,
             family_type=family_type,
+            hot_budget_mib=pipeline_config.hot_budget_mib,
         )
         param_count = sum(int(param.numel()) for param in model.parameters())
 
@@ -573,6 +679,8 @@ class UnifiedPipeline:
         max_new_tokens: int | None = None,
         temperature: float | None = None,
         config: GenerationConfig | None = None,
+        *,
+        conversation_id: str | None = None,
     ) -> GenerationResult:
         """Generate text from a raw prompt.
 
@@ -581,6 +689,9 @@ class UnifiedPipeline:
             max_new_tokens: Max tokens to generate
             temperature: Sampling temperature
             config: Full generation config
+            conversation_id: Optional per-session key used by the torch
+                ``residual_bounded_kv_direct`` runtime to key its WARM
+                residual cache. Ignored by other engine modes.
 
         Returns:
             GenerationResult with text and stats
@@ -595,7 +706,16 @@ class UnifiedPipeline:
                 else self._pipeline_config.default_temperature,
             )
 
-        return self._runtime.generate(prompt, config)
+        # Runtimes that don't accept ``conversation_id`` (MLX, older torch
+        # shims, mocks in tests) just get a plain positional call so the
+        # signature contract stays minimal.
+        generate_fn = self._runtime.generate
+        if conversation_id is not None:
+            try:
+                return generate_fn(prompt, config, conversation_id=conversation_id)
+            except TypeError:
+                return generate_fn(prompt, config)
+        return generate_fn(prompt, config)
 
     def make_engine(self):
         """

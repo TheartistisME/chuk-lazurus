@@ -42,6 +42,7 @@ class HFModelType(str, Enum):
     # Qwen family
     QWEN2 = "qwen2"
     QWEN3 = "qwen3"
+    QWEN3_5_MOE = "qwen3_5_moe"
 
     # GPT-2 family
     GPT2 = "gpt2"
@@ -94,6 +95,7 @@ class HFArchitecture(str, Enum):
     # Qwen family
     QWEN2_FOR_CAUSAL_LM = "Qwen2ForCausalLM"
     QWEN3_FOR_CAUSAL_LM = "Qwen3ForCausalLM"
+    QWEN3_5_MOE_FOR_CONDITIONAL_GENERATION = "Qwen3_5MoeForConditionalGeneration"
 
     # GPT-2 family
     GPT2_LM_HEAD_MODEL = "GPT2LMHeadModel"

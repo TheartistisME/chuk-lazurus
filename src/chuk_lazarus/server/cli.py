@@ -25,6 +25,139 @@ def _missing_uvicorn_dependency(*_args, **_kwargs):
     raise ImportError(SERVER_DEPENDENCY_MESSAGE)
 
 
+# ── Startup debug dump ────────────────────────────────────────────────────────
+
+
+def _fmt_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 ** 2:
+        return f"{n / 1024:.1f} KiB"
+    if n < 1024 ** 3:
+        return f"{n / 1024 ** 2:.1f} MiB"
+    return f"{n / 1024 ** 3:.2f} GiB"
+
+
+def _dump_startup_debug(app, engine, args) -> None:
+    """Print a vLLM-style startup banner: routes, runtime, engine, budgets.
+
+    Called once after ``create_app`` so the operator has a full picture of
+    what the server is actually serving before uvicorn takes over the stdout.
+    Every line is a plain ``print`` (not ``logger.info``) so it appears even
+    when the process is launched via ``ensure-qwen-vllm.sh`` which redirects
+    stdout to ``~/.pi/agent/run/qwen-vllm.log``.
+    """
+    print("=" * 78, flush=True)
+    print("[startup-debug] registered routes", flush=True)
+    # FastAPI keeps every mounted endpoint in app.router.routes.  Print each
+    # with its method set — mirrors the vLLM launcher output.
+    try:
+        for route in app.router.routes:
+            methods = sorted(getattr(route, "methods", None) or [])
+            path = getattr(route, "path", "?")
+            if methods:
+                print(
+                    f"[startup-debug]   Route: {path}, Methods: {', '.join(methods)}",
+                    flush=True,
+                )
+            else:
+                # Mount points (/docs, /redoc, static, etc.) have no methods.
+                print(f"[startup-debug]   Mount: {path}", flush=True)
+    except Exception as exc:  # pragma: no cover — never block startup on log failure
+        print(f"[startup-debug]   <failed to enumerate routes: {exc}>", flush=True)
+
+    # Runtime + engine introspection.
+    try:
+        pipeline = getattr(engine, "_pipeline", None)
+        runtime = getattr(pipeline, "runtime", None)
+        model = getattr(pipeline, "model", None)
+        model_config = getattr(pipeline, "config", None) or getattr(model, "config", None)
+        family = getattr(pipeline, "family_type", None)
+        engine_mode = getattr(runtime, "engine_mode", None)
+        device = getattr(runtime, "_device", None)
+        hot_budget_bytes = getattr(runtime, "_hot_budget_bytes", None)
+        session_cache = getattr(runtime, "session_cache", None)
+        session_cap = getattr(session_cache, "max_sessions", None) if session_cache is not None else None
+
+        print("[startup-debug] runtime + engine", flush=True)
+        print(f"[startup-debug]   served_model_id    : {engine.model_id}", flush=True)
+        print(
+            f"[startup-debug]   source_model_id    : {getattr(engine, 'source_model_id', engine.model_id)}",
+            flush=True,
+        )
+        print(f"[startup-debug]   family             : {getattr(family, 'value', family)}", flush=True)
+        print(f"[startup-debug]   device             : {device}", flush=True)
+        print(f"[startup-debug]   backend            : {getattr(runtime, 'backend', None)}", flush=True)
+        print(
+            f"[startup-debug]   engine_mode        : "
+            f"{getattr(engine_mode, 'value', engine_mode)}",
+            flush=True,
+        )
+        print(
+            f"[startup-debug]   hot_budget_bytes   : "
+            f"{_fmt_bytes(hot_budget_bytes) if hot_budget_bytes else 'unset'}",
+            flush=True,
+        )
+        print(f"[startup-debug]   session_cache_cap  : {session_cap if session_cap is not None else 'disabled'}", flush=True)
+
+        # Config-derived KV sizing (only meaningful for bounded engines).
+        if hot_budget_bytes and model is not None:
+            try:
+                from chuk_lazarus.inference.backends._torch_residual_bounded import (
+                    estimate_kv_bytes_per_token,
+                )
+
+                kv_per_tok = estimate_kv_bytes_per_token(model)
+                max_hot_tokens = int(hot_budget_bytes) // max(kv_per_tok, 1)
+                print(
+                    f"[startup-debug]   kv_bytes/token     : {_fmt_bytes(kv_per_tok)}  "
+                    f"(config-derived)",
+                    flush=True,
+                )
+                print(
+                    f"[startup-debug]   max_hot_tokens     : {max_hot_tokens:,}  "
+                    f"(= hot_budget ÷ kv_bytes/token)",
+                    flush=True,
+                )
+            except Exception as exc:  # pragma: no cover
+                print(f"[startup-debug]   kv estimate        : unavailable ({exc})", flush=True)
+
+        # Text-backbone dims for quick sanity.
+        if model_config is not None:
+            text_cfg = getattr(model_config, "text_config", None) or model_config
+            for attr in (
+                "num_hidden_layers",
+                "num_attention_heads",
+                "num_key_value_heads",
+                "hidden_size",
+                "head_dim",
+            ):
+                val = getattr(text_cfg, attr, None)
+                if val is not None:
+                    print(f"[startup-debug]   config.{attr:<14}: {val}", flush=True)
+
+        # Parameter count if available.
+        param_count = None
+        try:
+            param_count = sum(int(p.numel()) for p in model.parameters())
+        except Exception:
+            pass
+        if param_count:
+            print(f"[startup-debug]   param_count        : {param_count:,}", flush=True)
+    except Exception as exc:  # pragma: no cover
+        print(f"[startup-debug] <runtime introspection failed: {exc}>", flush=True)
+
+    print(
+        f"[startup-debug] cli args               : model={args.model} "
+        f"backend={getattr(args, 'backend', None)} device={getattr(args, 'device', None)} "
+        f"engine={getattr(args, 'engine', None)} hot_budget_mib={getattr(args, 'hot_budget_mib', None)} "
+        f"session_cache_size={getattr(args, 'session_cache_size', None)} "
+        f"max_tokens={getattr(args, 'max_tokens', None)} api_key_set={bool(getattr(args, 'api_key', None))}",
+        flush=True,
+    )
+    print("=" * 78, flush=True)
+
+
 try:
     import uvicorn as _uvicorn  # noqa: F401
 except ImportError:
@@ -73,7 +206,11 @@ async def _serve_async(args: argparse.Namespace) -> None:
     api_key: str | None = getattr(args, "api_key", None)
     backend: str | None = getattr(args, "backend", None)
     device: str | None = getattr(args, "device", None)
+    engine_mode: str | None = getattr(args, "engine", None)
+    hot_budget_mib: int | None = getattr(args, "hot_budget_mib", None)
+    served_model_name: str | None = getattr(args, "served_model_name", None)
     max_tokens: int = getattr(args, "max_tokens", 512)
+    session_cache_size: int | None = getattr(args, "session_cache_size", None)
 
     print(f"\nLoading model: {args.model}")
     print("=" * 60)
@@ -82,6 +219,10 @@ async def _serve_async(args: argparse.Namespace) -> None:
         verbose=True,
         backend=backend,
         device=device,
+        engine=engine_mode,
+        hot_budget_mib=hot_budget_mib,
+        served_model_name=served_model_name,
+        session_cache_size=session_cache_size,
     )
 
     try:
@@ -100,7 +241,12 @@ async def _serve_async(args: argparse.Namespace) -> None:
 
     print("\n" + "=" * 60)
     print("Lazarus inference server ready")
-    print(f"  Model     : {args.model}")
+    print(f"  Source    : {args.model}")
+    print(f"  Served as : {engine.model_id}")
+    runtime_engine = getattr(engine._pipeline, "engine_mode", None)
+    print(f"  Engine    : {runtime_engine.value if runtime_engine is not None else 'standard'}")
+    if hot_budget_mib is not None:
+        print(f"  Hot KV    : {hot_budget_mib} MiB")
     print(f"  Protocols : {', '.join(p.value for p in protocols)}")
     print(f"  Base URL  : http://{host}:{port}")
     if "openai" in [p.value for p in protocols]:
@@ -109,7 +255,19 @@ async def _serve_async(args: argparse.Namespace) -> None:
         print("  Auth      : Bearer token enabled")
     print("=" * 60 + "\n")
 
-    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    # vLLM-style startup debug dump — routes, runtime, engine, budgets.
+    _dump_startup_debug(app, engine, args)
+
+    # ``access_log=True`` + ``log_level="info"`` guarantees per-request access
+    # lines (``POST /v1/chat/completions 200 OK``) — matches vLLM's uvicorn
+    # configuration so the two stacks produce comparable request-level logs.
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=True,
+    )
     server = uvicorn.Server(config)
     await server.serve()
 
@@ -153,6 +311,37 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
         help="Optional runtime device override, for example mps or cuda:0",
     )
     parser.add_argument(
+        "--engine",
+        choices=(
+            "standard",
+            "kv_direct",
+            "bounded_kv_direct",
+            "residual_bounded_kv_direct",
+        ),
+        default=None,
+        help=(
+            "Optional torch engine override: standard, kv_direct, "
+            "bounded_kv_direct, or residual_bounded_kv_direct (bounded hot KV "
+            "with residual-seeded rebuild for the Qwen serve path)."
+        ),
+    )
+    parser.add_argument(
+        "--hot-budget-mib",
+        dest="hot_budget_mib",
+        type=int,
+        default=None,
+        help=(
+            "Hot-tier KV budget in MiB — applies to bounded_kv_direct and "
+            "residual_bounded_kv_direct."
+        ),
+    )
+    parser.add_argument(
+        "--served-model-name",
+        dest="served_model_name",
+        default=None,
+        help="Optional model alias exposed via /v1/models and response payloads",
+    )
+    parser.add_argument(
         "--host",
         default="0.0.0.0",
         help="Bind host (default: 0.0.0.0)",
@@ -181,6 +370,18 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=512,
         help="Default max_tokens when callers do not specify (default: 512)",
+    )
+    parser.add_argument(
+        "--session-cache-size",
+        dest="session_cache_size",
+        type=int,
+        default=None,
+        help=(
+            "Max number of concurrent conversations kept in the WARM "
+            "residual session cache (residual_bounded_kv_direct engine "
+            "only). Each entry pins one hot KV budget worth of GPU memory. "
+            "Default: 8."
+        ),
     )
 
 
