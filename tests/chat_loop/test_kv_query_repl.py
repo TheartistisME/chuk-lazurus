@@ -221,6 +221,52 @@ def test_kv_query_turn_propagates_selector_kwargs_to_retriever(
     assert meta.kv_direct_active is True
 
 
+def test_derive_arch_config_preserves_gemma4_kv_direct_layers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+
+    class FakeGemma4Model:
+        config = object()
+
+    class FakeArchitectureConfig:
+        retrieval_layer = 28
+        query_head = 3
+        injection_layer = 29
+        crystal_layer = 29
+        hidden_dim = 2048
+        head_dim = 128
+        window_size = 1024
+
+    from chuk_lazarus.inference.context.knowledge.config import (
+        ArchitectureConfig,
+    )
+
+    monkeypatch.setattr(
+        ArchitectureConfig,
+        "from_model_config",
+        classmethod(lambda cls, _config: FakeArchitectureConfig()),
+    )
+
+    chat = MemoryChat.__new__(MemoryChat)
+    chat.model = FakeGemma4Model()
+
+    arch_config, crystal_layer, window_size = chat._derive_arch_config()
+
+    assert arch_config == {
+        "retrieval_layer": 12,
+        "query_head": 7,
+        "injection_layer": 13,
+        "hidden_dim": 2048,
+        "head_dim": 128,
+        "crystal_layer": 13,
+        "window_size": 1024,
+    }
+    assert crystal_layer == 13
+    assert window_size == 1024
+
+
 @pytest.mark.cuda
 @pytest.mark.skipif(not _HAS_CUDA, reason="CUDA required for axis-5 KV-direct")
 def test_kv_query_turn_surfaces_real_axis6_fields(tmp_path: Path) -> None:

@@ -151,6 +151,33 @@ def test_hot_only_does_not_apply_mask_penalty(real_runtime):
 
 
 @requires_cuda_gemma4
+def test_sliding_insertion_family_runs_on_real_gemma4(real_runtime):
+    """Explicit sliding-family selection must exercise the sliding branch."""
+    mat = _build_materialization(real_runtime, n_slots=2, injection_layer=12)
+    result = real_runtime.generate_with_kv_direct_materialization(
+        prompt="<start_of_turn>user\nHello\n<end_of_turn>\n<start_of_turn>model\n",
+        config=GenerationConfig(max_new_tokens=4, temperature=0.0),
+        materialization=mat,
+        per_window_token_ranges={0: (0, 1), 1: (1, 2)},
+        tier_assignments={0: TierLabel.HOT, 1: TierLabel.HOT},
+        warm_config=WarmPenaltyConfig(),
+        source_layer=12,
+        insertion_family="sliding",
+        sliding_layer_indices=(13, 15),
+        sliding_head_indices=(0, 7),
+    )
+    assert isinstance(result, KvDirectGenerationResult)
+    meta = result.metadata
+    assert meta["insertion_family"] == "sliding"
+    assert meta["sliding_layer_indices"] == [13, 15]
+    assert meta["sliding_head_indices"] == [0, 7]
+    assert meta["kv_direct_active"] is True
+    assert meta["prefix_forwards_observed"] == 2
+    assert meta["path_a_replay_count"] == 0
+    assert meta["output_tokens"] >= 1
+
+
+@requires_cuda_gemma4
 def test_out_of_range_source_layer_raises(real_runtime):
     """source_layer+1 past the end of layers → explicit RuntimeError."""
     mat = _build_materialization(real_runtime, n_slots=1)
