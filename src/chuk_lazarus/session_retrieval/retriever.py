@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from chuk_lazarus.inference.backends import (
     LazarusBackend,
@@ -44,6 +44,9 @@ from chuk_lazarus.session_retrieval.enumeration import (
 )
 from chuk_lazarus.session_retrieval.exact_id import route_exact_id
 from chuk_lazarus.session_retrieval.topical import route_topical
+
+if TYPE_CHECKING:
+    from chuk_lazarus.inference.backends.torch_runtime import HotBoostConfig
 
 DEFAULT_SYSTEM_PROMPT = (
     "You answer questions about prior conversation sessions using only the "
@@ -525,6 +528,7 @@ class SessionRetriever:
         *,
         hot_budget_mib: int,
         warm_config,
+        hot_config: HotBoostConfig | None = None,
         generation_config,
         warm_scores: dict[int, float] | None = None,
         query_id: str | None = None,
@@ -553,8 +557,11 @@ class SessionRetriever:
         hot_budget_mib:
             Hard K+V footprint ceiling (MiB).
         warm_config:
-            :class:`WarmPenaltyConfig` — currently documented only; live
-            subtractive penalty is follow-up work.
+            :class:`WarmPenaltyConfig` controlling subtractive WARM-tier
+            logit penalties.
+        hot_config:
+            Optional :class:`HotBoostConfig` controlling additive HOT-tier
+            logit boosts. ``None`` preserves the legacy identity behavior.
         generation_config:
             :class:`GenerationConfig` — sampling + ``max_new_tokens``.
         warm_scores:
@@ -597,6 +604,7 @@ class SessionRetriever:
             per_window_token_ranges=dict(residuals.per_window_token_ranges),
             tier_assignments=tier_map,
             warm_config=warm_config,
+            hot_config=hot_config,
             warm_scores=warm_scores,
             source_layer=residuals.source_layer,
             query_id=query_id,
@@ -619,6 +627,10 @@ class SessionRetriever:
             "mask_penalty_applied": bool(
                 metadata.get("mask_penalty_applied", False)
             ),
+            "hot_boost_applied": bool(
+                metadata.get("hot_boost_applied", False)
+            ),
+            "hot_boost_value": float(metadata.get("hot_boost_value", 0.0)),
         }
         return QueryResult(
             routing_mode="kv_direct",

@@ -8,7 +8,7 @@ import inspect
 import json
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from chuk_lazarus.session_retrieval.tier_policy import TierLabel
@@ -2086,6 +2086,7 @@ class TorchInferenceRuntime(InferenceRuntime):
         per_window_token_ranges: dict[int, tuple[int, int]],
         tier_assignments: dict[int, "TierLabel"],
         warm_config,
+        hot_config: HotBoostConfig | None = None,
         source_layer: int,
         warm_scores: dict[int, float] | None = None,
         query_id: str | None = None,
@@ -2106,11 +2107,11 @@ class TorchInferenceRuntime(InferenceRuntime):
         ``materialization.K`` / ``materialization.V`` are prepended at the
         source full-attention layer and may also propagate through the
         shared-K/V full-attention followers depending on
-        ``LAZARUS_KV_PROPAGATION_MODE``. HOT windows thereby appear
-        byte-identical
-        in attention logits; COLD windows were already excluded at
-        gather-time; WARM penalty is recorded for observability but not
-        additively applied here (out-of-scope for leg-3).
+        ``LAZARUS_KV_PROPAGATION_MODE``. HOT windows remain byte-identical
+        when ``hot_config.boost_value == 0.0``; positive boost values add a
+        uniform HOT-tier logit offset. COLD windows are excluded
+        pre-softmax and WARM windows receive the configured subtractive
+        penalty through the axis-4 mask path.
 
         Parameters
         ----------
@@ -2129,10 +2130,12 @@ class TorchInferenceRuntime(InferenceRuntime):
         tier_assignments:
             ``window_id -> TierLabel`` for every included window.
         warm_config:
-            :class:`WarmPenaltyConfig`. ``mask_penalty_applied`` is set
-            ``True`` iff a non-zero penalty config is provided; the
-            subtractive logit scaling is not wired into the live
-            attention path in this leg (documentary field).
+            :class:`WarmPenaltyConfig` controlling subtractive WARM-tier
+            logit penalties applied inside :func:`apply_tier_attention_mask`.
+        hot_config:
+            Optional :class:`HotBoostConfig`. ``None`` resolves to
+            ``HotBoostConfig()`` so the default path preserves the
+            current HOT-tier identity behavior.
         source_layer:
             ``injection_layer`` at which residuals were captured;
             ``source_layer + 1`` is the attention layer that receives
@@ -2209,11 +2212,17 @@ class TorchInferenceRuntime(InferenceRuntime):
         selected_tier_labels = sorted(
             {TierLabel(tier).value for tier in tier_assignments.values()}
         )
+        resolved_hot_config = HotBoostConfig() if hot_config is None else hot_config
+        has_hot = any(
+            TierLabel(t) == TierLabel.HOT for t in tier_assignments.values()
+        )
         has_warm = any(
             TierLabel(t) == TierLabel.WARM for t in tier_assignments.values()
         )
         penalty_value = float(getattr(warm_config, "penalty_value", 0.0))
         mask_penalty_will_apply = bool(has_warm and penalty_value > 0.0)
+        hot_boost_value = float(getattr(resolved_hot_config, "boost_value", 0.0))
+        hot_boost_applied = bool(has_hot and hot_boost_value > 0.0)
 
         # Build the AttentionTierMaskInputs that the patched forward reads.
         _normalized_tier_map = {
@@ -2226,6 +2235,7 @@ class TorchInferenceRuntime(InferenceRuntime):
             },
             tier_assignments=_normalized_tier_map,
             warm_config=warm_config,
+            hot_config=resolved_hot_config,
             warm_scores=(
                 None if warm_scores is None
                 else {int(wid): float(s) for wid, s in warm_scores.items()}
@@ -2449,6 +2459,7 @@ class TorchInferenceRuntime(InferenceRuntime):
             module._lazarus_archived_K = archived_K  # type: ignore[attr-defined]
             module._lazarus_archived_V = archived_V  # type: ignore[attr-defined]
             module._lazarus_mask_inputs = mask_inputs  # type: ignore[attr-defined]
+            module._lazarus_hot_config = resolved_hot_config  # type: ignore[attr-defined]
             if archived_cos_stashed is not None and archived_sin_stashed is not None:
                 module._lazarus_archived_cos = archived_cos_stashed  # type: ignore[attr-defined]
                 module._lazarus_archived_sin = archived_sin_stashed  # type: ignore[attr-defined]
@@ -2597,6 +2608,8 @@ class TorchInferenceRuntime(InferenceRuntime):
         metadata: dict[str, Any] = {
             "selected_tier": selected_tier_labels,
             "mask_penalty_applied": mask_penalty_applied,
+            "hot_boost_applied": hot_boost_applied,
+            "hot_boost_value": float(hot_boost_value),
             "kv_direct_active": kv_direct_active,
             "vram_peak_mib": int(vram_peak_mib),
             "vram_delta_mib": int(vram_delta_mib),
@@ -2763,7 +2776,7 @@ class KvDirectGenerationResult:
 # the per-query transparency observation builder.
 #
 # Tier semantics (contract-literal):
-#   * HOT  — identity: logits are byte-identical to the unmasked baseline
+#   * HOT  — identity when ``boost_value == 0.0``; otherwise additive boost
 #   * WARM — subtractive logit penalty (``logit -= penalty_value``), optional
 #            per-window scaling by ``(1 - score)`` and optional ``clamp_min``
 #   * COLD — pre-softmax exclusion: slice set to ``-inf`` in the input dtype
@@ -2788,6 +2801,20 @@ class WarmPenaltyConfig:
 
 
 @dataclass(frozen=True)
+class HotBoostConfig:
+    """Additive attention-logit boost for HOT-tier windows.
+
+    ``boost_value=0.0`` preserves the legacy HOT-tier identity behavior.
+    ``per_hot_uniform`` is reserved for symmetry with ``WarmPenaltyConfig``;
+    the current implementation applies a uniform additive offset whenever
+    ``boost_value > 0``.
+    """
+
+    boost_value: float = 0.0
+    per_hot_uniform: bool = True
+
+
+@dataclass(frozen=True)
 class AttentionTierMaskInputs:
     """Per-query inputs for :func:`apply_tier_attention_mask`.
 
@@ -2799,13 +2826,16 @@ class AttentionTierMaskInputs:
     ``warm_scores`` is optional; it maps ``window_id -> normalized router
     score in [0.0, 1.0]`` and is consulted only when
     ``warm_config.per_warm_uniform is False`` to scale the warm penalty by
-    ``(1 - score)``.
+    ``(1 - score)``. ``hot_config`` controls optional additive HOT-tier
+    boosts; the default ``HotBoostConfig()`` keeps HOT slices byte-identical
+    to the baseline.
     """
 
     per_window_token_ranges: dict[int, tuple[int, int]]
     tier_assignments: dict[int, "TierLabel"]
     warm_config: WarmPenaltyConfig
     warm_scores: dict[int, float] | None = None
+    hot_config: HotBoostConfig = field(default_factory=HotBoostConfig)
 
 
 def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
@@ -2815,8 +2845,9 @@ def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
     ``attn_logits`` (the ``kv_len`` axis); any leading dimensions are
     preserved as-is. Returns a new tensor (never modifies in place).
 
-    * HOT windows: slices are untouched on the cloned tensor → byte-identity
-      with the unmasked baseline.
+    * HOT windows: slices are untouched on the cloned tensor when
+      ``inputs.hot_config.boost_value == 0.0``; otherwise a uniform
+      additive offset is applied to the HOT slice.
     * COLD windows: slices are set to ``-inf`` (dtype-stable) — pre-softmax
       exclusion removes them from the effective attention budget.
     * WARM windows: slices have ``warm_config.penalty_value`` subtracted.
@@ -2859,6 +2890,7 @@ def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
             )
 
     warm_config = inputs.warm_config
+    hot_config = inputs.hot_config
     if not warm_config.per_warm_uniform:
         warm_window_ids = [
             wid
@@ -2889,7 +2921,10 @@ def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
     for window_id, tier in inputs.tier_assignments.items():
         start, end = inputs.per_window_token_ranges[window_id]
         if tier == TierLabel.HOT:
-            # Identity: leave the cloned slice untouched for byte-identity.
+            # Preserve byte-identity when boost_value==0.0; otherwise add the
+            # configured uniform HOT-tier offset.
+            if float(hot_config.boost_value) > 0.0:
+                out[..., start:end] = out[..., start:end] + float(hot_config.boost_value)
             continue
         if tier == TierLabel.COLD:
             # Pre-softmax exclusion via additive -inf on the input dtype.
@@ -2929,6 +2964,8 @@ def attention_tier_mask_inputs_to_dict(
           "warm_config": {"penalty_value": float,
                           "per_warm_uniform": bool,
                           "clamp_min": float|null},
+          "hot_config": {"boost_value": float,
+                         "per_hot_uniform": bool},
           "warm_scores": {"<wid>": score, ...} | null,
         }
     """
@@ -2949,6 +2986,10 @@ def attention_tier_mask_inputs_to_dict(
             else float(inputs.warm_config.clamp_min)
         ),
     }
+    hot_config_dict: dict[str, Any] = {
+        "boost_value": float(inputs.hot_config.boost_value),
+        "per_hot_uniform": bool(inputs.hot_config.per_hot_uniform),
+    }
     if inputs.warm_scores is None:
         warm_scores_dict: dict[str, float] | None = None
     else:
@@ -2960,6 +3001,7 @@ def attention_tier_mask_inputs_to_dict(
         "per_window_token_ranges": ranges_dict,
         "tier_assignments": tier_dict,
         "warm_config": warm_config_dict,
+        "hot_config": hot_config_dict,
         "warm_scores": warm_scores_dict,
     }
 
@@ -3024,6 +3066,19 @@ def attention_tier_mask_inputs_from_dict(
         clamp_min=None if clamp_min_raw is None else float(clamp_min_raw),
     )
 
+    raw_hot_config = data.get("hot_config")
+    if raw_hot_config is None:
+        hot_config = HotBoostConfig()
+    else:
+        if not isinstance(raw_hot_config, dict):
+            raise ValueError(
+                "attention_tier_mask_inputs_from_dict: hot_config must be a dict."
+            )
+        hot_config = HotBoostConfig(
+            boost_value=float(raw_hot_config.get("boost_value", 0.0)),
+            per_hot_uniform=bool(raw_hot_config.get("per_hot_uniform", True)),
+        )
+
     raw_warm_scores = data.get("warm_scores", None)
     if raw_warm_scores is None:
         warm_scores: dict[int, float] | None = None
@@ -3042,6 +3097,7 @@ def attention_tier_mask_inputs_from_dict(
         tier_assignments=tier_assignments,
         warm_config=warm_config,
         warm_scores=warm_scores,
+        hot_config=hot_config,
     )
 
 
