@@ -330,6 +330,75 @@ class TestEngineModeRegistration:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime test requires a CUDA GPU")
+class TestKvDirectMaterializationValidation:
+    """Focused runtime-side validation checks that fail before patch execution."""
+
+    @staticmethod
+    def _fake_materialization(n_slots: int = 2) -> KVDirectMaterialization:
+        return KVDirectMaterialization(
+            K=torch.randn(1, 2, n_slots, 8, device="cuda"),
+            V=torch.randn(1, 2, n_slots, 8, device="cuda"),
+            materialization_mode="project_through_W_K_W_V_at_injection_layer",
+            hot_budget_mib_observed=1,
+            path_a_replay_count=0,
+            materialized_source_layer=1,
+            materialized_insertion_family="full_attention",
+            materialized_lineage_layer_indices=(2,),
+        )
+
+    def test_source_layer_mismatch_rejects_before_runtime_patch(self):
+        model = DummyAttnCausalLM(head_dim=128, n_kv_heads=2).to("cuda").eval()
+        runtime = TorchInferenceRuntime(model, DummyTokenizer(), device="cuda")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            runtime.generate_with_kv_direct_materialization(
+                prompt="hi",
+                config=GenerationConfig(max_new_tokens=2, temperature=0.0),
+                materialization=self._fake_materialization(),
+                per_window_token_ranges={0: (0, 1), 1: (1, 2)},
+                tier_assignments={0: TierLabel.HOT, 1: TierLabel.HOT},
+                warm_config=WarmPenaltyConfig(),
+                source_layer=0,
+            )
+
+        message = str(excinfo.value)
+        assert "requested source_layer=0 disagrees" in message
+        assert "materialized_source_layer=1" in message
+
+    def test_sliding_rejects_full_attention_materialization_family(self):
+        model = DummyAttnCausalLM(head_dim=128, n_kv_heads=2).to("cuda").eval()
+        runtime = TorchInferenceRuntime(model, DummyTokenizer(), device="cuda")
+        materialization = KVDirectMaterialization(
+            K=torch.randn(1, 2, 2, 8, device="cuda"),
+            V=torch.randn(1, 2, 2, 8, device="cuda"),
+            materialization_mode="project_through_W_K_W_V_at_injection_layer",
+            hot_budget_mib_observed=1,
+            path_a_replay_count=0,
+            materialized_source_layer=0,
+            materialized_insertion_family="full_attention",
+            materialized_lineage_layer_indices=(1,),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            runtime.generate_with_kv_direct_materialization(
+                prompt="hi",
+                config=GenerationConfig(max_new_tokens=2, temperature=0.0),
+                materialization=materialization,
+                per_window_token_ranges={0: (0, 1), 1: (1, 2)},
+                tier_assignments={0: TierLabel.HOT, 1: TierLabel.HOT},
+                warm_config=WarmPenaltyConfig(),
+                source_layer=0,
+                insertion_family="sliding",
+                sliding_layer_indices=(1,),
+                sliding_head_indices=(0,),
+            )
+
+        message = str(excinfo.value)
+        assert "sliding-origin materialization" in message
+        assert "materialized_insertion_family='full_attention'" in message
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime test requires a CUDA GPU")
 class TestAttentionTierMasking:
     """Conformance tests for the axis-4 ``apply_tier_attention_mask`` surface.
 

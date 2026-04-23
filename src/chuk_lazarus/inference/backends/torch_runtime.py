@@ -2241,6 +2241,47 @@ class TorchInferenceRuntime(InferenceRuntime):
                 "no .self_attn/.attention module to hook."
             )
 
+        materialized_source_layer_raw = getattr(
+            materialization, "materialized_source_layer", None
+        )
+        materialized_source_layer = (
+            None
+            if materialized_source_layer_raw is None
+            else int(materialized_source_layer_raw)
+        )
+        if (
+            materialized_source_layer is not None
+            and int(source_layer) != materialized_source_layer
+        ):
+            raise RuntimeError(
+                "generate_with_kv_direct_materialization: requested "
+                f"source_layer={int(source_layer)} disagrees with "
+                "materialized_source_layer="
+                f"{materialized_source_layer} on the KVDirectMaterialization carrier."
+            )
+        materialized_target_layer = (
+            None
+            if materialized_source_layer is None
+            else int(materialized_source_layer) + 1
+        )
+        materialized_insertion_family_raw = getattr(
+            materialization, "materialized_insertion_family", None
+        )
+        materialized_insertion_family = (
+            None
+            if materialized_insertion_family_raw is None
+            else str(materialized_insertion_family_raw).strip().lower()
+        )
+        materialized_lineage_layer_indices = tuple(
+            dict.fromkeys(
+                int(layer_idx)
+                for layer_idx in (
+                    getattr(materialization, "materialized_lineage_layer_indices", ())
+                    or ()
+                )
+            )
+        )
+
         selected_tier_labels = sorted(
             {TierLabel(tier).value for tier in tier_assignments.values()}
         )
@@ -2352,6 +2393,17 @@ class TorchInferenceRuntime(InferenceRuntime):
             selected_layer_indices = tuple(full_attention_layer_indices)
             shared_layer_indices = full_attention_layer_indices[1:]
         else:
+            if (
+                materialized_insertion_family is not None
+                and materialized_insertion_family != "sliding"
+            ):
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: insertion_family='sliding' "
+                    "requires sliding-origin materialization; got "
+                    f"materialized_insertion_family={materialized_insertion_family!r} "
+                    f"from source_layer={materialized_source_layer!r} "
+                    f"(target layer {materialized_target_layer!r})."
+                )
             if target_layer_type != "sliding_attention" and not bool(
                 getattr(target_self_attn, "is_sliding", False)
             ):
@@ -2374,6 +2426,20 @@ class TorchInferenceRuntime(InferenceRuntime):
                     "generate_with_kv_direct_materialization: insertion_family='sliding' "
                     "requires both sliding_layer_indices and sliding_head_indices."
                 )
+            if materialized_lineage_layer_indices:
+                invalid_lineage_indices = tuple(
+                    layer_idx
+                    for layer_idx in normalized_sliding_layer_indices
+                    if layer_idx not in materialized_lineage_layer_indices
+                )
+                if invalid_lineage_indices:
+                    raise RuntimeError(
+                        "generate_with_kv_direct_materialization: sliding_layer_indices "
+                        f"{invalid_lineage_indices!r} are incompatible with materialized "
+                        "sliding lineage "
+                        f"{materialized_lineage_layer_indices!r} rooted at target layer "
+                        f"{materialized_target_layer!r}."
+                    )
 
             q_proj = getattr(target_self_attn, "q_proj", None)
             q_proj_out_features = getattr(q_proj, "out_features", None)

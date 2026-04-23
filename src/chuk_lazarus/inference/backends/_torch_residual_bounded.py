@@ -322,6 +322,21 @@ class KVDirectMaterialization:
         Snapshot of :class:`PathAReplayGuard`'s fire counter taken AFTER
         the materialization projection. Always ``0`` in conformance — any
         non-zero value means the guard raised before returning.
+    materialized_source_layer:
+        Actual archived-residual source layer used for the projection.
+        This is the truthful ``injection_layer`` provenance and lets the
+        runtime reject callers that lie about ``source_layer`` later.
+    materialized_insertion_family:
+        Runtime family implied by the actual projection target at
+        ``materialized_source_layer + 1``. Currently one of
+        ``"full_attention"`` or ``"sliding"``.
+    materialized_lineage_layer_indices:
+        Decoder-layer lineage that can coherently consume the projected
+        archived K/V for ``materialized_insertion_family``. For
+        ``"sliding"`` this is the source sliding layer plus any
+        ``kv_shared_layer_index`` followers; for ``"full_attention"``
+        this mirrors the existing propagation lineage rooted at the
+        materialized target layer.
     """
 
     K: Any
@@ -329,6 +344,9 @@ class KVDirectMaterialization:
     materialization_mode: str
     hot_budget_mib_observed: int
     path_a_replay_count: int
+    materialized_source_layer: int | None = None
+    materialized_insertion_family: str | None = None
+    materialized_lineage_layer_indices: tuple[int, ...] = ()
 
 
 class PathAReplayGuard:
@@ -551,6 +569,83 @@ def _resolve_attention_projections(layer: Any) -> tuple[Any, Any, int, int]:
     return k_proj, v_proj, int(n_kv_heads), int(head_dim)
 
 
+def resolve_kv_materialization_provenance(
+    model: Any,
+    source_layer: int,
+    *,
+    resolve_layers=_resolve_default_layers,
+) -> tuple[str, tuple[int, ...]]:
+    """Resolve the truthful family/lineage for a materialized K/V source."""
+
+    layers = resolve_layers(model)
+    target_idx = int(source_layer) + 1
+    if target_idx >= len(layers):
+        raise RuntimeError(
+            "resolve_kv_materialization_provenance: source_layer+1 out of range for "
+            f"model with {len(layers)} layers (source_layer={source_layer})."
+        )
+
+    def _resolve_self_attn(layer) -> Any | None:
+        return getattr(layer, "self_attn", None) or getattr(layer, "attention", None)
+
+    target_self_attn = _resolve_self_attn(layers[target_idx])
+    if target_self_attn is None:
+        raise RuntimeError(
+            "resolve_kv_materialization_provenance: target layer has no "
+            ".self_attn/.attention module."
+        )
+
+    raw_config = getattr(model, "config", None)
+    if raw_config is not None and hasattr(raw_config, "get_text_config"):
+        text_config = raw_config.get_text_config()
+    else:
+        text_config = _text_config(raw_config)
+    layer_types = list(getattr(text_config, "layer_types", [])) if text_config is not None else []
+
+    def _layer_type_for(layer_idx: int, layer_self_attn: Any | None = None) -> str | None:
+        if layer_self_attn is None:
+            layer_self_attn = _resolve_self_attn(layers[layer_idx])
+        if layer_self_attn is None:
+            return None
+        layer_type = getattr(layer_self_attn, "layer_type", None)
+        if layer_type is not None:
+            return str(layer_type)
+        if layer_idx < len(layer_types):
+            return str(layer_types[layer_idx])
+        return None
+
+    def _is_sliding_layer(layer_idx: int, layer_self_attn: Any | None = None) -> bool:
+        if layer_self_attn is None:
+            layer_self_attn = _resolve_self_attn(layers[layer_idx])
+        if layer_self_attn is None:
+            return False
+        if bool(getattr(layer_self_attn, "is_sliding", False)):
+            return True
+        return _layer_type_for(layer_idx, layer_self_attn) == "sliding_attention"
+
+    target_layer_type = _layer_type_for(target_idx, target_self_attn)
+    if _is_sliding_layer(target_idx, target_self_attn):
+        lineage = [target_idx]
+        for layer_idx in range(target_idx + 1, len(layers)):
+            layer_self_attn = _resolve_self_attn(layers[layer_idx])
+            if layer_self_attn is None or not _is_sliding_layer(layer_idx, layer_self_attn):
+                continue
+            if getattr(layer_self_attn, "kv_shared_layer_index", None) == target_idx:
+                lineage.append(layer_idx)
+        return "sliding", tuple(dict.fromkeys(int(layer_idx) for layer_idx in lineage))
+
+    lineage = [target_idx]
+    for layer_idx in range(target_idx + 1, len(layers)):
+        layer_self_attn = _resolve_self_attn(layers[layer_idx])
+        if layer_self_attn is None:
+            continue
+        same_layer_type = _layer_type_for(layer_idx, layer_self_attn) == target_layer_type
+        shares_from_target = getattr(layer_self_attn, "kv_shared_layer_index", None) == target_idx
+        if same_layer_type or shares_from_target:
+            lineage.append(layer_idx)
+    return "full_attention", tuple(dict.fromkeys(int(layer_idx) for layer_idx in lineage))
+
+
 def materialize_kv_direct(
     residuals: GatheredResiduals,
     runtime: Any,
@@ -610,6 +705,13 @@ def materialize_kv_direct(
         )
     target_layer = layers[injection_layer + 1]
     k_proj, v_proj, n_kv_heads, head_dim = _resolve_attention_projections(target_layer)
+    materialized_insertion_family, materialized_lineage_layer_indices = (
+        resolve_kv_materialization_provenance(
+            model,
+            injection_layer,
+            resolve_layers=_resolve_default_layers,
+        )
+    )
 
     first_param = next(model.parameters())
     model_dtype = first_param.dtype
@@ -685,6 +787,9 @@ def materialize_kv_direct(
         materialization_mode="project_through_W_K_W_V_at_injection_layer",
         hot_budget_mib_observed=observed_mib,
         path_a_replay_count=int(guard.count),
+        materialized_source_layer=injection_layer,
+        materialized_insertion_family=materialized_insertion_family,
+        materialized_lineage_layer_indices=materialized_lineage_layer_indices,
     )
 
 
@@ -698,4 +803,5 @@ __all__ = [
     "install_boundary_residual_capture_hook",
     "install_layer0_residual_seed_hook",
     "materialize_kv_direct",
+    "resolve_kv_materialization_provenance",
 ]

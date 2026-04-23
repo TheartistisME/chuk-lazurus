@@ -25,6 +25,7 @@ import torch
 from chuk_lazarus.inference.backends import TorchInferenceRuntime
 from chuk_lazarus.inference.backends._torch_residual_bounded import (
     KVDirectMaterialization,
+    resolve_kv_materialization_provenance,
 )
 from chuk_lazarus.inference.backends.torch_runtime import (
     KvDirectGenerationResult,
@@ -81,13 +82,46 @@ def _build_materialization(runtime, n_slots: int, injection_layer: int = 13):
         v_flat = self_attn.v_proj(residuals)
     K = k_flat.view(1, n_slots, n_kv_heads, head_dim).transpose(1, 2).contiguous()
     V = v_flat.view(1, n_slots, n_kv_heads, head_dim).transpose(1, 2).contiguous()
+    materialized_insertion_family, materialized_lineage_layer_indices = (
+        resolve_kv_materialization_provenance(
+            runtime._model,
+            injection_layer,
+            resolve_layers=lambda _model: runtime._resolve_layers(),
+        )
+    )
     return KVDirectMaterialization(
         K=K,
         V=V,
         materialization_mode="project_through_W_K_W_V_at_injection_layer",
         hot_budget_mib_observed=1,
         path_a_replay_count=0,
+        materialized_source_layer=injection_layer,
+        materialized_insertion_family=materialized_insertion_family,
+        materialized_lineage_layer_indices=materialized_lineage_layer_indices,
     )
+
+
+def _all_sliding_layer_indices(runtime) -> tuple[int, ...]:
+    layers = runtime._resolve_layers()
+    raw_config = getattr(runtime._model, "config", None)
+    text_config = (
+        raw_config.get_text_config()
+        if raw_config is not None and hasattr(raw_config, "get_text_config")
+        else raw_config
+    )
+    layer_types = list(getattr(text_config, "layer_types", [])) if text_config is not None else []
+
+    sliding_indices: list[int] = []
+    for layer_idx, layer in enumerate(layers):
+        self_attn = getattr(layer, "self_attn", None) or getattr(layer, "attention", None)
+        if self_attn is None:
+            continue
+        layer_type = getattr(self_attn, "layer_type", None)
+        if layer_type is None and layer_idx < len(layer_types):
+            layer_type = layer_types[layer_idx]
+        if bool(getattr(self_attn, "is_sliding", False)) or str(layer_type) == "sliding_attention":
+            sliding_indices.append(layer_idx)
+    return tuple(sliding_indices)
 
 
 @requires_cuda_gemma4
@@ -175,6 +209,62 @@ def test_sliding_insertion_family_runs_on_real_gemma4(real_runtime):
     assert meta["prefix_forwards_observed"] == 2
     assert meta["path_a_replay_count"] == 0
     assert meta["output_tokens"] >= 1
+
+
+@requires_cuda_gemma4
+def test_sliding_insertion_rejects_full_attention_materialization_lineage(real_runtime):
+    """Sliding insertion must reject archived K/V materialized from a full-attention source."""
+    mat = _build_materialization(real_runtime, n_slots=2, injection_layer=13)
+    with pytest.raises(RuntimeError) as excinfo:
+        real_runtime.generate_with_kv_direct_materialization(
+            prompt="<start_of_turn>user\nHello\n<end_of_turn>\n<start_of_turn>model\n",
+            config=GenerationConfig(max_new_tokens=4, temperature=0.0),
+            materialization=mat,
+            per_window_token_ranges={0: (0, 1), 1: (1, 2)},
+            tier_assignments={0: TierLabel.HOT, 1: TierLabel.HOT},
+            warm_config=WarmPenaltyConfig(),
+            source_layer=12,
+            insertion_family="sliding",
+            sliding_layer_indices=(13, 15),
+            sliding_head_indices=(0, 7),
+        )
+    message = str(excinfo.value)
+    assert "requested source_layer=12 disagrees" in message
+    assert "materialized_source_layer=13" in message
+
+
+@requires_cuda_gemma4
+def test_sliding_insertion_rejects_incompatible_sliding_lineage(real_runtime):
+    """Requested sliding layers must stay within the materialized sliding lineage."""
+    mat = _build_materialization(real_runtime, n_slots=2, injection_layer=12)
+    _, lineage = resolve_kv_materialization_provenance(
+        real_runtime._model,
+        12,
+        resolve_layers=lambda _model: real_runtime._resolve_layers(),
+    )
+    invalid_layer = next(
+        (layer_idx for layer_idx in _all_sliding_layer_indices(real_runtime) if layer_idx not in lineage),
+        None,
+    )
+    if invalid_layer is None:
+        pytest.skip("real Gemma-4 snapshot exposes no sliding layer outside the source-12 lineage")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        real_runtime.generate_with_kv_direct_materialization(
+            prompt="<start_of_turn>user\nHello\n<end_of_turn>\n<start_of_turn>model\n",
+            config=GenerationConfig(max_new_tokens=4, temperature=0.0),
+            materialization=mat,
+            per_window_token_ranges={0: (0, 1), 1: (1, 2)},
+            tier_assignments={0: TierLabel.HOT, 1: TierLabel.HOT},
+            warm_config=WarmPenaltyConfig(),
+            source_layer=12,
+            insertion_family="sliding",
+            sliding_layer_indices=(13, invalid_layer),
+            sliding_head_indices=(0, 7),
+        )
+    message = str(excinfo.value)
+    assert "incompatible with materialized sliding lineage" in message
+    assert str(invalid_layer) in message
 
 
 @requires_cuda_gemma4
