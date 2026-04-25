@@ -1887,9 +1887,36 @@ class TorchInferenceRuntime(InferenceRuntime):
             av = prefix_attn_module.v_norm(av.transpose(1, 2))  # (1, N, Hkv, hd)
 
             N = int(ak.shape[1])
-            cos0 = cos[:, 0:1, :].expand(cos.shape[0], N, cos.shape[-1])
-            sin0 = sin[:, 0:1, :].expand(sin.shape[0], N, sin.shape[-1])
-            ak = apply_rotary_pos_emb(ak, cos0, sin0, unsqueeze_dim=2)
+
+            # PROP-K.5 RoPE-phase fix (axis-rope-phase-fix run 2):
+            # Re-compute per-slot cos/sin at the archived absolute positions {0..N-1}
+            # via the model's rotary module. The previous code sliced cos[:, 0:1, :]
+            # (fresh-input position 0) and broadcast over N slots — that collapses to
+            # RoPE identity (cos=1, sin=0) and leaves archived K unrotated.
+            # See ve-ins-0moe2k6qp0000ca2643 (bug-spec) and
+            #     ve-ins-0moe4ei8i0000653fc1 (baseline reference).
+            prefix_layer_type = getattr(prefix_attn_module, "layer_type", None)
+            if prefix_layer_type is None:
+                raise RuntimeError(
+                    "_prepare_archived_prefix: prefix_attn_module is missing the "
+                    "'layer_type' attribute required for archived RoPE re-phase. "
+                    "Expected 'sliding_attention' or 'full_attention' on the "
+                    "Gemma-4 prefix attention module."
+                )
+
+            rotary_module = self._model.model.language_model.rotary_emb
+            archived_position_ids = propagation_state.get("archived_position_ids")
+            if archived_position_ids is None:
+                archived_position_ids = torch.arange(
+                    N, device=ak.device, dtype=torch.long
+                ).unsqueeze(0)
+            else:
+                archived_position_ids = archived_position_ids.to(device=ak.device)
+
+            cos_archived, sin_archived = rotary_module(
+                ak, archived_position_ids, layer_type=prefix_layer_type
+            )
+            ak = apply_rotary_pos_emb(ak, cos_archived, sin_archived, unsqueeze_dim=2)
             ak = ak.transpose(1, 2)  # → (1, Hkv, N, hd)
             av = av.transpose(1, 2)  # V gets no rotary
             return ak, av
