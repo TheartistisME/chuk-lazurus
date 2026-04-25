@@ -222,13 +222,18 @@ def vec_inject_to_kv_direct(
     # otherwise fall back to the meta's kv_head as a single-head view.
     n_kv_heads = _resolve_n_kv_heads(provider)
 
-    # Pull (k, v) for every match and stack into (n_facts, head_dim) pre-broadcast.
+    # Pull (k, v) for every match, scale by match.coefficient (axis-BC fix —
+    # see ve-ins-0moe6w4su0000096c6a), and stack into (n_facts, head_dim)
+    # pre-broadcast. Coefficient embodies the cold/warm/hot ranking weight
+    # assigned upstream by ASI Evolve / retrieve_sync; without scaling, the
+    # tier-aware injection collapses to uniform weight.
     k_list: list[torch.Tensor] = []
     v_list: list[torch.Tensor] = []
     for m in matches_list:
         k_vec, v_vec = provider.kv_for_match(m)
-        k_list.append(_to_cuda_bf16(k_vec))
-        v_list.append(_to_cuda_bf16(v_vec))
+        coef = float(m.coefficient)
+        k_list.append(_to_cuda_bf16(k_vec) * coef)
+        v_list.append(_to_cuda_bf16(v_vec) * coef)
 
     k_stack = torch.stack(k_list, dim=0)  # (n_facts, head_dim)
     v_stack = torch.stack(v_list, dim=0)  # (n_facts, head_dim)
