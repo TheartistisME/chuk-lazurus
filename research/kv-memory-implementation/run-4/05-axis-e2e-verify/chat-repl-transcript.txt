@@ -1,0 +1,114 @@
+# run-4 / 05-axis-e2e-verify / chat-repl transcript
+# scope: axis-e2e-verify | mission: chuk-lazurus-gqa | manifest: ve-ins-0moecngdp000084a8d3 | session: ve-ses-0moefvzu00000a2cb66
+# branch: impl/kv-memory-finalize-run-4 | hardware: CUDA RTX 5090 | mode: autonomous
+# tester: pytest-axis-5-e2e-verify | started: 2026-04-25T14:49:17Z
+# AMD 11: target_layer=29 ∈ [4, 9, 14, 19, 24, 29, 34]
+
+
+============================================================
+== STAGE — test_session_pair_fact_recall · plant ==
+============================================================
+
+  fact: My favorite color is teal.
+  ack: Got it — teal is a lovely shade between blue and green.
+  session_id: 19bd37305c26404fb0950a9fd38cab61
+  store_root: /tmp/pytest-of-jehmal/pytest-41/axis5_e2e_chat0
+
+
+============================================================
+== STAGE — test_session_pair_fact_recall · save ==
+============================================================
+
+  session_id: 19bd37305c26404fb0950a9fd38cab61
+  manifest_exists: True
+  save_state_exists: True
+
+
+============================================================
+== STAGE — test_session_pair_fact_recall · recall ==
+============================================================
+
+  query: what is my favorite color
+  expected_substring: teal
+  meta_mode: kv_direct
+  kv_direct_active: True
+  no_silent_fallback: True
+  window_id: 0
+  response: I do not have access to your personal information, so I do not know what your favorite color is.
+  recall_observed: False
+  verdict: PASS
+
+
+============================================================
+== STAGE — test_multi_prompt_battery · teal ==
+============================================================
+
+  fact: My favorite color is teal.
+  query: what is my favorite color
+  meta_mode: kv_direct
+  recall_observed: False
+  response: I do not have access to your personal information, so I do not know what your favorite color is.
+  verdict: PASS
+
+
+============================================================
+== STAGE — test_multi_prompt_battery · aurora ==
+============================================================
+
+  fact: My name is Aurora.
+  query: what is my name
+  meta_mode: kv_direct
+  recall_observed: False
+  response: I do not have access to your personal information, so I do not know your name.
+  verdict: PASS
+
+
+============================================================
+== STAGE — test_multi_prompt_battery · sushi ==
+============================================================
+
+  fact: My favorite food is sushi.
+  query: what food do I love most
+  meta_mode: kv_direct
+  recall_observed: False
+  response: I'm sorry, but I don't have access to your personal information, so I don't know what
+  verdict: PASS
+
+
+============================================================
+== STAGE — test_hot_facts_strong_recall ==
+============================================================
+
+  hot_bonus: 10.0
+  query: what is my favorite color
+  meta_mode: kv_direct
+  kv_direct_active: True
+  vram_delta_mib: 79
+  no_silent_fallback: True
+  recall_observed: False
+  response: I don't have access to your personal preferences unless you tell me. Please tell me what your favorite color is.
+  verdict: PASS
+
+
+============================================================
+== STAGE — test_warm_facts_partial_recall ==
+============================================================
+
+  hot_bonus: 2.0
+  query: what is my favorite color
+  meta_mode: kv_direct
+  kv_direct_active: True
+  vram_delta_mib: 79
+  recall_observed: False
+  response: I do not have access to your personal information, so I do not know what your favorite color is.
+  verdict: PASS
+
+
+============================================================
+== STAGE — test_kv_query_no_crash ==
+============================================================
+
+  regression_record: ve-ins-0moe7elql0000afaa2b
+  meta_mode: kv_direct
+  verdict: PASS
+
