@@ -2913,11 +2913,17 @@ class WarmPenaltyConfig:
     Contract: ``ve-ins-0mo9p9ke3000060c0c7`` (axis-4 mute-compress-mask).
     Penalty is subtractive in logit units: ``logit -= penalty_value``.
     Multiplicative penalties are forbidden by the contract.
+
+    ``hot_bonus_value`` is an optional additive logit bonus for HOT-tier
+    windows (``logit += hot_bonus_value``); ``None`` (default) means no
+    bonus. Symmetric counterpart to the WARM subtractive penalty; HOT is
+    still identity-in-tier when ``hot_bonus_value is None``.
     """
 
     penalty_value: float = 4.0
     per_warm_uniform: bool = True
     clamp_min: float | None = None
+    hot_bonus_value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -3022,7 +3028,13 @@ def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
     for window_id, tier in inputs.tier_assignments.items():
         start, end = inputs.per_window_token_ranges[window_id]
         if tier == TierLabel.HOT:
-            # Identity: leave the cloned slice untouched for byte-identity.
+            # Identity unless a HOT-tier additive logit bonus is configured;
+            # docstring contract: logit += hot_bonus_value (run-3 ve-ins-0moe7opep).
+            if warm_config.hot_bonus_value is None:
+                continue
+            bonus = float(warm_config.hot_bonus_value)
+            hot_slice = out[..., start:end] + bonus
+            out[..., start:end] = hot_slice.to(dtype)
             continue
         if tier == TierLabel.COLD:
             # Pre-softmax exclusion via additive -inf on the input dtype.
@@ -3080,6 +3092,11 @@ def attention_tier_mask_inputs_to_dict(
             None
             if inputs.warm_config.clamp_min is None
             else float(inputs.warm_config.clamp_min)
+        ),
+        "hot_bonus_value": (
+            None
+            if inputs.warm_config.hot_bonus_value is None
+            else float(inputs.warm_config.hot_bonus_value)
         ),
     }
     if inputs.warm_scores is None:
@@ -3151,10 +3168,12 @@ def attention_tier_mask_inputs_from_dict(
             "attention_tier_mask_inputs_from_dict: warm_config must be a dict."
         )
     clamp_min_raw = raw_warm_config.get("clamp_min", None)
+    hot_bonus_value_raw = raw_warm_config.get("hot_bonus_value", None)  # backward-compat default
     warm_config = WarmPenaltyConfig(
         penalty_value=float(raw_warm_config["penalty_value"]),
         per_warm_uniform=bool(raw_warm_config["per_warm_uniform"]),
         clamp_min=None if clamp_min_raw is None else float(clamp_min_raw),
+        hot_bonus_value=None if hot_bonus_value_raw is None else float(hot_bonus_value_raw),
     )
 
     raw_warm_scores = data.get("warm_scores", None)
