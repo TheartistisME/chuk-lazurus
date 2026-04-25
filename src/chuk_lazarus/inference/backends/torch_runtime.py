@@ -1945,9 +1945,18 @@ class TorchInferenceRuntime(InferenceRuntime):
             is_target_layer = module_layer_idx == int(
                 propagation_state.get("target_layer_idx", -1)
             )
-            is_shared_follower = module_layer_idx in propagation_state.get(
-                "shared_layer_indices_set",
-                frozenset(),
+            # Gemma-4 strips k_proj/v_proj/k_norm/v_norm from KV-shared (consumer)
+            # layers (HF modeling_gemma4.py:1168-1179). Any patched layer that
+            # cannot project its own K/V must route through the shared-KV branch.
+            module_lacks_kv_projections = not hasattr(module_self, "k_proj")
+            module_is_kv_shared_layer = bool(getattr(module_self, "is_kv_shared_layer", False))
+            is_shared_follower = (
+                module_lacks_kv_projections
+                or module_is_kv_shared_layer
+                or module_layer_idx in propagation_state.get(
+                    "shared_layer_indices_set",
+                    frozenset(),
+                )
             )
 
             cos, sin = position_embeddings
@@ -2032,6 +2041,17 @@ class TorchInferenceRuntime(InferenceRuntime):
             if shared_kv_states is not None and is_target_layer:
                 if propagation_state.get("propagate_shared_prefix", False) and prefix_present > 0:
                     shared_kv_states[module_layer_idx] = (key_states, value_states)
+                    # When the target is itself a KV-consumer (e.g. layer 30 →
+                    # producer 28 for Gemma-4-E2B-it sliding), also stamp the
+                    # prefix-augmented K/V into the producer's slot so downstream
+                    # consumers reading from shared_kv_states[producer_idx]
+                    # (HF semantic at modeling_gemma4.py:1208) see the prefix.
+                    target_kv_shared_source_idx = propagation_state.get("target_kv_shared_source_idx")
+                    if target_kv_shared_source_idx is not None:
+                        shared_kv_states[int(target_kv_shared_source_idx)] = (
+                            key_states,
+                            value_states,
+                        )
                     fire_counter.setdefault("prefix_layers", set()).update(
                         propagation_state.get("full_attention_layer_indices", [])
                     )
@@ -2312,7 +2332,61 @@ class TorchInferenceRuntime(InferenceRuntime):
         archived_V = materialization.V
         n_archived = int(archived_K.shape[-2])
         propagation_state["n_archived"] = n_archived
-        propagation_state["prefix_attn_module"] = target_self_attn
+        # KV-consumer (shared-KV) target resolution. Gemma-4 strips k_proj/
+        # v_proj/k_norm/v_norm on KV-shared (consumer) layers (HF
+        # transformers/models/gemma4/modeling_gemma4.py:1168-1179). When the
+        # requested source_layer+1 resolves to a consumer (e.g. Gemma-4-E2B-it
+        # layers 29..34), prefix renormalisation must use the producer module
+        # at self_attn.kv_shared_layer_index (which retains k_norm/v_norm).
+        # See ve-ins-0moe02apx00003fe3b6 (failure-finding) and
+        # ve-ins-0moe0c0jb0000475268 (lead manifest).
+        target_is_kv_consumer = bool(
+            getattr(target_self_attn, "is_kv_shared_layer", False)
+        ) or not hasattr(target_self_attn, "k_proj")
+        target_kv_shared_source_idx: int | None = None
+        if target_is_kv_consumer:
+            producer_idx_raw = getattr(target_self_attn, "kv_shared_layer_index", None)
+            if producer_idx_raw is None:
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: target layer "
+                    f"{target_idx} is a KV-shared consumer (no k_proj) but "
+                    "exposes no kv_shared_layer_index — cannot resolve "
+                    "producer module for prefix normalisation."
+                )
+            producer_idx = int(producer_idx_raw)
+            if producer_idx < 0 or producer_idx >= len(layers):
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: target layer "
+                    f"{target_idx} kv_shared_layer_index={producer_idx} out "
+                    f"of range for model with {len(layers)} layers."
+                )
+            producer_self_attn = getattr(layers[producer_idx], "self_attn", None) or getattr(
+                layers[producer_idx], "attention", None
+            )
+            if producer_self_attn is None:
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: producer layer "
+                    f"{producer_idx} (resolved from KV-consumer target "
+                    f"{target_idx}) has no .self_attn/.attention module."
+                )
+            missing_attrs = [
+                attr_name
+                for attr_name in ("k_norm", "v_norm")
+                if not hasattr(producer_self_attn, attr_name)
+            ]
+            if missing_attrs:
+                raise RuntimeError(
+                    "generate_with_kv_direct_materialization: producer layer "
+                    f"{producer_idx} (resolved from KV-consumer target "
+                    f"{target_idx}) is missing prefix-normalisation attribute(s): "
+                    f"{missing_attrs!r}."
+                )
+            propagation_state["prefix_attn_module"] = producer_self_attn
+            target_kv_shared_source_idx = producer_idx
+        else:
+            propagation_state["prefix_attn_module"] = target_self_attn
+        propagation_state["target_is_kv_consumer"] = target_is_kv_consumer
+        propagation_state["target_kv_shared_source_idx"] = target_kv_shared_source_idx
         propagation_state["target_layer_idx"] = target_idx
 
         def _resolve_self_attn(layer) -> Any | None:
