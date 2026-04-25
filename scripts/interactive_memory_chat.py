@@ -66,7 +66,7 @@ Environment overrides:
   LAZARUS_STORE_DIR          persistent store root (default /tmp/interactive-memory)
   LAZARUS_MODEL              model id/path (default: local Gemma snapshot -> hub id)
   LAZARUS_MAX_NEW_TOKENS     decode length (default 180)
-  LAZARUS_MEMORY_MODE        one of: topical (default) | entity_mention | off
+  LAZARUS_MEMORY_MODE        one of: topical (default) | entity_mention | vec_inject | off
 
 Example session:
 
@@ -112,6 +112,7 @@ Example session:
 from __future__ import annotations
 
 import argparse
+import atexit
 import inspect
 import json
 import os
@@ -144,6 +145,19 @@ KV_QUERY_USAGE = (
     "--sliding-head-indices 0,7 "
     "<text>"
 )
+
+
+# axis-3 (Addition 2): single dirty-flag file at <store_root>/.dirty.
+# Set by every assistant turn that adds tokens; cleared by emit_store
+# after a successful encode. /save is a no-op when this flag is absent.
+DIRTY_FLAG_FILENAME = ".dirty"
+
+# axis-4 (Addition 1): per-session injection token budget for the
+# ASI-routed warm/hot list passed into answer_with_kv_direct. Each fact
+# costs head_dim * num_kv_heads tokens-equivalent; the governor sorts
+# by score and truncates from the bottom. Override via env or config
+# later; for run-4 the literal default is sufficient.
+MAX_TOTAL_INJECT_TOKENS = 4096
 
 
 def ts() -> str:
@@ -430,6 +444,11 @@ class MemoryChat:
         self.max_new_tokens = max_new_tokens
         self.memory_mode = memory_mode  # "topical" | "entity_mention" | "off"
         self.device = device
+        self.vec_inject_provider: Any = None  # lazily loaded on first vec_inject turn
+        # axis-BC: set True by save_current_session() when vec_inject.npz is
+        # successfully written; gates the auto-promotion of memory_mode from
+        # 'topical' -> 'kv_direct' inside /save.
+        self.vec_inject_available: bool = False
 
         self.tokenizer: Any = None
         self.model: Any = None
@@ -503,6 +522,173 @@ class MemoryChat:
             f"crystal_layer={self.retriever.crystal_layer} · "
             f"loaded in {time.time() - t0:.1f}s"
         )
+
+    def _get_or_load_vec_inject_provider(self) -> Any:
+        """Lazy-load LocalVecInjectProvider (torch/CUDA) from the first checkpoint.
+
+        Returns the cached provider if already loaded. Returns None when the
+        store is empty — callers must handle this (same contract as
+        maybe_load_retriever).
+        """
+        if self.vec_inject_provider is not None:
+            return self.vec_inject_provider
+        import asyncio
+
+        from chuk_lazarus.inference.context.research.vec_inject.providers._local_file_torch import (
+            LocalVecInjectProvider,
+        )
+        from chuk_lazarus.session_retrieval.enumeration import iter_checkpoint_handles
+
+        handles = list(iter_checkpoint_handles(self.checkpoints_root))
+        if not handles:
+            info(
+                f"vec_inject skipped: store is empty at {self.checkpoints_root} — "
+                f"/save something first"
+            )
+            return None
+
+        ckpt_dir = Path(handles[0].checkpoint_dir)
+        info(f"loading vec_inject provider from {ckpt_dir}")
+        t0 = time.time()
+        provider = asyncio.run(
+            # torch path: pass the raw HF model so the provider uses native forward hooks
+            # (bypasses make_kv_generator which builds an MLX-only GemmaBackboneAdapter)
+            LocalVecInjectProvider.load(ckpt_dir, raw_model=self.model)
+        )
+        info(f"vec_inject provider ready: {provider.n_facts} facts · loaded in {time.time() - t0:.1f}s")
+        self.vec_inject_provider = provider
+        return provider
+
+    def _emit_vec_inject_npz(
+        self,
+        session_root: Path,
+        torch_store_dir: Path,
+    ) -> bool:
+        """axis-BC: emit vec_inject.npz so the next session can KV-inject.
+
+        Reads per-window token sequences from ``torch_store_dir/window_tokens.npz``,
+        derives a KV-share-aware arch config (via ``_derive_arch_config``),
+        and invokes ``extract_vec_inject_index_torch`` to write
+        ``session_root/vec_inject.npz``. Best-effort: returns False on any
+        failure (caller must NOT raise — /save stays non-blocking).
+
+        For Gemma-4-E2B-it the registry-default ``retrieval_layer`` (28) is
+        a KV-consumer layer that lacks ``k_proj`` — projecting through it
+        raises ``AttributeError``. ``_derive_arch_config`` clamps Gemma-4 to
+        producer layers (12, 13); we forward those as explicit overrides so
+        ``extract_vec_inject_index_torch`` projects through layers that
+        actually own ``k_proj`` / ``v_proj``.
+
+        Returns True on success.
+        """
+        import numpy as np
+        from types import SimpleNamespace
+        from chuk_lazarus.inference.context.research.vec_inject.prefill_torch import (
+            extract_vec_inject_index_torch,
+        )
+
+        # 1. Pull per-window token sequences from window_tokens.npz.
+        window_tokens_path = torch_store_dir / "window_tokens.npz"
+        if not window_tokens_path.exists():
+            info(f"  vec_inject skipped: {window_tokens_path} missing")
+            return False
+        with np.load(window_tokens_path) as f:
+            # Keys are stringified window-ids; preserve numeric order.
+            try:
+                wid_keys = sorted(f.files, key=lambda k: int(k))
+            except ValueError:
+                wid_keys = sorted(f.files)
+            windows: list[list[int]] = [
+                [int(t) for t in f[k].tolist()] for k in wid_keys
+            ]
+
+        if not windows:
+            info("  vec_inject skipped: no windows captured")
+            return False
+
+        # 2. Resolve KV-share-aware arch config (matches the live indexer's
+        #    layer picks). _derive_arch_config returns a dict whose values
+        #    extract_vec_inject_index_torch consumes via attribute access; wrap
+        #    in SimpleNamespace.
+        arch_dict, _crystal_layer, _window_size = self._derive_arch_config()
+        arch_config = SimpleNamespace(**arch_dict)
+
+        # 3. Extract → vec_inject.npz at session_root. Call the prefill
+        #    one-window-at-a-time to avoid the cross-window
+        #    boundary_residual prepend (incompatible with Gemma-4's HF
+        #    rotary position embedding which is computed once on the
+        #    original sequence length and would size-mismatch against the
+        #    prepended hidden_states). Each independent call keeps the
+        #    internal boundary_residual=None and lands a partial NPZ; we
+        #    merge per-window arrays into the final session-level NPZ.
+        import tempfile
+        t0 = time.time()
+        merged: dict[str, "np.ndarray"] = {}
+        meta_set = False
+        with tempfile.TemporaryDirectory(prefix="vec_inject_per_win_") as tmpdir:
+            tmp_root = Path(tmpdir)
+            for source_wid, w_tokens in enumerate(windows):
+                if not w_tokens:
+                    continue
+                per_dir = tmp_root / f"w{source_wid:04d}"
+                per_dir.mkdir()
+                try:
+                    extract_vec_inject_index_torch(
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        windows=[list(w_tokens)],
+                        output_path=per_dir,
+                        arch_config=arch_config,
+                        retrieval_layer=int(arch_dict["retrieval_layer"]),
+                        query_head=int(arch_dict["query_head"]),
+                        inject_layer=int(arch_dict["injection_layer"]),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    info(
+                        f"  vec_inject window {source_wid} skipped (non-fatal): {exc!r}"
+                    )
+                    continue
+                per_npz = per_dir / "vec_inject.npz"
+                if not per_npz.exists():
+                    continue
+                with np.load(per_npz) as f_per:
+                    for k in f_per.files:
+                        # Per-window keys arrive prefixed with "w0/..."; rewrite
+                        # the wid to source_wid so all windows coexist in the
+                        # merged store. Meta scalars (no "w" prefix) we copy
+                        # once.
+                        if k.startswith("w0/"):
+                            new_k = f"w{source_wid}/" + k[len("w0/"):]
+                            merged[new_k] = f_per[k].copy()
+                        else:
+                            if k not in merged:
+                                merged[k] = f_per[k].copy()
+                                meta_set = True
+
+        dt = time.time() - t0
+        if not merged:
+            info("  vec_inject FAILED: no windows extracted (all skipped)")
+            return False
+        npz_path = session_root / "vec_inject.npz"
+        np.savez(str(npz_path), **merged)
+        n_kept = sum(1 for k in merged if k.endswith("/k_vecs"))
+        info(
+            f"  vec_inject.npz written ({n_kept}/{len(windows)} windows OK) "
+            f"in {dt:.2f}s -> {npz_path} ({npz_path.stat().st_size} bytes)"
+        )
+        return True
+
+    def _mark_dirty(self) -> None:
+        """axis-3 (Addition 2): mark the store as having unsaved tokens.
+
+        Writes <store_root>/.dirty as a 0-byte sentinel. Best-effort —
+        any OS error is logged and swallowed; the chat must never crash
+        because of a flag-write failure (e.g. read-only mount, ENOSPC).
+        """
+        try:
+            (self.store_root / DIRTY_FLAG_FILENAME).touch(exist_ok=True)
+        except OSError as exc:
+            info(f"  .dirty mark FAILED (non-fatal): {exc!r}")
 
     def start_new_session(self) -> None:
         from chuk_lazarus.chat_loop.session import ChatLoopSession
@@ -753,6 +939,7 @@ class MemoryChat:
         sys.stdout.flush()
 
         gen_ids = self.tokenizer(full_reply, add_special_tokens=False).input_ids
+        self._mark_dirty()
         return TurnMetadata(
             mode="plain" if self.retriever is None else "none",
             generate_time=elapsed,
@@ -777,6 +964,27 @@ class MemoryChat:
         # recent turns so topical routing sees the context, not just the
         # trailing user line.
         chat_context = self._format_recent_history_for_routing(user_text)
+
+        # kv_direct routing short-circuits to KV-direct injection (axis-5).
+        # kv_query_turn handles its own session/history bookkeeping (it
+        # uses plain_chat_turn on silent-fallback), so rewind here to
+        # avoid double-logging (mirrors vec_inject and except-branch
+        # rewinds below).
+        if self.memory_mode == "kv_direct":
+            self.session.turns.pop()
+            if self.history.messages:
+                self.history.messages.pop()
+            return self.kv_query_turn(user_text)
+
+        # vec_inject routing short-circuits to the dedicated torch stack.
+        # _vec_inject_turn delegates to plain_chat_turn (which re-records the
+        # user turn), so rewind here to avoid double-logging (mirrors the
+        # except-branch rewind below).
+        if self.memory_mode == "vec_inject":
+            self.session.turns.pop()
+            if self.history.messages:
+                self.history.messages.pop()
+            return self._vec_inject_turn(user_text, chat_context)
 
         t_total_start = time.time()
         t_retrieve_start = time.time()
@@ -862,7 +1070,59 @@ class MemoryChat:
         # Print debug block BEFORE the reply so you see routing first
         meta.pretty_print()
         print(f"gemma> {result.generated_answer}\n", flush=True)
+        self._mark_dirty()
         return meta
+
+    # ── axis-4 (Addition 1) token-budget governor ──────────────────────────
+
+    def _apply_token_budget(
+        self,
+        tier_assignments: list[Any],
+        *,
+        max_total_inject_tokens: int = MAX_TOTAL_INJECT_TOKENS,
+    ) -> list[Any]:
+        """axis-4 (Addition 1): cap ASI-routed assignments under MAX_TOTAL_INJECT_TOKENS.
+
+        Sorts by candidate ucb1_score (descending) — Pattern A item 1.
+        Computes per-fact cost = head_dim * num_kv_heads from
+        ``self.model.config`` (HuggingFace Gemma-4 native fields) — Pattern A
+        item 3. Accumulates until the next fact would exceed
+        ``max_total_inject_tokens``; truncates from the bottom — Pattern A
+        item 2. Truncated facts are silently dropped — Pattern A item 4
+        (graceful degradation under budget pressure).
+
+        Returns the kept assignments. Empty input returns empty output
+        without raising.
+        """
+        if not tier_assignments:
+            return tier_assignments
+        cfg = getattr(self.model, "config", None)
+        # Gemma-4-E2B-it ships head_dim=256, num_key_value_heads=4. Fall
+        # back to those literals when config attributes are missing.
+        head_dim = int(getattr(cfg, "head_dim", 256) or 256)
+        n_kv_heads = int(getattr(cfg, "num_key_value_heads", 4) or 4)
+        per_fact_cost = head_dim * n_kv_heads
+        if per_fact_cost <= 0:
+            return tier_assignments
+        sorted_assignments = sorted(
+            tier_assignments,
+            key=lambda a: float(getattr(a.candidate, "ucb1_score", 0.0)),
+            reverse=True,
+        )
+        cumulative = 0
+        kept: list[Any] = []
+        for a in sorted_assignments:
+            if cumulative + per_fact_cost > max_total_inject_tokens:
+                break
+            kept.append(a)
+            cumulative += per_fact_cost
+        if len(kept) < len(tier_assignments):
+            info(
+                f"  axis-4 token-budget: kept {len(kept)}/{len(tier_assignments)} "
+                f"facts ({cumulative}/{max_total_inject_tokens} tokens; "
+                f"per_fact={per_fact_cost})"
+            )
+        return kept
 
     # ── axis-5 KV-direct recall turn ───────────────────────────────────────
 
@@ -890,9 +1150,21 @@ class MemoryChat:
 
         from chuk_lazarus.inference.backends.torch_runtime import WarmPenaltyConfig
         from chuk_lazarus.inference.generation import GenerationConfig
+        from chuk_lazarus.inference.context.knowledge.gemma4_e2b_it_layers import (
+            GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS,
+        )
         from chuk_lazarus.session_retrieval import (
             asi_route_candidates,
             assign_tiers,
+        )
+
+        # AMD 11: sliding-window-hazard precondition. The recipe-canonical
+        # target_layer for KV-direct injection is 29 (Gemma-4-E2B-it global
+        # attention). Assert the fixture matches; the actual runtime guard
+        # lives in vec_inject_to_kv_direct.assert_global_attention_layer.
+        assert 29 in GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS, (
+            "AMD 11 invariant: target_layer=29 must be in "
+            f"GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS={sorted(GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS)}"
         )
 
         candidate_pool = int(os.environ.get("LAZARUS_KV_CANDIDATE_POOL", "16"))
@@ -946,6 +1218,17 @@ class MemoryChat:
             if not assignments_for_handle:
                 raise RuntimeError(
                     "no tier assignments owned by top-ranked candidate's handle"
+                )
+
+            # axis-4 (Addition 1): apply token-budget governor BEFORE
+            # answer_with_kv_direct. Caps the per-call injection footprint
+            # at MAX_TOTAL_INJECT_TOKENS; truncates lowest-scoring facts.
+            assignments_for_handle = self._apply_token_budget(
+                assignments_for_handle
+            )
+            if not assignments_for_handle:
+                raise RuntimeError(
+                    "axis-4 token-budget governor truncated all assignments"
                 )
 
             warm_config = WarmPenaltyConfig(hot_bonus_value=hot_bonus_value)
@@ -1055,6 +1338,113 @@ class MemoryChat:
         # Print debug block, then the answer.
         meta.pretty_print()
         print(f"kv_direct> {result.generated_answer}\n", flush=True)
+        self._mark_dirty()
+        return meta
+
+    def _vec_inject_turn(self, user_text: str, chat_context: str) -> TurnMetadata:
+        """Route a turn through the torch vec_inject stack end-to-end.
+
+        1. Retrieve matches via LocalVecInjectProvider.retrieve_sync on CUDA.
+        2. Install forward_pre_hook on model.model.layers[injection_layer] that
+           applies vec_inject_all to the residual h at position -1.
+        3. Generate the reply via plain_chat_turn's streaming path.
+        4. Remove the hook; populate and return TurnMetadata.
+
+        On low-confidence retrieval, zero-match, or any runtime error: emit the
+        axis-6 SILENT FALLBACK WARN and delegate to plain_chat_turn (mirrors the
+        recall_chat_turn / kv_query_turn fallback contract).
+        """
+        import torch
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "vec_inject memory_mode requires CUDA (Amendment 5, GPU-only)"
+            )
+
+        from chuk_lazarus.inference.context.research.vec_inject.injection_torch import (
+            vec_inject_all,
+        )
+
+        provider = self._get_or_load_vec_inject_provider()
+        if provider is None or provider.n_facts == 0:
+            print(
+                "[WARN] axis-6: SILENT FALLBACK DETECTED — mode=vec_inject "
+                "reason=no_index_or_empty",
+                flush=True,
+            )
+            return self.plain_chat_turn(user_text)
+
+        meta = TurnMetadata(mode="vec_inject")
+        t_total_start = time.time()
+        t_retrieve_start = time.time()
+
+        try:
+            query_ids = self.tokenizer(
+                chat_context, add_special_tokens=False
+            ).input_ids
+            result = provider.retrieve_sync(
+                query_ids=list(query_ids),
+                query_text=chat_context,
+                top_k=5,
+            )
+        except (ValueError, RuntimeError) as exc:
+            print(
+                f"[WARN] axis-6: SILENT FALLBACK DETECTED — mode=vec_inject "
+                f"reason={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            info(f"vec_inject fallback to plain chat: {exc}")
+            return self.plain_chat_turn(user_text)
+
+        meta.retrieve_time = time.time() - t_retrieve_start
+
+        if not result.routing_confident or not result.matches:
+            print(
+                "[WARN] axis-6: SILENT FALLBACK DETECTED — mode=vec_inject "
+                f"reason=low_confidence top_score={result.top_score}",
+                flush=True,
+            )
+            return self.plain_chat_turn(user_text)
+
+        # Install forward_pre_hook on the injection layer.
+        # The HF Gemma model exposes the decoder stack at self.model.model.layers.
+        embed_matrix = self.model.get_input_embeddings().weight
+        target_layer = self.model.model.layers[result.injection_layer]
+
+        def _pre_hook(module, inputs):
+            # inputs is a tuple; first positional arg is the hidden state (1, T, D).
+            # We modify only the last-position slice to match the MLX reference.
+            if not inputs:
+                return None
+            h = inputs[0]
+            if h is None or not isinstance(h, torch.Tensor):
+                return None
+            h_last = h[:, -1:, :]
+            h_injected = vec_inject_all(h_last, result.matches, embed_matrix)
+            new_h = torch.cat([h[:, :-1, :], h_injected], dim=1)
+            return (new_h,) + tuple(inputs[1:])
+
+        hook_handle = target_layer.register_forward_pre_hook(_pre_hook)
+        try:
+            reply_meta = self.plain_chat_turn(user_text)
+        finally:
+            hook_handle.remove()
+
+        # Populate routing metadata from the vec_inject result.
+        top_match = result.matches[0]
+        meta.routing_mode = result.routing_stage or "vec_inject"
+        meta.source_session = ""  # vec_inject index has no session provenance at retrieval time
+        meta.window_id = top_match.window_id
+        meta.routing_score = top_match.score
+        meta.matched_window_text = ""  # provider does not carry window text
+        meta.window_keywords = []
+        meta.strict_assertions = {}
+        meta.generated_answer = reply_meta.generated_answer
+        meta.generated_tokens = reply_meta.generated_tokens
+        meta.prompt_tokens = reply_meta.prompt_tokens
+        meta.total_time = time.time() - t_total_start
+        meta.generate_time = max(0.0, meta.total_time - meta.retrieve_time)
+        meta.no_silent_fallback = True
         return meta
 
     def _format_recent_history_for_routing(self, user_text: str, n_recent: int = 4) -> str:
@@ -1223,6 +1613,24 @@ class MemoryChat:
         except Exception as exc:  # noqa: BLE001 - additive; never block /save
             info(f"  save-state write FAILED (non-fatal): {exc!r}")
 
+        # 3c. axis-BC: emit vec_inject.npz so the next session's LocalVecInjectProvider
+        #     can load real K/V at retrieval_layer / kv_head with per-fact coefficients.
+        #     Best-effort: a failure here MUST NOT block /save.
+        try:
+            session_root = self.checkpoints_root / sid
+            torch_store_dir = session_root / "torch_store"
+            if self._emit_vec_inject_npz(session_root, torch_store_dir):
+                self.vec_inject_available = True
+        except Exception as exc:  # noqa: BLE001 - additive; never block /save
+            info(f"  vec_inject.npz write FAILED (non-fatal): {exc!r}")
+
+        # 3d. axis-BC auto-route: if vec_inject.npz was just written and the
+        #     user is on the default 'topical' mode, auto-promote to
+        #     'kv_direct' so the next chat turn injects KV memory.
+        if self.vec_inject_available and self.memory_mode == "topical":
+            self.memory_mode = "kv_direct"
+            info("  memory_mode auto-promoted topical -> kv_direct (vec_inject.npz available)")
+
         # 4. Refresh retriever so subsequent turns can see the new session.
         #    First-save path: no retriever exists yet — lazy-load once
         #    (this is Gemma load #3, one-time). Subsequent saves: just
@@ -1242,6 +1650,54 @@ class MemoryChat:
                     f"(+{added} handle(s))"
                 )
         return True
+
+    # ── axis-3 (Q3 + Addition 2): unified emit_store entry ─────────────────
+
+    def emit_store(self, *, force: bool = False) -> bool:
+        """axis-3 unified emit. Conversation state -> store. Idempotent.
+
+        Q3 supervisor decision (binding):
+            - /save calls emit_store (force=False)
+            - session-end (atexit / signal handler / on quit-command)
+              calls emit_store (force=False)
+            - emit_store is the single entry; both triggers share semantics
+
+        Addition 2 dirty-flag lifecycle:
+            - Reads <store_root>/.dirty
+            - When the flag is absent and force=False: prints
+              "no changes since last save" and skips (graceful no-op)
+            - Otherwise delegates to save_current_session() and clears
+              .dirty on success
+            - Idempotent across crashes (output files overwrite cleanly)
+
+        Args:
+            force: when True, bypass the .dirty check and emit
+                   unconditionally (used by tests; not surfaced to the
+                   user via /save).
+
+        Returns:
+            True iff save_current_session succeeded; False on no-op,
+            empty session, or save_current_session failure.
+        """
+        dirty_path = self.store_root / DIRTY_FLAG_FILENAME
+        is_dirty = dirty_path.exists() or force
+        if not is_dirty:
+            info("no changes since last save")
+            return False
+        if self.session is None or not self.session.turns:
+            # Nothing to save — clear stale flag and exit cleanly.
+            try:
+                dirty_path.unlink(missing_ok=True)
+            except OSError as exc:
+                info(f"  .dirty unlink FAILED (non-fatal): {exc!r}")
+            return False
+        ok = self.save_current_session()
+        if ok:
+            try:
+                dirty_path.unlink(missing_ok=True)
+            except OSError as exc:
+                info(f"  .dirty unlink FAILED (non-fatal): {exc!r}")
+        return ok
 
     # ── stats ──────────────────────────────────────────────────────────────
 
@@ -1317,6 +1773,12 @@ class MemoryChat:
         self.load_model()
         self.maybe_load_retriever()
         self.start_new_session()
+        # axis-3 (Q3): register session-end emit as an atexit hook.
+        # Provides the non-interactive crash-safe path; the interactive
+        # /quit and EOF branches also call emit_store directly.
+        # emit_store is .dirty-gated and idempotent so double-firing
+        # is safe.
+        atexit.register(self.emit_store)
         self.print_stats()
 
         print()
@@ -1330,10 +1792,9 @@ class MemoryChat:
                 user_text = input("you> ")
             except (EOFError, KeyboardInterrupt):
                 print()
-                if self.session and self.session.turns:
-                    ans = input("current session has unsaved turns. /save before exit? [Y/n] ").strip().lower()
-                    if ans in ("", "y", "yes"):
-                        self.save_current_session()
+                # axis-3 (Q3): session-end auto-emit. emit_store is a
+                # no-op when .dirty is absent; safe to call unconditionally.
+                self.emit_store()
                 info("bye.")
                 return
 
@@ -1361,10 +1822,8 @@ class MemoryChat:
         arg = parts[1] if len(parts) > 1 else ""
 
         if head in ("/quit", "/exit"):
-            if self.session and self.session.turns:
-                ans = input("save before exit? [Y/n] ").strip().lower()
-                if ans in ("", "y", "yes"):
-                    self.save_current_session()
+            # axis-3 (Q3): session-end auto-emit; .dirty-gated.
+            self.emit_store()
             info("bye.")
             return True
 
@@ -1373,7 +1832,7 @@ class MemoryChat:
             return False
 
         if head == "/save":
-            self.save_current_session()
+            self.emit_store()
             return False
 
         if head == "/new":
@@ -1405,7 +1864,7 @@ class MemoryChat:
 
         if head == "/memory":
             # toggle between topical <-> off (quick toggle). Pass arg for explicit.
-            if arg in ("topical", "entity_mention", "off"):
+            if arg in ("topical", "entity_mention", "vec_inject", "kv_direct", "off"):
                 self.memory_mode = arg
             else:
                 self.memory_mode = "off" if self.memory_mode != "off" else "topical"
@@ -1481,7 +1940,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--memory-mode",
-        choices=("topical", "entity_mention", "off"),
+        choices=("topical", "entity_mention", "vec_inject", "kv_direct", "off"),
         default=os.environ.get("LAZARUS_MEMORY_MODE", "topical"),
         help="Recall routing mode for post-save turns.",
     )
