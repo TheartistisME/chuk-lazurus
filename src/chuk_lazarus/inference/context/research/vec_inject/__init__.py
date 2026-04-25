@@ -15,6 +15,17 @@ _LAZY: dict[str, tuple[str, str]] = {
     "LocalVecInjectProvider": (".providers", "LocalVecInjectProvider"),
     "VecInjectMetaKey": (".providers", "VecInjectMetaKey"),
     "VecInjectWindowKey": (".providers", "VecInjectWindowKey"),
+    # axis-BC PROP K.5 + K.0
+    "vec_inject_to_kv_direct": (".kv_direct_adapter", "vec_inject_to_kv_direct"),
+    "inject_via_kv_direct": (".kv_direct_adapter", "inject_via_kv_direct"),
+    "SlidingWindowLayerRefusedError": (
+        ".kv_direct_adapter",
+        "SlidingWindowLayerRefusedError",
+    ),
+    "assert_global_attention_layer": (
+        ".kv_direct_adapter",
+        "assert_global_attention_layer",
+    ),
 }
 
 __all__ = sorted(_LAZY.keys())
