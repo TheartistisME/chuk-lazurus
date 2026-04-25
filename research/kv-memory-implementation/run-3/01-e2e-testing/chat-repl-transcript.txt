@@ -1,0 +1,222 @@
+# run-3 / 01-e2e-testing / chat-repl transcript
+# scope: e2e-testing | manifest: ve-ins-0moe6eumd00003dc3c6 | session: ve-ses-0moe6fapv000010c07f
+# branch: impl/e2e-testing-run-3 | hardware: CUDA RTX 5090 | mode: autonomous
+# tester: live-tmux-repl-runner | started: 2026-04-25T10:23:28Z
+
+============================================================
+== STAGE 0 — Setup ==
+============================================================
+
+Workspace dir: /tmp/run3_chat_workspace_20260425T102328Z (clean, freshly created)
+Tmux window:   vendetta-jehmal-1518:RED-impl-tests (pane %69, window 6)
+
+Read of scripts/interactive_memory_chat.py (READ-ONLY, scope-binding-respected):
+  - main() at line 1609 — argparse entry point
+  - run_repl() at line 1469 — REPL main loop
+  - _handle_command() at line 1510 — slash dispatch
+  - save_current_session() at line 1224 — emits AUS3000 clauses + torch_store
+  - kv_query_turn() at line ~860 (called from line 1598 with /kv_query)
+  - Recall path: regular turn → recall_chat_turn() (memory_mode=topical default)
+  - Default store: /tmp/interactive-memory; overridable via LAZARUS_STORE_DIR
+  - vec_inject mode is opt-in (LAZARUS_MEMORY_MODE=vec_inject); default is topical
+
+============================================================
+== STAGE 1 — Cold-start chat ==
+============================================================
+
+Send sequence (tmux send-keys -t vendetta-jehmal-1518:RED-impl-tests):
+  cd /mnt/c/users/jehma/desktop/lazarus/chuk-lazurus
+  export LAZARUS_STORE_DIR=/tmp/run3_chat_workspace_20260425T102328Z
+  uv run python scripts/interactive_memory_chat.py 2>&1 | tee .../chat_repl_output.log
+
+Captured output (key lines):
+  [2026-04-25T10:24:47Z] loading model (device=cuda) — first load is slow…
+  Loading weights: 100%|██████████| 1951/1951 [00:00<00:00, 9224.94it/s]
+  [2026-04-25T10:25:32Z] model loaded in 44.7s
+  [2026-04-25T10:25:33Z] store is empty at .../checkpoints — no retriever yet
+  [2026-04-25T10:25:33Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+  [2026-04-25T10:25:33Z] new session started · session_id=5352e9f6d5824db6b54bc7b5406da16f
+
+  ===== STORE STATS ======================================================
+    store_root       : /tmp/run3_chat_workspace_20260425T102328Z
+    sessions indexed : 0
+    total_windows    : 0
+    total_tokens     : 0
+    current_session  : session_id=5352e9f6d5824db6b54bc7b5406da16f  turns=0
+  ========================================================================
+  ════════════════════════════════════════════════════════════════════════
+   interactive memory chat ready. type /help for commands.
+  ════════════════════════════════════════════════════════════════════════
+
+VERDICT: PASS — model loaded on CUDA in 44.7s; store correctly empty; prompt ready.
+
+============================================================
+== STAGE 2 — User asserts a fact ==
+============================================================
+
+Send: "My favorite color is teal. Please remember this."
+
+Captured output:
+  you> My favorite color is teal. Please remember this.
+  gemma> I have noted that your favorite color is **teal**. I will remember that! 😊
+    [plain turn] no retrieval · generated 17 tok in 2.28s
+  you>
+
+VERDICT: PASS — assistant correctly acknowledged "teal".
+
+============================================================
+== STAGE 3 — Save / end session ==
+============================================================
+
+Send: "/save"
+
+Captured output:
+  you> /save
+  [2026-04-25T10:25:57Z] saving session 5352e9f6d5824db6b54bc7b5406da16f · 2 turns
+  [2026-04-25T10:25:57Z]   transcript -> .../transcripts/5352...json
+  [2026-04-25T10:25:57Z]   AUS3000 clauses -> 2 record(s) under .../inputs/5352...
+  [2026-04-25T10:25:57Z]   live index flushed in 0.03s
+  [2026-04-25T10:25:57Z]   save-state -> .../checkpoints/5352.../save-state.json
+  [2026-04-25T10:25:57Z] found 1 checkpoint(s) under .../checkpoints — building retriever
+  Loading weights: 100%|██████████| 1951/1951 [00:00<00:00, 14888.09it/s]
+  [2026-04-25T10:26:02Z] retriever ready: 1 session(s) indexed · crystal_layer=13 · loaded in 5.0s
+
+Artifacts written under workspace (find -maxdepth 5 -type f):
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/save-state.json
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/manifest.json
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/window_tokens.npz
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/window_token_lists.npz
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/window_metadata.json
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/keywords.json
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/idf.json
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/boundaries/window_000.npy
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/boundaries/window_001.npy
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/selection_ready/window_000.json
+  checkpoints/5352e9f6d5824db6b54bc7b5406da16f/torch_store/selection_ready/window_001.json
+  inputs/5352.../000_0_0.json
+  inputs/5352.../001_1_0.json
+  transcripts/5352.../...json
+
+KEY OBSERVATION: vec_inject.npz / k_vecs / v_vecs / entries.npz are ABSENT.
+This matches the AMBER prediction supplied by the sibling Explore agent: /save
+emits torch_store + AUS3000 inputs but does NOT produce vec_inject artifacts.
+
+VERDICT: PASS for save itself (torch_store created); AMBER signature confirmed
+(vec_inject artifacts missing).
+
+============================================================
+== STAGE 4 — Cold-start a NEW session pointed at the saved store ==
+============================================================
+
+Send: "/new"
+
+Captured output:
+  you> /new
+  [2026-04-25T10:26:17Z] saving session 5352... · 2 turns           <- /new also re-saves
+  [2026-04-25T10:26:17Z]   no live indexer to flush ...
+  [2026-04-25T10:26:17Z]   retriever refreshed in 0.00s (+0 handle(s))
+  [2026-04-25T10:26:17Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+  [2026-04-25T10:26:17Z] new session started · session_id=d7b3ea5e94ae42adb46374a2d24176a4
+  [2026-04-25T10:26:17Z] fresh session started — try asking about prior sessions.
+
+VERDICT: PASS — fresh session (d7b3ea5e...) attached to retriever pointing at
+prior session's torch_store. Same Python process; no restart required.
+
+============================================================
+== STAGE 5 — Recall query ==
+============================================================
+
+Send: "What is my favorite color?"
+
+Captured output:
+  you> What is my favorite color?
+  [2026-04-25T10:26:25Z] recall fallback: STRICT: topical routing produced no candidates
+    for query 'user: What is my favorite color?\nuser: What is my favorite color?'
+  [WARN] axis-6: SILENT FALLBACK DETECTED — mode=topical reason=recall_exception
+  gemma> I do not have access to your personal information, so I do not know what
+    your favorite color is. You will have to tell me! 😊
+
+VERDICT: FAIL — recall did NOT return "teal". The retriever's topical routing path
+raised "STRICT: topical routing produced no candidates", which caused the
+recall_chat_turn() to emit the axis-6 SILENT-FALLBACK WARN and degrade to a plain
+chat turn. The plain LLM, having no in-context history of the prior session,
+correctly disclaimed knowledge.
+
+This empirically demonstrates that even the retriever path that DOES exist
+(topical, the default for memory_mode) cannot recall the planted fact — the
+keyword-based topical router did not score the saved 2-turn window above the
+strictness threshold for the recall query "What is my favorite color?".
+
+============================================================
+== STAGE 6 — Categorisation ==
+============================================================
+
+CATEGORY: AMBER (with caveat)
+
+Why AMBER and not GREEN:
+  - The script starts cleanly on CUDA, /save writes a complete torch_store,
+    /new attaches a retriever — the WIRING-FRAME is intact.
+  - But end-to-end recall did NOT return "teal" — neither via the auto-routed
+    topical path (STRICT no-candidates fallback) nor via /kv_query.
+  - The vec_inject path was never exercised because LAZARUS_MEMORY_MODE
+    defaulted to "topical", not "vec_inject", and (per the Explore agent's
+    pre-test analysis) /save does not emit vec_inject.npz anyway.
+
+Why not RED:
+  - The script did NOT crash on cold-start, fact-assert, /save, or /new.
+  - The runtime crash that DID occur (Stage 7) is in /kv_query, which is a
+    manual diagnostic command, not on the natural-language recall path that
+    a human user would exercise.
+
+============================================================
+== STAGE 7 — Manual /kv_query attempt ==
+============================================================
+
+Send: "/kv_query what is my favorite color"
+
+Captured output:
+  you> /kv_query what is my favorite color
+  Traceback (most recent call last):
+    File ".../scripts/interactive_memory_chat.py", line 1660, in main
+      chat.run_repl()
+    File ".../scripts/interactive_memory_chat.py", line 1498, in run_repl
+      if self._handle_command(stripped):
+    File ".../scripts/interactive_memory_chat.py", line 1598, in _handle_command
+      meta = self.kv_query_turn(query_text, **selector_kwargs)
+    File ".../scripts/interactive_memory_chat.py", line 998, in kv_query_turn
+      warm_config = WarmPenaltyConfig(hot_bonus_value=hot_bonus_value)
+  TypeError: WarmPenaltyConfig.__init__() got an unexpected keyword argument 'hot_bonus_value'
+
+VERDICT: FAIL — /kv_query crashed with TypeError. The chat process exited.
+
+Wire-up gap (precise file:line):
+  scripts/interactive_memory_chat.py:998
+    warm_config = WarmPenaltyConfig(hot_bonus_value=hot_bonus_value)
+  src/chuk_lazarus/inference/backends/torch_runtime.py:2910
+    @dataclass(frozen=True)
+    class WarmPenaltyConfig:
+        penalty_value: float = 4.0
+        per_warm_uniform: bool = True
+        clamp_min: float | None = None
+
+WarmPenaltyConfig has NO `hot_bonus_value` field. The chat REPL passes a kwarg
+that doesn't exist on the dataclass. The chat script doc-string at line 56
+documents `LAZARUS_KV_HOT_BONUS` (default 0.0) — the variable read at line 951
+is named `hot_bonus_value` and is then passed to WarmPenaltyConfig with the
+same kwarg name. Either:
+  (a) the WarmPenaltyConfig dataclass needs a hot_bonus_value field added, OR
+  (b) the chat REPL is passing the bonus to the wrong constructor (it likely
+      belongs to a hot-tier config dataclass elsewhere, e.g. a TierPolicy or
+      AsiRouterConfig).
+
+This is a NEW bug not previously called out in the AMBER pre-analysis.
+
+============================================================
+== STAGE 8 — Cleanup ==
+============================================================
+
+Process exited via traceback at 10:28:02Z. Tmux window kill is recorded as
+the final action; transcript and diagnostic jsonl land before kill.
+
+Workspace contents preserved at /tmp/run3_chat_workspace_20260425T102328Z
+for follow-up forensics; chat_repl_output.log captures the full session.

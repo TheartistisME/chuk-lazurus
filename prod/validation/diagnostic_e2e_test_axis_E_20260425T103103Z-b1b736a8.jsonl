@@ -1,0 +1,5 @@
+{"event": "meta", "component": "axis-E", "run": 3, "scope": "e2e-testing", "branch": "impl/e2e-testing-run-3", "device": "cuda", "dtype": "torch.bfloat16", "model_snapshot_id": "b4a601102c3d45e2b7b50e2057a6d5ec8ed4adcf", "started_at": "2026-04-25T10:28:05Z", "node_id": "tests/inference/backends/test_axis_E_kv_direct_e2e_apollo.py::test_kv_direct_synthetic_smoke_e2e_layer_29"}
+{"event": "verdict", "component": "axis-E", "verdict": "PASS", "duration_seconds": 57.70, "tests_passed": 1, "tests_failed": 0, "tests_skipped": 0, "ended_at": "2026-04-25T10:29:03Z"}
+{"event": "evidence", "stdout_tail": "tests/inference/backends/test_axis_E_kv_direct_e2e_apollo.py::test_kv_direct_synthetic_smoke_e2e_layer_29 PASSED [100%]\n======================== 1 passed, 2 warnings in 57.70s ========================", "stderr_tail": ""}
+{"event": "auto_emitted_diagnostic", "path": "prod/validation/diagnostic_axis_E_e2e_20260425T102903Z-eb482cf2.jsonl"}
+{"event": "note", "note": "Smoke E2E canary on real Gemma-4-E2B-it at layer 29 (global-attention) — confirms axis-runtime-fix FAIL->PASS holds in run-3."}
