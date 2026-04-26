@@ -93,6 +93,7 @@ class RealWorldMultiFactRecallResult:
     cold_hits: list[str]
     conflict_preserved: bool
     final_decision_present: bool
+    pollution_hits: list[str]
     generated_answer: str
     elapsed_s: float
 
@@ -198,6 +199,129 @@ REAL_WORLD_COLOR_MEMORIES: tuple[dict[str, str], ...] = (
 )
 
 
+DIRTY_STORE_POLLUTION_MEMORIES: tuple[dict[str, Any], ...] = (
+    {
+        "pollution_key": "acme_microsite_seasonal",
+        "forbidden_terms": ("acme", "microsite", "seasonal"),
+        "text": (
+            "For the Acme microsite, sage and amber were only seasonal "
+            "campaign colors and were not product website decisions."
+        ),
+    },
+    {
+        "pollution_key": "mobile_onboarding_purple",
+        "forbidden_terms": ("mobile onboarding", "purple"),
+        "text": (
+            "The mobile onboarding project rejected purple, but that was "
+            "unrelated to the website color scheme."
+        ),
+    },
+    {
+        "pollution_key": "investor_deck_graphite",
+        "forbidden_terms": ("investor deck", "graphite"),
+        "text": "The old investor deck used graphite headings, not the product website.",
+    },
+    {
+        "pollution_key": "landing_page_coral_kept",
+        "forbidden_terms": ("different landing page", "coral"),
+        "text": (
+            "A different landing page kept coral buttons after accessibility "
+            "review; do not apply that to the product website."
+        ),
+    },
+    {
+        "pollution_key": "coffee_shop_beige",
+        "forbidden_terms": ("coffee shop", "beige"),
+        "text": (
+            "The coffee shop brand used beige intentionally; that brand system "
+            "is unrelated to the website project."
+        ),
+    },
+    {
+        "pollution_key": "teal_return_closed",
+        "forbidden_terms": ("teal", "return"),
+        "text": (
+            "Closed branch note: someone suggested teal should return as the "
+            "main accent after sage felt muted. The branch was rejected."
+        ),
+    },
+    {
+        "pollution_key": "amber_banners_old",
+        "forbidden_terms": ("amber", "banner"),
+        "text": (
+            "Superseded component note: amber was once proposed for sitewide "
+            "announcement banners before the CTA-only rule."
+        ),
+    },
+    {
+        "pollution_key": "duplicate_teal_history",
+        "forbidden_terms": (),
+        "text": (
+            "Duplicate design-history note: a teal hero looked polished in "
+            "one mock before the later review called the page too cold."
+        ),
+    },
+)
+
+
+def dirty_store_scale_pollution_text(noise_idx: int) -> dict[str, Any]:
+    if noise_idx < len(DIRTY_STORE_POLLUTION_MEMORIES):
+        return dict(DIRTY_STORE_POLLUTION_MEMORIES[noise_idx])
+    classes = (
+        "near_miss_color_project",
+        "stale_decision",
+        "duplicate_memory",
+        "unrelated_domain",
+        "same_words_wrong_project",
+        "contradictory_old_fact",
+        "irrelevant_long_session",
+    )
+    noise_class = classes[noise_idx % len(classes)]
+    project = f"scale-archive-{noise_idx:04d}"
+    if noise_class == "near_miss_color_project":
+        text = (
+            f"For {project}, a campaign page used sage, amber, graphite, and "
+            "warm white in seasonal artwork, not the product website palette."
+        )
+    elif noise_class == "stale_decision":
+        text = (
+            f"Archived branch {project}: teal returned as the main accent and "
+            "gold banners were proposed, then the branch was rejected."
+        )
+    elif noise_class == "same_words_wrong_project":
+        text = (
+            f"Wrong-project note {project}: a mobile onboarding flow, investor "
+            "deck, and Acme microsite reused words like purple, graphite, sage, "
+            "amber, and footer."
+        )
+    elif noise_class == "contradictory_old_fact":
+        text = (
+            f"Contradictory archive {project}: a different landing page kept "
+            "coral buttons after a separate accessibility review."
+        )
+    elif noise_class == "irrelevant_long_session":
+        text = (
+            f"Long unrelated session {project}: pricing, launch, bug history, "
+            "meeting action items, architecture tradeoffs, and customer "
+            "preferences with no active color-scheme decision."
+        )
+    elif noise_class == "duplicate_memory":
+        text = (
+            f"Duplicate archive {project}: copied QA, support, launch, and "
+            "brand notes from an abandoned experiment."
+        )
+    else:
+        text = (
+            f"Unrelated domain archive {project}: feature requirements, bug "
+            "triage, pricing notes, and support macros for another product."
+        )
+    return {
+        "pollution_key": f"{noise_class}_{noise_idx:04d}",
+        "forbidden_terms": (),
+        "text": text,
+    }
+
+
 def real_world_fact_mentioned(fact_key: str, answer: str) -> bool:
     lower = answer.lower()
     if fact_key == "deep_teal_hero_cold":
@@ -247,6 +371,28 @@ def real_world_final_decision_present(answer: str) -> bool:
         and "sage" in lower
         and "amber" in lower
     )
+
+
+def dirty_store_pollution_hits(answer: str) -> list[str]:
+    lower = answer.lower()
+    hits: list[str] = []
+    for pollution in DIRTY_STORE_POLLUTION_MEMORIES:
+        terms = tuple(str(term).lower() for term in pollution.get("forbidden_terms", ()))
+        if terms and all(term in lower for term in terms):
+            hits.append(str(pollution["pollution_key"]))
+    return hits
+
+
+def dedupe_candidates_by_session(candidates: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        session_id = str(candidate.handle.session_id)
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        deduped.append(candidate)
+    return deduped
 
 
 def real_world_fact_entailed_by_selected(
@@ -598,12 +744,68 @@ def plant_real_world_multi_fact_group(
     return facts
 
 
+def plant_dirty_store_pollution(
+    chat: Any,
+    role: Any,
+    *,
+    probe_idx: int,
+    noise_session_count: int = 50,
+) -> list[dict[str, Any]]:
+    planted: list[dict[str, Any]] = []
+    for pollution_idx in range(int(noise_session_count)):
+        pollution = dirty_store_scale_pollution_text(pollution_idx)
+        chat.memory_mode = "off"
+        chat.start_new_session()
+        session_id = chat.session.session_id
+        direct_turn(
+            chat,
+            role,
+            (
+                f"Archive pollution probe {probe_idx} note {pollution_idx}. "
+                f"{pollution['text']}"
+            ),
+        )
+        direct_turn(
+            chat,
+            role,
+            (
+                f"Unrelated archive padding {secrets.token_hex(8)}. "
+                "This line keeps the old session realistic without adding "
+                "an active color-scheme decision."
+            ),
+        )
+        chat._mark_dirty()
+        if not chat.save_current_session(rebuild_retriever=True):
+            raise RuntimeError(
+                "save_current_session returned False while planting "
+                f"dirty_store pollution probe {probe_idx} item {pollution_idx}"
+            )
+        planted.append(
+            {
+                "pollution_idx": pollution_idx,
+                "session_id": session_id,
+                "pollution_key": pollution["pollution_key"],
+                "text": pollution["text"],
+            }
+        )
+    return planted
+
+
 def run_real_world_multi_fact_probe(
     chat: Any,
     role: Any,
     *,
     probe_idx: int,
+    dirty_store: bool = False,
+    dirty_noise_session_count: int = 50,
 ) -> RealWorldMultiFactRecallResult:
+    if dirty_store:
+        plant_dirty_store_pollution(
+            chat,
+            role,
+            probe_idx=probe_idx,
+            noise_session_count=dirty_noise_session_count,
+        )
     facts = plant_real_world_multi_fact_group(
         chat,
         role,
@@ -623,6 +825,7 @@ def run_real_world_multi_fact_probe(
         chat.retriever.tokenizer,
         candidate_pool=24,
     )
+    candidates = dedupe_candidates_by_session(candidates)
     records_by_phrase = {
         str(record["match_phrase"]).lower(): record for record in facts
     }
@@ -711,6 +914,7 @@ def run_real_world_multi_fact_probe(
         cold_hits=cold_hits,
         conflict_preserved=real_world_conflict_preserved(answer),
         final_decision_present=real_world_final_decision_present(answer),
+        pollution_hits=dirty_store_pollution_hits(answer) if dirty_store else [],
         generated_answer=answer,
         elapsed_s=elapsed,
     )
@@ -754,6 +958,8 @@ def real_world_multi_fact_result_passed(result: RealWorldMultiFactRecallResult) 
         return False
     if len(result.cold_fact_keys) != 4:
         return False
+    if result.pollution_hits:
+        return False
     return (
         len(result.hot_hits) == 4
         and len(result.warm_hits) >= 3
@@ -781,7 +987,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample-size", type=int, default=100, help="0 means all parsed probes.")
     parser.add_argument(
         "--mode",
-        choices=("kv_direct", "topical", "multi_fact", "real_world_multi_fact"),
+        choices=(
+            "kv_direct",
+            "topical",
+            "multi_fact",
+            "real_world_multi_fact",
+            "dirty_real_world_multi_fact",
+        ),
         default="kv_direct",
     )
     parser.add_argument("--model-path", default=None)
@@ -927,9 +1139,16 @@ def run_real_world_multi_fact_mode(
     args: argparse.Namespace,
     run_dir: Path,
     store_root: Path,
+    *,
+    dirty_store: bool = False,
 ) -> int:
     harness_store_root = store_root
-    store_root = localize_path(str(run_dir / "scale-real-world-multi-fact-store"))
+    store_name = (
+        "scale-dirty-real-world-multi-fact-store"
+        if dirty_store
+        else "scale-real-world-multi-fact-store"
+    )
+    store_root = localize_path(str(run_dir / store_name))
     if store_root.exists():
         shutil.rmtree(store_root)
     imc = load_interactive_memory_chat()
@@ -953,6 +1172,8 @@ def run_real_world_multi_fact_mode(
             "LAZARUS_KV_CANDIDATE_POOL",
             "LAZARUS_KV_K_HOT",
             "LAZARUS_KV_K_WARM",
+            "LAZARUS_KV_ROUTE_CANDIDATE_POOL",
+            "LAZARUS_KV_DEDUP_SESSION",
             "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
             "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
             "LAZARUS_KV_HOT_BONUS",
@@ -962,6 +1183,8 @@ def run_real_world_multi_fact_mode(
     passed = 0
     try:
         os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+        os.environ["LAZARUS_KV_ROUTE_CANDIDATE_POOL"] = "64" if dirty_store else "24"
+        os.environ["LAZARUS_KV_DEDUP_SESSION"] = "1"
         os.environ["LAZARUS_KV_K_HOT"] = "4"
         os.environ["LAZARUS_KV_K_WARM"] = "4"
         os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
@@ -976,17 +1199,19 @@ def run_real_world_multi_fact_mode(
                             chat,
                             Role.USER,
                             probe_idx=probe_idx,
+                            dirty_store=dirty_store,
                         )
                 else:
                     result = run_real_world_multi_fact_probe(
                         chat,
                         Role.USER,
                         probe_idx=probe_idx,
+                        dirty_store=dirty_store,
                     )
             except Exception as exc:  # noqa: BLE001
                 print(
                     f"FAIL SCALE_ACTUAL_RECALL probe={probe_idx}/{probe_count} "
-                    f"mode=real_world_multi_fact: {exc!r}"
+                    f"mode={args.mode}: {exc!r}"
                 )
                 print(traceback.format_exc())
                 return 1
@@ -996,10 +1221,11 @@ def run_real_world_multi_fact_mode(
             verdict = "PASS" if ok else "FAIL"
             print(
                 f"{verdict} SCALE_ACTUAL_RECALL probe={probe_idx}/{probe_count} "
-                "mode=real_world_multi_fact "
+                f"mode={args.mode} "
                 f"HOT={len(result.hot_hits)}/4 "
                 f"WARM={len(result.warm_hits)}/4 "
                 f"COLD={len(result.cold_hits)}/4 "
+                f"pollution={len(result.pollution_hits)} "
                 f"elapsed_s={result.elapsed_s:.2f}",
                 flush=True,
             )
@@ -1026,20 +1252,18 @@ def run_real_world_multi_fact_mode(
         "hit_rate": hit_rate,
         "required_hit_rate": args.required_hit_rate,
     }
-    report_path = args.report_json or (
-        run_dir / "scale-actual-recall-real_world_multi_fact.json"
-    )
+    report_path = args.report_json or (run_dir / f"scale-actual-recall-{args.mode}.json")
     write_report(report_path, results, final_summary)
     if hit_rate < args.required_hit_rate:
         print(
-            "FAIL SCALE_ACTUAL_RECALL: mode=real_world_multi_fact "
+            f"FAIL SCALE_ACTUAL_RECALL: mode={args.mode} "
             f"hit_rate={hit_rate:.3f} required={args.required_hit_rate:.3f} "
             f"report={report_path}",
             flush=True,
         )
         return 1
     print(
-        "PASS SCALE_ACTUAL_RECALL: mode=real_world_multi_fact "
+        f"PASS SCALE_ACTUAL_RECALL: mode={args.mode} "
         f"hit_rate={hit_rate:.3f} passed={passed}/{len(results)} "
         f"report={report_path}",
         flush=True,
@@ -1061,16 +1285,21 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         return run_multi_fact_mode(args, run_dir, store_root)
-    if args.mode == "real_world_multi_fact":
+    if args.mode in {"real_world_multi_fact", "dirty_real_world_multi_fact"}:
         if args.dry_run:
             print(
                 f"DRY_RUN SCALE_ACTUAL_RECALL: run_dir={run_dir} "
-                f"store_root={store_root} mode=real_world_multi_fact "
+                f"store_root={store_root} mode={args.mode} "
                 f"probes={args.sample_size}",
                 flush=True,
             )
             return 0
-        return run_real_world_multi_fact_mode(args, run_dir, store_root)
+        return run_real_world_multi_fact_mode(
+            args,
+            run_dir,
+            store_root,
+            dirty_store=args.mode == "dirty_real_world_multi_fact",
+        )
     probes = select_probes(parse_scale_probes(events_path), args.sample_size)
     if not probes:
         raise RuntimeError(f"No scale routing probes found in {events_path}")

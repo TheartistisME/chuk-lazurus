@@ -383,8 +383,8 @@ The quickest sanity check is:
 uv run --extra dev python scripts/auto_verify_memory_repl.py --list-checks
 ```
 
-It should list 15 checks and include `MULTI_FACT_RECALL` plus
-`REAL_WORLD_MULTI_FACT_RECALL`.
+It should list 16 checks and include `MULTI_FACT_RECALL`,
+`REAL_WORLD_MULTI_FACT_RECALL`, and `DIRTY_STORE_REAL_WORLD_RECALL`.
 
 ## Real-World Color-Scheme Invariant
 
@@ -439,4 +439,100 @@ The green 25-probe run on 2026-04-26 reported:
 ```text
 PASS SCALE_ACTUAL_RECALL:
 mode=real_world_multi_fact hit_rate=1.000 passed=25/25
+```
+
+## Dirty-Store Real-World Invariant
+
+The next proof is `DIRTY_STORE_REAL_WORLD_RECALL`. It keeps the same natural
+website color-scheme query, but first plants a cluttered long-term store:
+
+- configurable dirty sessions, with smoke mode using 50 and full mode defaulting
+  to 500;
+- near-miss color projects, stale decisions, duplicate memories, contradictory
+  old facts, unrelated domains, same words in wrong projects, and long irrelevant
+  sessions;
+- twelve target website color-scheme memories across twelve target sessions;
+- two non-color mini-probes covering pricing decisions and bug history.
+
+The query still has no marker and no answer list:
+
+```text
+Tell me everything we discussed about the website's color scheme across all our sessions.
+```
+
+The invariant requires dirty routing and synthesis to prove all of these at
+once:
+
+```text
+target session coverage >= 10/12
+HOT semantic recall = 4/4
+WARM semantic recall >= 3/4
+COLD-only details = 0/4
+near_miss_leak_count = 0
+wrong_project_detail_count = 0
+stale_fact_marked_or_excluded = True
+conflict_preserved = True
+final_decision_present = True
+```
+
+Telemetry also has to stay strict:
+
+```text
+kv_direct_active = True
+mask_penalty_applied = True
+selected_tier = hot
+no_silent_fallback = True
+multi_session_count = True
+semantic_prefix_active = True
+```
+
+The dirty-store proof adds session-deduped routing for the harness and `/kv_query`
+path through `LAZARUS_KV_ROUTE_CANDIDATE_POOL` and
+`LAZARUS_KV_DEDUP_SESSION`. That lets the router search a wider candidate pool
+without stuffing the answer prompt, then keep one best candidate per session
+before assigning HOT/WARM/COLD tiers.
+
+The router also gives natural named project terms a bounded exact-mention
+boost. That matters for dirty stores because a query about `Atlas` pricing or
+`Meridian` checkout should not be drowned out by generic memories that happen
+to share words like "current", "sessions", or "website".
+
+The scale verifier has a matching dirty mode:
+
+```bash
+uv run --extra dev python scripts/verify_memory_recall_scale.py \
+  --sample-size 25 \
+  --mode dirty_real_world_multi_fact \
+  --required-hit-rate 0.90
+```
+
+Each dirty scale probe creates an isolated store, plants noise plus target
+natural memories, asks one unmarked query, and fails if wrong-project pollution
+appears in the answer.
+
+The WSL smoke run on 2026-04-26 reported:
+
+```text
+prod/validation/repl-autoverify/20260426T224203Z-20260426t224203/summary.json
+status: PASS
+checks: 16
+DIRTY_STORE_REAL_WORLD_RECALL:
+target_coverage=12/12 HOT=4/4 WARM=4/4 COLD=0/4
+near_miss_leak_count=0 wrong_project_detail_count=0
+conflict_preserved=True final_decision_present=True
+selected_tier=hot mask_penalty_applied=True domain_probes=2/2
+VRAM_BOUNDED: vram peaks=[19957.0, 19957.0, 19957.0] delta=0.0 MiB
+INFINITE_TURN_LATENCY: 8 measured turns flat
+```
+
+The WSL dirty scale run on 2026-04-26 reported:
+
+```text
+prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/scale-actual-recall-dirty_real_world_multi_fact.json
+mode: dirty_real_world_multi_fact
+sample_size: 25
+passed: 25
+hit_rate: 1.000
+required_hit_rate: 0.900
+pollution: 0 for every probe
 ```

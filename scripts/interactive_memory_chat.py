@@ -407,6 +407,12 @@ class TurnMetadata:
     vram_peak_mib: Optional[float] = None
     vram_delta_mib: Optional[float] = None
     no_silent_fallback: bool = False
+    candidate_count: int = 0
+    tier_assignment_count: int = 0
+    budgeted_assignment_count: int = 0
+    multi_session_count: int = 0
+    semantic_prefix_active: bool = False
+    semantic_prefix_tokens: int = 0
 
     def pretty_print(self) -> None:
         if self.mode == "plain":
@@ -445,6 +451,12 @@ class TurnMetadata:
         print(f"    vram_peak_mib        : {self.vram_peak_mib}{_sent}")
         print(f"    vram_delta_mib       : {self.vram_delta_mib}{_sent}")
         print(f"    no_silent_fallback   : {self.no_silent_fallback}")
+        print(f"    candidate_count      : {self.candidate_count}{_sent}")
+        print(f"    tier_assignments     : {self.tier_assignment_count}{_sent}")
+        print(f"    budgeted_assignments : {self.budgeted_assignment_count}{_sent}")
+        print(f"    multi_session_count  : {self.multi_session_count}{_sent}")
+        print(f"    semantic_prefix      : {self.semantic_prefix_active}{_sent}")
+        print(f"    semantic_prefix_tok  : {self.semantic_prefix_tokens}{_sent}")
         print(f"  timing (s)      : retrieve={self.retrieve_time:.2f}  generate={self.generate_time:.2f}  total={self.total_time:.2f}")
         print(f"  tokens          : prompt={self.prompt_tokens}  generated={self.generated_tokens}")
         print("=" * HEADER_W)
@@ -1363,6 +1375,9 @@ class MemoryChat:
         )
 
         candidate_pool = int(os.environ.get("LAZARUS_KV_CANDIDATE_POOL", "16"))
+        route_candidate_pool = int(
+            os.environ.get("LAZARUS_KV_ROUTE_CANDIDATE_POOL", str(candidate_pool))
+        )
         k_hot = int(os.environ.get("LAZARUS_KV_K_HOT", "4"))
         k_warm = int(os.environ.get("LAZARUS_KV_K_WARM", "8"))
         hot_budget_mib = int(os.environ.get("LAZARUS_KV_HOT_BUDGET_MIB", "32"))
@@ -1386,10 +1401,26 @@ class MemoryChat:
                 self.retriever.handles,
                 query_text,
                 self.retriever.tokenizer,
-                candidate_pool=candidate_pool,
+                candidate_pool=route_candidate_pool,
             )
+            if str(os.environ.get("LAZARUS_KV_DEDUP_SESSION", "0")).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                deduped = []
+                seen_sessions: set[str] = set()
+                for candidate in candidates:
+                    session_id = str(candidate.handle.session_id)
+                    if session_id in seen_sessions:
+                        continue
+                    seen_sessions.add(session_id)
+                    deduped.append(candidate)
+                candidates = deduped
             if not candidates:
                 raise RuntimeError("asi_route_candidates returned no candidates")
+            meta.candidate_count = int(len(candidates))
 
             tier_assignments = assign_tiers(
                 candidates,
@@ -1399,6 +1430,7 @@ class MemoryChat:
             )
             if not tier_assignments:
                 raise RuntimeError("assign_tiers produced zero assignments")
+            meta.tier_assignment_count = int(len(tier_assignments))
 
             # axis-4 (Addition 1): apply the token-budget governor BEFORE
             # materialization. The real retriever can now consume assignments
@@ -1411,6 +1443,7 @@ class MemoryChat:
                 raise RuntimeError(
                     "axis-4 token-budget governor truncated all assignments"
                 )
+            meta.budgeted_assignment_count = int(len(assignments_for_generation))
 
             warm_config = WarmPenaltyConfig(hot_bonus_value=hot_bonus_value)
             gen_config = GenerationConfig(
@@ -1507,6 +1540,21 @@ class MemoryChat:
         meta.mask_penalty_applied = bool(kv_strict.get("mask_penalty_applied", False))
         meta.vram_peak_mib = kv_strict.get("vram_peak_mib", None)
         meta.vram_delta_mib = kv_strict.get("vram_delta_mib", None)
+        meta.multi_session_count = int(
+            kv_strict.get(
+                "multi_session_count",
+                len({
+                    str(getattr(a.candidate.handle, "session_id", ""))
+                    for a in assignments_for_generation
+                }),
+            )
+        )
+        meta.semantic_prefix_active = bool(
+            kv_strict.get("semantic_prefix_active", False)
+        )
+        meta.semantic_prefix_tokens = int(
+            kv_strict.get("semantic_prefix_tokens", 0)
+        )
         # selected_tier: report the highest-priority tier that contributed to
         # this generation. Multi-fact queries can include HOT and WARM slots in
         # one answer, but the selected tier remains the top active tier.

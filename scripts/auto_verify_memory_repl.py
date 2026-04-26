@@ -58,6 +58,10 @@ CHECKS: tuple[tuple[str, str], ...] = (
         "REAL_WORLD_MULTI_FACT_RECALL",
         "Natural website color-scheme memories synthesize HOT/WARM facts and mute COLD.",
     ),
+    (
+        "DIRTY_STORE_REAL_WORLD_RECALL",
+        "Dirty-store routing recalls current target facts without near-miss leakage.",
+    ),
     ("TOKEN_BUDGET", "The token-budget governor binds under pressure."),
     ("VRAM_BOUNDED", "KV-direct peak VRAM stays below the configured ceiling."),
     ("FALLBACK_TRUTH", "Forced KV-direct failure emits truthful no_silent_fallback=False."),
@@ -465,6 +469,222 @@ REAL_WORLD_COLOR_MEMORIES: tuple[dict[str, str], ...] = (
 )
 
 
+DIRTY_STORE_NEAR_MISS_MEMORIES: tuple[dict[str, Any], ...] = (
+    {
+        "noise_class": "near_miss_color_project",
+        "pollution_key": "acme_microsite_seasonal",
+        "forbidden_terms": ("acme", "microsite", "seasonal"),
+        "text": (
+            "For the Acme microsite, sage and amber were only seasonal "
+            "campaign colors and were not product website decisions."
+        ),
+    },
+    {
+        "noise_class": "same_words_wrong_project",
+        "pollution_key": "mobile_onboarding_purple",
+        "forbidden_terms": ("mobile onboarding", "purple"),
+        "text": (
+            "The mobile onboarding project rejected purple, but that was "
+            "unrelated to the website color scheme."
+        ),
+    },
+    {
+        "noise_class": "same_words_wrong_project",
+        "pollution_key": "investor_deck_graphite",
+        "forbidden_terms": ("investor deck", "graphite"),
+        "text": (
+            "The old investor deck used graphite headings, not the product "
+            "website."
+        ),
+    },
+    {
+        "noise_class": "contradictory_old_fact",
+        "pollution_key": "landing_page_coral_kept",
+        "forbidden_terms": ("different landing page", "coral"),
+        "text": (
+            "A different landing page kept coral buttons after accessibility "
+            "review; do not apply that to the product website."
+        ),
+    },
+    {
+        "noise_class": "unrelated_domain",
+        "pollution_key": "coffee_shop_beige",
+        "forbidden_terms": ("coffee shop", "beige"),
+        "text": (
+            "The coffee shop brand used beige intentionally; that brand system "
+            "is unrelated to the website project."
+        ),
+    },
+    {
+        "noise_class": "stale_decision",
+        "pollution_key": "teal_return_closed",
+        "forbidden_terms": ("teal", "return"),
+        "text": (
+            "Closed branch note: someone suggested teal should return as the "
+            "main accent after sage felt muted. The branch was rejected."
+        ),
+    },
+    {
+        "noise_class": "stale_decision",
+        "pollution_key": "amber_banners_old",
+        "forbidden_terms": ("amber", "banner"),
+        "text": (
+            "Superseded component note: amber was once proposed for sitewide "
+            "announcement banners before the CTA-only rule."
+        ),
+    },
+    {
+        "noise_class": "duplicate_memory",
+        "pollution_key": "duplicate_teal_history",
+        "forbidden_terms": (),
+        "text": (
+            "Duplicate design-history note: a teal hero looked polished in "
+            "one mock before the later review called the page too cold."
+        ),
+    },
+    {
+        "noise_class": "irrelevant_long_session",
+        "pollution_key": "launch_ops_padding",
+        "forbidden_terms": (),
+        "text": (
+            "Launch operations archive: QA signoff, analytics mapping, support "
+            "handoff, and deployment checklist notes. This long session talks "
+            "about timelines and owners, not active palette decisions."
+        ),
+    },
+)
+
+
+DIRTY_STORE_GENERIC_NOISE_CLASSES: tuple[str, ...] = (
+    "near_miss_color_project",
+    "stale_decision",
+    "duplicate_memory",
+    "unrelated_domain",
+    "same_words_wrong_project",
+    "contradictory_old_fact",
+    "irrelevant_long_session",
+)
+
+
+DIRTY_STORE_DOMAIN_PROBES: tuple[dict[str, Any], ...] = (
+    {
+        "domain": "pricing_decisions",
+        "query": "What are the current Atlas pricing decisions across our sessions?",
+        "target_context": "Atlas pricing decisions",
+        "facts": (
+            {
+                "fact_key": "atlas_pro_price",
+                "text": "Current Atlas pricing decisions across our sessions: the Pro tier is $29 per seat monthly.",
+            },
+            {
+                "fact_key": "atlas_annual_discount",
+                "text": "Current Atlas pricing decisions across our sessions: the annual discount is now 18%.",
+            },
+            {
+                "fact_key": "atlas_trial",
+                "text": "Current Atlas pricing decisions across our sessions: the free trial stays at 14 days.",
+            },
+            {
+                "fact_key": "atlas_overage",
+                "text": "Current Atlas pricing decisions across our sessions: usage overage is $0.08 per extra automation run.",
+            },
+            {
+                "fact_key": "atlas_enterprise",
+                "text": "Current Atlas pricing decisions across our sessions: Enterprise pricing remains custom quote.",
+            },
+            {
+                "fact_key": "atlas_final",
+                "text": (
+                    "Final pricing decision for Atlas pricing decisions: Pro "
+                    "$29 per seat, 18% annual discount, 14-day trial, $0.08 "
+                    "overage, and Enterprise custom quote."
+                ),
+            },
+        ),
+        "noise": (
+            "Nimbus pricing page kept Pro at $39 per seat and a 10% annual discount.",
+            "Acme billing moved the trial to 30 days for a partner bundle.",
+            "Legacy Atlas draft proposed $49 per seat before the current decision.",
+            "Support packaging notes mention refund windows but no Atlas price change.",
+            "Mobile upsell research liked a $19 starter plan for another product.",
+            "Old investor model assumed usage overage was $0.12, then got retired.",
+            "Coffee shop loyalty pricing uses stamp cards and is unrelated.",
+            "Nimbus Enterprise switched to a public $499 plan, not custom quote.",
+            "Archived annual-plan copy used 20% before Atlas settled on 18%.",
+            "A sandbox checkout page tested a 7-day trial for QA only.",
+            "Partner reseller notes include volume discounts for non-Atlas SKUs.",
+            "The pricing-table CSS audit discussed sticky headers only.",
+        ),
+        "forbidden_terms": (
+            ("nimbus", "$39"),
+            ("30 days", "partner"),
+            ("$49", "legacy"),
+            ("$19", "starter"),
+            ("$0.12", "retired"),
+            ("$499", "nimbus"),
+            ("20%", "archived"),
+            ("7-day", "trial"),
+        ),
+    },
+    {
+        "domain": "bug_history",
+        "query": "What is the Meridian checkout bug history and current final status?",
+        "target_context": "Meridian checkout bug history",
+        "facts": (
+            {
+                "fact_key": "meridian_duplicate_charge",
+                "text": "Current Meridian checkout bug history across our sessions: the incident was a duplicate charge on checkout.",
+            },
+            {
+                "fact_key": "meridian_safari_root",
+                "text": "Current Meridian checkout bug history across our sessions: Safari address autofill replayed the payment intent.",
+            },
+            {
+                "fact_key": "meridian_idempotency",
+                "text": "Current Meridian checkout bug history across our sessions: the fix added an idempotency guard around payment confirmation.",
+            },
+            {
+                "fact_key": "meridian_refund_backfill",
+                "text": "Current Meridian checkout bug history across our sessions: the refund queue was backfilled for affected orders.",
+            },
+            {
+                "fact_key": "meridian_regression_test",
+                "text": "Current Meridian checkout bug history across our sessions: a regression test now covers the Safari autofill path.",
+            },
+            {
+                "fact_key": "meridian_final_fixed",
+                "text": "Final bug status for Meridian checkout bug history: fixed, with checkout anomaly monitoring still on.",
+            },
+        ),
+        "noise": (
+            "Orion checkout bug history: Firefox coupon paste duplicated discounts.",
+            "The Meridian mobile app had a login spinner bug unrelated to checkout.",
+            "Archived hypothesis blamed Stripe webhooks before Safari autofill was confirmed.",
+            "Legacy refund report for Vega required manual CSV import.",
+            "A different storefront fixed duplicate cart items with a debounce.",
+            "Orion final status stayed monitoring-only, not fixed.",
+            "Feature flag cleanup notes mention checkout CSS class names only.",
+            "Meridian search bug history involved empty filters, not payment intents.",
+            "A coffee subscription app backfilled refunds for address typo orders.",
+            "Old QA notes suggested removing Apple Pay, then rejected that plan.",
+            "The support macro bug sent duplicate emails from another workspace.",
+            "Archived incident review for Vega added a webhook retry cap.",
+        ),
+        "forbidden_terms": (
+            ("orion", "firefox"),
+            ("login spinner", "mobile app"),
+            ("stripe webhooks", "hypothesis"),
+            ("vega", "csv"),
+            ("duplicate cart", "debounce"),
+            ("monitoring-only", "orion"),
+            ("empty filters", "search"),
+            ("apple pay", "removing"),
+            ("duplicate emails", "support"),
+        ),
+    },
+)
+
+
 def real_world_fact_mentioned(fact_key: str, answer: str) -> bool:
     lower = answer.lower()
     if fact_key == "deep_teal_hero_cold":
@@ -533,6 +753,92 @@ def real_world_fact_entailed_by_selected(
     return False
 
 
+def dirty_store_near_miss_hits(answer: str) -> list[str]:
+    lower = answer.lower()
+    hits: list[str] = []
+    for memory in DIRTY_STORE_NEAR_MISS_MEMORIES:
+        terms = tuple(str(term).lower() for term in memory.get("forbidden_terms", ()))
+        if terms and all(term in lower for term in terms):
+            hits.append(str(memory["pollution_key"]))
+    return hits
+
+
+def dirty_domain_wrong_project_hits(
+    answer: str,
+    probe: dict[str, Any],
+) -> list[str]:
+    lower = answer.lower()
+    hits: list[str] = []
+    for terms in probe.get("forbidden_terms", ()):
+        lowered = tuple(str(term).lower() for term in terms)
+        if lowered and all(term in lower for term in lowered):
+            hits.append("+".join(lowered))
+    return hits
+
+
+def dirty_store_stale_fact_marked_or_excluded(answer: str) -> bool:
+    lower = answer.lower()
+    stale_pairs = (
+        ("teal", "return"),
+        ("amber", "banner"),
+        ("coral", "kept"),
+        ("beige", "intentionally"),
+    )
+    return not any(a in lower and b in lower for a, b in stale_pairs)
+
+
+def dirty_domain_fact_mentioned(domain: str, fact_key: str, answer: str) -> bool:
+    lower = answer.lower()
+    if domain == "pricing_decisions":
+        if fact_key == "atlas_pro_price":
+            return "$29" in lower and "pro" in lower
+        if fact_key == "atlas_annual_discount":
+            return "18%" in lower and "annual" in lower
+        if fact_key == "atlas_trial":
+            return "14" in lower and "trial" in lower
+        if fact_key == "atlas_overage":
+            return "$0.08" in lower and "overage" in lower
+        if fact_key == "atlas_enterprise":
+            return "enterprise" in lower and "custom" in lower
+        if fact_key == "atlas_final":
+            return "final" in lower and "$29" in lower and "18%" in lower
+    if domain == "bug_history":
+        if fact_key == "meridian_duplicate_charge":
+            return "duplicate" in lower and "charge" in lower
+        if fact_key == "meridian_safari_root":
+            return "safari" in lower and "autofill" in lower
+        if fact_key == "meridian_idempotency":
+            return "idempotency" in lower or "idempotent" in lower
+        if fact_key == "meridian_refund_backfill":
+            return "refund" in lower and "backfill" in lower
+        if fact_key == "meridian_regression_test":
+            return "regression" in lower and "test" in lower
+        if fact_key == "meridian_final_fixed":
+            return "final" in lower and "fixed" in lower
+    raise KeyError(f"unknown dirty domain fact: {domain}/{fact_key}")
+
+
+def dirty_domain_final_decision_present(domain: str, answer: str) -> bool:
+    lower = answer.lower()
+    if domain == "pricing_decisions":
+        return "final" in lower and "$29" in lower and "18%" in lower
+    if domain == "bug_history":
+        return "final" in lower and "fixed" in lower
+    return False
+
+
+def dedupe_candidates_by_session(candidates: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        session_id = str(candidate.handle.session_id)
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        deduped.append(candidate)
+    return deduped
+
+
 class ReplAutomation:
     def __init__(self, args: argparse.Namespace, log: AuditLog) -> None:
         self.args = args
@@ -545,6 +851,8 @@ class ReplAutomation:
         self.color_marker = secrets.token_hex(8)
         self.scale_markers: list[dict[str, Any]] = []
         self.real_world_records: list[dict[str, Any]] = []
+        self.dirty_real_world_records: list[dict[str, Any]] = []
+        self.dirty_noise_records: list[dict[str, Any]] = []
         self.multi_fact_records: list[dict[str, Any]] = []
         self.primary_clause: dict[str, Any] | None = None
         self.budget_observations: list[dict[str, Any]] = []
@@ -566,6 +874,10 @@ class ReplAutomation:
         self.run_check(
             "REAL_WORLD_MULTI_FACT_RECALL",
             self.real_world_multi_fact_recall,
+        )
+        self.run_check(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            self.dirty_store_real_world_recall,
         )
         self.run_check("TOKEN_BUDGET", self.token_budget)
         self.run_check("VRAM_BOUNDED", self.vram_bounded)
@@ -1062,8 +1374,9 @@ class ReplAutomation:
             chat.retriever.handles,
             query,
             chat.retriever.tokenizer,
-            candidate_pool=24,
+            candidate_pool=64,
         )
+        candidates = dedupe_candidates_by_session(candidates)
         records_by_phrase = {
             str(record["match_phrase"]).lower(): record
             for record in self.real_world_records
@@ -1131,6 +1444,8 @@ class ReplAutomation:
                 "LAZARUS_KV_CANDIDATE_POOL",
                 "LAZARUS_KV_K_HOT",
                 "LAZARUS_KV_K_WARM",
+                "LAZARUS_KV_ROUTE_CANDIDATE_POOL",
+                "LAZARUS_KV_DEDUP_SESSION",
                 "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
                 "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
                 "LAZARUS_KV_HOT_BONUS",
@@ -1139,6 +1454,8 @@ class ReplAutomation:
         previous_max_new_tokens = int(chat.max_new_tokens)
         try:
             os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+            os.environ["LAZARUS_KV_ROUTE_CANDIDATE_POOL"] = "64"
+            os.environ["LAZARUS_KV_DEDUP_SESSION"] = "1"
             os.environ["LAZARUS_KV_K_HOT"] = "4"
             os.environ["LAZARUS_KV_K_WARM"] = "4"
             os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
@@ -1257,6 +1574,612 @@ class ReplAutomation:
             f"selected_tier={getattr(meta, 'selected_tier', None)}"
         )
 
+    def refresh_retriever_after_batch(self, check: str, chat: Any) -> None:
+        if chat.retriever is None:
+            chat.maybe_load_retriever()
+        else:
+            chat.retriever.refresh_handles(chat.checkpoints_root)
+        require(check, chat.retriever is not None, "retriever missing after batch refresh")
+
+    def dirty_store_noise_text(self, noise_idx: int) -> tuple[str, str, str]:
+        if noise_idx < len(DIRTY_STORE_NEAR_MISS_MEMORIES):
+            memory = DIRTY_STORE_NEAR_MISS_MEMORIES[noise_idx]
+            return (
+                str(memory["noise_class"]),
+                str(memory["pollution_key"]),
+                str(memory["text"]),
+            )
+        noise_class = DIRTY_STORE_GENERIC_NOISE_CLASSES[
+            noise_idx % len(DIRTY_STORE_GENERIC_NOISE_CLASSES)
+        ]
+        project = f"archive-{noise_idx:04d}"
+        if noise_class == "near_miss_color_project":
+            text = (
+                f"For {project}, the landing page color notes mention sage, amber, "
+                "graphite, and warm white as campaign exploration terms, but not "
+                "as product website color-scheme decisions."
+            )
+        elif noise_class == "stale_decision":
+            text = (
+                f"Archived design branch {project}: a teal hero, gold secondary "
+                "buttons, and beige backgrounds were proposed before being closed."
+            )
+        elif noise_class == "duplicate_memory":
+            text = (
+                f"Duplicate archive {project}: pricing, launch, QA, and support "
+                "owners were copied between meeting notes."
+            )
+        elif noise_class == "same_words_wrong_project":
+            text = (
+                f"Wrong-project note {project}: mobile onboarding, the investor "
+                "deck, and an Acme microsite reused words like purple, graphite, "
+                "sage, amber, and footer."
+            )
+        elif noise_class == "contradictory_old_fact":
+            text = (
+                f"Contradictory old fact {project}: an unrelated landing page kept "
+                "coral buttons and a navy hero after a separate review."
+            )
+        elif noise_class == "irrelevant_long_session":
+            text = (
+                f"Long archive session {project}: roadmap grooming, analytics "
+                "events, support macros, bug triage, launch dependencies, owner "
+                "handoffs, and customer-call summaries with no current palette "
+                "decision."
+            )
+        else:
+            text = (
+                f"Unrelated domain archive {project}: customer preferences, bug "
+                "history, feature requirements, pricing notes, and architecture "
+                "tradeoffs for other projects."
+            )
+        return noise_class, f"{noise_class}_{noise_idx:04d}", text
+
+    def plant_dirty_store_noise_sessions(
+        self,
+        *,
+        count: int,
+        start_idx: int = 0,
+    ) -> list[dict[str, Any]]:
+        chat = self.load_main_chat()
+        assert self.role_cls is not None
+        records: list[dict[str, Any]] = []
+        for offset in range(int(count)):
+            noise_idx = int(start_idx + offset)
+            noise_class, pollution_key, text = self.dirty_store_noise_text(noise_idx)
+            chat.memory_mode = "off"
+            chat.start_new_session()
+            session_id = chat.session.session_id
+            self.direct_turn(
+                chat,
+                self.role_cls.USER,
+                (
+                    f"Dirty store noise class {noise_class} item {noise_idx}. "
+                    f"{text}"
+                ),
+            )
+            if noise_class == "irrelevant_long_session":
+                self.direct_turn(
+                    chat,
+                    self.role_cls.USER,
+                    (
+                        f"Long unrelated continuation {secrets.token_hex(6)}: "
+                        "meeting actions, implementation owner swaps, QA notes, "
+                        "sales handoff, abandoned experiments, stale preferences, "
+                        "and unrelated project names."
+                    ),
+                )
+            chat._mark_dirty()
+            require(
+                "DIRTY_STORE_REAL_WORLD_RECALL",
+                chat.save_current_session(rebuild_retriever=False),
+                "save_current_session returned False for dirty noise session",
+                noise_idx=noise_idx,
+                session_id=session_id,
+                noise_class=noise_class,
+            )
+            record = {
+                "noise_idx": noise_idx,
+                "session_id": session_id,
+                "noise_class": noise_class,
+                "pollution_key": pollution_key,
+                "text": text,
+            }
+            records.append(record)
+            if offset < 20 or offset % 100 == 0:
+                self.log.event("dirty_store.noise_session_saved", **record)
+        return records
+
+    def plant_dirty_store_target_sessions(self) -> list[dict[str, Any]]:
+        chat = self.load_main_chat()
+        assert self.role_cls is not None
+        records: list[dict[str, Any]] = []
+        for fact_idx, fact in enumerate(REAL_WORLD_COLOR_MEMORIES):
+            chat.memory_mode = "off"
+            chat.start_new_session()
+            session_id = chat.session.session_id
+            self.direct_turn(
+                chat,
+                self.role_cls.USER,
+                (
+                    "Current product website palette memory. "
+                    f"{fact['text']}"
+                ),
+            )
+            self.direct_turn(
+                chat,
+                self.role_cls.USER,
+                (
+                    f"Ordinary follow-up {secrets.token_hex(6)}. This session "
+                    "is about the current website color scheme, not the Acme "
+                    "microsite, mobile onboarding, investor deck, coffee shop, "
+                    "or an old branch."
+                ),
+            )
+            chat._mark_dirty()
+            require(
+                "DIRTY_STORE_REAL_WORLD_RECALL",
+                chat.save_current_session(rebuild_retriever=False),
+                "save_current_session returned False for dirty target session",
+                fact_idx=fact_idx,
+                session_id=session_id,
+                fact_key=fact["fact_key"],
+            )
+            record = {
+                "fact_idx": int(fact_idx),
+                "session_id": session_id,
+                "fact_key": fact["fact_key"],
+                "match_phrase": fact["match_phrase"],
+                "text": fact["text"],
+            }
+            records.append(record)
+            self.log.event("dirty_store.target_session_saved", **record)
+        return records
+
+    def dirty_store_color_probe(self) -> dict[str, Any]:
+        chat = self.load_main_chat()
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            chat.retriever is not None,
+            "retriever missing",
+        )
+
+        from chuk_lazarus.session_retrieval import asi_route_candidates, assign_tiers
+        from chuk_lazarus.session_retrieval.enumeration import load_store
+
+        query = (
+            "Tell me everything we discussed about the website's color scheme "
+            "across all our sessions."
+        )
+        candidates = asi_route_candidates(
+            chat.retriever.handles,
+            query,
+            chat.retriever.tokenizer,
+            candidate_pool=48,
+        )
+        candidates = dedupe_candidates_by_session(candidates)
+        records_by_phrase = {
+            str(record["match_phrase"]).lower(): record
+            for record in self.dirty_real_world_records
+        }
+        noise_by_text = {
+            str(record["text"]).lower(): record for record in self.dirty_noise_records
+        }
+        candidate_records: list[dict[str, Any]] = []
+        near_miss_candidates: list[dict[str, Any]] = []
+        for rank, candidate in enumerate(candidates):
+            store = load_store(candidate.handle)
+            window_text = store.get_window_text(int(candidate.window_id), chat.tokenizer)
+            lower = window_text.lower()
+            matched = None
+            for phrase, record in records_by_phrase.items():
+                if phrase in lower:
+                    matched = record
+                    break
+            if matched is not None:
+                candidate_records.append(
+                    {
+                        **matched,
+                        "rank": rank,
+                        "candidate_session_id": candidate.handle.session_id,
+                        "window_id": int(candidate.window_id),
+                    }
+                )
+            for text, record in noise_by_text.items():
+                if text and text in lower:
+                    near_miss_candidates.append(
+                        {
+                            **record,
+                            "rank": rank,
+                            "candidate_session_id": candidate.handle.session_id,
+                            "window_id": int(candidate.window_id),
+                        }
+                    )
+                    break
+        seen_fact_keys = {str(record["fact_key"]) for record in candidate_records}
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            len(seen_fact_keys) >= 10,
+            "dirty ASI candidate_pool did not cover at least 10 of 12 target memories",
+            seen=sorted(seen_fact_keys),
+            expected=sorted(record["fact_key"] for record in self.dirty_real_world_records),
+            near_miss_candidates=near_miss_candidates[:12],
+        )
+
+        assignments = assign_tiers(
+            candidates,
+            K_HOT=4,
+            K_WARM=4,
+            candidate_pool=12,
+        )
+        records_by_session_window = {
+            (record["candidate_session_id"], int(record["window_id"])): record
+            for record in candidate_records
+        }
+        tier_records: dict[str, list[dict[str, Any]]] = {
+            "hot": [],
+            "warm": [],
+            "cold": [],
+        }
+        tier_near_misses: list[dict[str, Any]] = []
+        for assignment in assignments:
+            key = (
+                assignment.candidate.handle.session_id,
+                int(assignment.candidate.window_id),
+            )
+            record = records_by_session_window.get(key)
+            if record is not None:
+                tier_records[assignment.tier.value].append(record)
+            else:
+                for candidate_noise in near_miss_candidates:
+                    if (
+                        candidate_noise["candidate_session_id"],
+                        int(candidate_noise["window_id"]),
+                    ) == key:
+                        tier_near_misses.append(
+                            {
+                                **candidate_noise,
+                                "tier": assignment.tier.value,
+                            }
+                        )
+                        break
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            all(len(tier_records[tier]) == 4 for tier in ("hot", "warm", "cold")),
+            "dirty top 12 tier split was not 4/4/4 target memories",
+            tier_records=tier_records,
+            tier_near_misses=tier_near_misses,
+        )
+
+        previous_env = {
+            key: os.environ.get(key)
+            for key in (
+                "LAZARUS_KV_CANDIDATE_POOL",
+                "LAZARUS_KV_K_HOT",
+                "LAZARUS_KV_K_WARM",
+                "LAZARUS_KV_ROUTE_CANDIDATE_POOL",
+                "LAZARUS_KV_DEDUP_SESSION",
+                "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+                "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
+                "LAZARUS_KV_HOT_BONUS",
+            )
+        }
+        previous_max_new_tokens = int(chat.max_new_tokens)
+        try:
+            os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+            os.environ["LAZARUS_KV_ROUTE_CANDIDATE_POOL"] = "48"
+            os.environ["LAZARUS_KV_DEDUP_SESSION"] = "1"
+            os.environ["LAZARUS_KV_K_HOT"] = "4"
+            os.environ["LAZARUS_KV_K_WARM"] = "4"
+            os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
+            os.environ["LAZARUS_KV_SEMANTIC_PREFIX_TOKENS"] = "4096"
+            os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
+            chat.max_new_tokens = max(previous_max_new_tokens, 240)
+            chat.memory_mode = "kv_direct"
+            chat.start_new_session()
+            started = time.time()
+            meta = chat.kv_query_turn(query)
+            elapsed = time.time() - started
+        finally:
+            chat.max_new_tokens = previous_max_new_tokens
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assert_kv_meta("DIRTY_STORE_REAL_WORLD_RECALL", meta)
+        answer = str(getattr(meta, "generated_answer", "") or "")
+        hot_hits = [
+            record for record in tier_records["hot"]
+            if real_world_fact_mentioned(str(record["fact_key"]), answer)
+        ]
+        warm_hits = [
+            record for record in tier_records["warm"]
+            if real_world_fact_mentioned(str(record["fact_key"]), answer)
+        ]
+        selected_fact_keys = {
+            str(record["fact_key"])
+            for tier in ("hot", "warm")
+            for record in tier_records[tier]
+        }
+        cold_only_records = [
+            record for record in tier_records["cold"]
+            if not real_world_fact_entailed_by_selected(
+                str(record["fact_key"]),
+                selected_fact_keys,
+            )
+        ]
+        cold_hits = [
+            record for record in cold_only_records
+            if real_world_fact_mentioned(str(record["fact_key"]), answer)
+        ]
+        near_miss_hits = dirty_store_near_miss_hits(answer)
+        stale_ok = dirty_store_stale_fact_marked_or_excluded(answer)
+        conflict_preserved = real_world_conflict_preserved(answer)
+        final_decision_present = real_world_final_decision_present(answer)
+
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            len(hot_hits) == 4,
+            "dirty-store answer missed one or more HOT target memories",
+            hot_expected=tier_records["hot"],
+            hot_hits=hot_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            len(warm_hits) >= 3,
+            "dirty-store answer recalled too few WARM target memories",
+            warm_expected=tier_records["warm"],
+            warm_hits=warm_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            len(cold_hits) == 0,
+            "dirty-store answer mentioned COLD-only target memories",
+            cold_expected=tier_records["cold"],
+            cold_hits=cold_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            not near_miss_hits,
+            "dirty-store answer leaked near-miss wrong-project facts",
+            near_miss_hits=near_miss_hits,
+            answer=answer,
+        )
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            stale_ok,
+            "dirty-store answer included stale facts as if current",
+            answer=answer,
+        )
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            conflict_preserved and final_decision_present,
+            "dirty-store answer missed revision/final decision semantics",
+            conflict_preserved=conflict_preserved,
+            final_decision_present=final_decision_present,
+            answer=answer,
+        )
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            bool(getattr(meta, "mask_penalty_applied", False))
+            and getattr(meta, "selected_tier", None) == "hot"
+            and bool(getattr(meta, "semantic_prefix_active", False))
+            and int(getattr(meta, "multi_session_count", 0)) >= 8,
+            "dirty-store KV telemetry did not report the expected bounded multi-session path",
+            meta=self.meta_to_dict(meta),
+        )
+
+        result = {
+            "answer": answer,
+            "target_coverage": len(seen_fact_keys),
+            "hot_hits": len(hot_hits),
+            "warm_hits": len(warm_hits),
+            "cold_hits": len(cold_hits),
+            "near_miss_leak_count": len(near_miss_hits),
+            "wrong_project_detail_count": len(near_miss_hits),
+            "stale_fact_marked_or_excluded": stale_ok,
+            "conflict_preserved": conflict_preserved,
+            "final_decision_present": final_decision_present,
+            "elapsed_s": elapsed,
+            "tier_records": tier_records,
+            "meta": self.meta_to_dict(meta),
+        }
+        self.log.event("dirty_store.color_probe", **result)
+        return result
+
+    def plant_dirty_domain_probe(self, probe: dict[str, Any]) -> None:
+        chat = self.load_main_chat()
+        assert self.role_cls is not None
+        for noise_idx, text in enumerate(probe["noise"]):
+            chat.memory_mode = "off"
+            chat.start_new_session()
+            session_id = chat.session.session_id
+            self.direct_turn(
+                chat,
+                self.role_cls.USER,
+                f"Dirty domain noise {probe['domain']} {noise_idx}. {text}",
+            )
+            chat._mark_dirty()
+            require(
+                "DIRTY_STORE_REAL_WORLD_RECALL",
+                chat.save_current_session(rebuild_retriever=False),
+                "save_current_session returned False for dirty domain noise",
+                domain=probe["domain"],
+                noise_idx=noise_idx,
+                session_id=session_id,
+            )
+        for fact_idx, fact in enumerate(probe["facts"]):
+            chat.memory_mode = "off"
+            chat.start_new_session()
+            session_id = chat.session.session_id
+            self.direct_turn(chat, self.role_cls.USER, str(fact["text"]))
+            self.direct_turn(
+                chat,
+                self.role_cls.USER,
+                (
+                    f"Current decision continuation {secrets.token_hex(6)} for "
+                    f"{probe['target_context']}."
+                ),
+            )
+            chat._mark_dirty()
+            require(
+                "DIRTY_STORE_REAL_WORLD_RECALL",
+                chat.save_current_session(rebuild_retriever=False),
+                "save_current_session returned False for dirty domain target",
+                domain=probe["domain"],
+                fact_idx=fact_idx,
+                session_id=session_id,
+            )
+
+    def dirty_domain_probe(self, probe: dict[str, Any]) -> dict[str, Any]:
+        chat = self.load_main_chat()
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            chat.retriever is not None,
+            "retriever missing",
+        )
+        previous_env = {
+            key: os.environ.get(key)
+            for key in (
+                "LAZARUS_KV_CANDIDATE_POOL",
+                "LAZARUS_KV_K_HOT",
+                "LAZARUS_KV_K_WARM",
+                "LAZARUS_KV_ROUTE_CANDIDATE_POOL",
+                "LAZARUS_KV_DEDUP_SESSION",
+                "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+                "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
+                "LAZARUS_KV_HOT_BONUS",
+            )
+        }
+        previous_max_new_tokens = int(chat.max_new_tokens)
+        try:
+            os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+            os.environ["LAZARUS_KV_ROUTE_CANDIDATE_POOL"] = "64"
+            os.environ["LAZARUS_KV_DEDUP_SESSION"] = "1"
+            os.environ["LAZARUS_KV_K_HOT"] = "4"
+            os.environ["LAZARUS_KV_K_WARM"] = "4"
+            os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
+            os.environ["LAZARUS_KV_SEMANTIC_PREFIX_TOKENS"] = "4096"
+            os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
+            chat.max_new_tokens = max(previous_max_new_tokens, 180)
+            chat.memory_mode = "kv_direct"
+            chat.start_new_session()
+            started = time.time()
+            meta = chat.kv_query_turn(str(probe["query"]))
+            elapsed = time.time() - started
+        finally:
+            chat.max_new_tokens = previous_max_new_tokens
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assert_kv_meta("DIRTY_STORE_REAL_WORLD_RECALL", meta)
+        answer = str(getattr(meta, "generated_answer", "") or "")
+        hits = [
+            str(fact["fact_key"])
+            for fact in probe["facts"]
+            if dirty_domain_fact_mentioned(
+                str(probe["domain"]),
+                str(fact["fact_key"]),
+                answer,
+            )
+        ]
+        wrong_hits = dirty_domain_wrong_project_hits(answer, probe)
+        final_present = dirty_domain_final_decision_present(str(probe["domain"]), answer)
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            len(hits) >= 4,
+            "dirty domain answer recalled too few target facts",
+            domain=probe["domain"],
+            hits=hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            not wrong_hits,
+            "dirty domain answer leaked wrong-project details",
+            domain=probe["domain"],
+            wrong_hits=wrong_hits,
+            answer=answer,
+        )
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            final_present,
+            "dirty domain answer missed final/current decision",
+            domain=probe["domain"],
+            answer=answer,
+        )
+        result = {
+            "domain": probe["domain"],
+            "hits": hits,
+            "wrong_project_hits": wrong_hits,
+            "final_current_decision_detected": final_present,
+            "answer": answer,
+            "elapsed_s": elapsed,
+            "meta": self.meta_to_dict(meta),
+        }
+        self.log.event("dirty_store.domain_probe", **result)
+        return result
+
+    def dirty_store_real_world_recall(self) -> str:
+        chat = self.load_main_chat()
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            chat.retriever is not None,
+            "retriever missing",
+        )
+        noise_count = max(0, int(self.args.dirty_store_noise_sessions))
+        pre_noise = noise_count // 2
+        post_noise = noise_count - pre_noise
+        self.dirty_noise_records = []
+        self.dirty_noise_records.extend(
+            self.plant_dirty_store_noise_sessions(count=pre_noise, start_idx=0)
+        )
+        self.dirty_real_world_records = self.plant_dirty_store_target_sessions()
+        self.dirty_noise_records.extend(
+            self.plant_dirty_store_noise_sessions(
+                count=post_noise,
+                start_idx=pre_noise,
+            )
+        )
+        for probe in DIRTY_STORE_DOMAIN_PROBES:
+            self.plant_dirty_domain_probe(probe)
+        self.refresh_retriever_after_batch("DIRTY_STORE_REAL_WORLD_RECALL", chat)
+
+        color_result = self.dirty_store_color_probe()
+        domain_results = [self.dirty_domain_probe(probe) for probe in DIRTY_STORE_DOMAIN_PROBES]
+        require(
+            "DIRTY_STORE_REAL_WORLD_RECALL",
+            all(len(result["hits"]) >= 4 and not result["wrong_project_hits"] for result in domain_results),
+            "one or more dirty domain probes failed breadth checks",
+            domain_results=domain_results,
+        )
+        return (
+            "target_coverage="
+            f"{color_result['target_coverage']}/12 "
+            f"HOT={color_result['hot_hits']}/4 "
+            f"WARM={color_result['warm_hits']}/4 "
+            f"COLD={color_result['cold_hits']}/4 "
+            f"near_miss_leak_count={color_result['near_miss_leak_count']} "
+            f"wrong_project_detail_count={color_result['wrong_project_detail_count']} "
+            f"conflict_preserved={color_result['conflict_preserved']} "
+            f"final_decision_present={color_result['final_decision_present']} "
+            f"selected_tier={color_result['meta'].get('selected_tier')} "
+            f"mask_penalty_applied={color_result['meta'].get('mask_penalty_applied')} "
+            f"domain_probes={len(domain_results)}/{len(DIRTY_STORE_DOMAIN_PROBES)}"
+        )
+
     def plant_multi_fact_session(
         self,
         *,
@@ -1346,8 +2269,9 @@ class ReplAutomation:
             chat.retriever.handles,
             query,
             chat.retriever.tokenizer,
-            candidate_pool=12,
+            candidate_pool=64,
         )
+        candidates = dedupe_candidates_by_session(candidates)
         require(
             "MULTI_FACT_RECALL",
             len(candidates) >= 12,
@@ -1381,7 +2305,7 @@ class ReplAutomation:
         require(
             "MULTI_FACT_RECALL",
             len(seen_markers) == 12,
-            "ASI candidate_pool top 12 did not cover all planted multi-facts",
+            "ASI candidate_pool did not cover all planted multi-facts",
             seen=sorted(seen_markers),
             expected=sorted(record["marker"] for record in self.multi_fact_records),
         )
@@ -1422,6 +2346,8 @@ class ReplAutomation:
                 "LAZARUS_KV_CANDIDATE_POOL",
                 "LAZARUS_KV_K_HOT",
                 "LAZARUS_KV_K_WARM",
+                "LAZARUS_KV_ROUTE_CANDIDATE_POOL",
+                "LAZARUS_KV_DEDUP_SESSION",
                 "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
                 "LAZARUS_KV_HOT_BONUS",
             )
@@ -1429,6 +2355,8 @@ class ReplAutomation:
         previous_max_new_tokens = int(chat.max_new_tokens)
         try:
             os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+            os.environ["LAZARUS_KV_ROUTE_CANDIDATE_POOL"] = "64"
+            os.environ["LAZARUS_KV_DEDUP_SESSION"] = "1"
             os.environ["LAZARUS_KV_K_HOT"] = "4"
             os.environ["LAZARUS_KV_K_WARM"] = "4"
             os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
@@ -1994,6 +2922,12 @@ class ReplAutomation:
             "vram_peak_mib",
             "vram_delta_mib",
             "no_silent_fallback",
+            "candidate_count",
+            "tier_assignment_count",
+            "budgeted_assignment_count",
+            "multi_session_count",
+            "semantic_prefix_active",
+            "semantic_prefix_tokens",
             "generated_answer",
             "generated_tokens",
             "prompt_tokens",
@@ -2029,6 +2963,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--turn-latency-hot-budget-mib", type=int, default=150)
     parser.add_argument("--turn-latency-max-new-tokens", type=int, default=48)
     parser.add_argument(
+        "--dirty-store-noise-sessions",
+        type=int,
+        default=500,
+        help=(
+            "Irrelevant dirty-store sessions planted around the target memories "
+            "for DIRTY_STORE_REAL_WORLD_RECALL."
+        ),
+    )
+    parser.add_argument(
         "--run-id",
         default=utc_stamp().replace("Z", "").lower(),
         help="Stable suffix embedded in planted markers.",
@@ -2060,6 +3003,7 @@ def main(argv: list[str] | None = None) -> int:
         args.turn_latency_turns = min(args.turn_latency_turns, 8)
         args.turn_latency_warmup_turns = min(args.turn_latency_warmup_turns, 1)
         args.turn_latency_window_size = min(args.turn_latency_window_size, 4)
+        args.dirty_store_noise_sessions = min(args.dirty_store_noise_sessions, 50)
 
     run_dir = args.output_root / f"{utc_stamp()}-{args.run_id}"
     log = AuditLog(run_dir)

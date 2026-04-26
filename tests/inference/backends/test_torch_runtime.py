@@ -450,6 +450,54 @@ def test_natural_multi_token_tier_mask_mutes_cold_ranges():
     assert torch.all(cold_mass == 0)
 
 
+def test_dirty_store_variable_length_tier_mask_keeps_cold_muted():
+    """Dirty-store windows can be uneven; COLD remains hard-muted."""
+    attn_logits = torch.zeros((1, 1, 2, 37), dtype=torch.float32)
+    inputs = AttentionTierMaskInputs(
+        per_window_token_ranges={
+            100: (0, 2),
+            101: (2, 7),
+            102: (7, 8),
+            103: (8, 14),
+            200: (14, 17),
+            201: (17, 23),
+            202: (23, 25),
+            203: (25, 29),
+            300: (29, 30),
+            301: (30, 34),
+            302: (34, 36),
+            303: (36, 37),
+        },
+        tier_assignments={
+            100: TierLabel.HOT,
+            101: TierLabel.HOT,
+            102: TierLabel.HOT,
+            103: TierLabel.HOT,
+            200: TierLabel.WARM,
+            201: TierLabel.WARM,
+            202: TierLabel.WARM,
+            203: TierLabel.WARM,
+            300: TierLabel.COLD,
+            301: TierLabel.COLD,
+            302: TierLabel.COLD,
+            303: TierLabel.COLD,
+        },
+        warm_config=WarmPenaltyConfig(penalty_value=4.0, hot_bonus_value=0.0),
+    )
+
+    masked = apply_tier_attention_mask(attn_logits, inputs)
+    post_softmax = torch.softmax(masked, dim=-1)
+
+    hot_mass = post_softmax[..., 0:14].sum(dim=-1)
+    warm_mass = post_softmax[..., 14:29].sum(dim=-1)
+    cold_mass = post_softmax[..., 29:37].sum(dim=-1)
+
+    assert torch.isneginf(masked[..., 29:37]).all()
+    assert torch.all(hot_mass > warm_mass)
+    assert torch.all(warm_mass > 0)
+    assert torch.all(cold_mass == 0)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime test requires a CUDA GPU")
 class TestKvDirectMaterializationValidation:
     """Focused runtime-side validation checks that fail before patch execution."""

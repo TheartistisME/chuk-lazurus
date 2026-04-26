@@ -62,6 +62,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -69,6 +70,7 @@ from pathlib import Path
 from typing import Any
 
 from chuk_lazarus.inference.context.knowledge.route import TFIDFRouter
+from chuk_lazarus.session_retrieval.entity_mention import extract_entity_tokens
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle, load_store
 from chuk_lazarus.session_retrieval.literal_match import (
     encode_literal_sequences,
@@ -266,6 +268,7 @@ def _session_age_seconds(handle: CheckpointHandle) -> float:
 
 
 _EXACT_LITERAL_BOOST = 1_000_000.0
+_ENTITY_MENTION_BOOST = 750_000.0
 
 # (rank_score, raw_tfidf_score, session_id, window_id, handle, keyword_count)
 _RawRow = tuple[float, float, str, int, CheckpointHandle, int]
@@ -275,9 +278,12 @@ def _score_all_windows(
     handles: Sequence[CheckpointHandle],
     query_ids: list[int],
     literal_token_sequences: list[list[int]],
+    entity_tokens: list[str],
+    tokenizer: Any,
 ) -> list[_RawRow]:
     """Score every window via TFIDFRouter.score_window; no silent fallback."""
     raw: list[_RawRow] = []
+    query_entities = tuple(dict.fromkeys(token.lower() for token in entity_tokens if token))
     for handle in handles:
         try:
             store = load_store(handle)
@@ -305,8 +311,33 @@ def _score_all_windows(
                 continue
             tfidf_score = float(router.score_window(query_ids, int(window_id)))
             literal_score = float(literal_scores.get(int(window_id), 0.0))
-            raw_score = tfidf_score + (_EXACT_LITERAL_BOOST * literal_score)
             kc = len(store_keywords.get(int(window_id), []))
+            entity_score = 0.0
+            if query_entities:
+                keyword_set = {
+                    str(keyword).strip().lower()
+                    for keyword in store_keywords.get(int(window_id), []) or []
+                }
+                matched_entities = {
+                    entity for entity in query_entities if entity in keyword_set
+                }
+                missing_entities = [
+                    entity for entity in query_entities if entity not in matched_entities
+                ]
+                if missing_entities:
+                    try:
+                        window_text = store.get_window_text(int(window_id), tokenizer).lower()
+                    except Exception:
+                        window_text = ""
+                    for entity in missing_entities:
+                        if re.search(rf"(?<![a-z0-9]){re.escape(entity)}(?![a-z0-9])", window_text):
+                            matched_entities.add(entity)
+                entity_score = float(len(matched_entities))
+            raw_score = (
+                tfidf_score
+                + (_EXACT_LITERAL_BOOST * literal_score)
+                + (_ENTITY_MENTION_BOOST * entity_score)
+            )
             raw.append((
                 raw_score,
                 tfidf_score,
@@ -365,7 +396,17 @@ def asi_route_candidates(
 
     query_ids = _encode_token_ids(tokenizer, query_text)
     literal_token_sequences = encode_literal_sequences(tokenizer, query_text)
-    raw_scored = _score_all_windows(handles, query_ids, literal_token_sequences)
+    entity_tokens = [
+        token for token in extract_entity_tokens(query_text)
+        if token not in {"tell", "list", "return", "rank"}
+    ]
+    raw_scored = _score_all_windows(
+        handles,
+        query_ids,
+        literal_token_sequences,
+        entity_tokens,
+        tokenizer,
+    )
     if not raw_scored:
         return []
 

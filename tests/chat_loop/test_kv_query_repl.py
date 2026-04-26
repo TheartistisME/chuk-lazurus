@@ -332,6 +332,9 @@ def test_kv_query_turn_preserves_cross_session_assignments(
                     "mask_penalty_applied": True,
                     "vram_peak_mib": 12,
                     "vram_delta_mib": 4,
+                    "multi_session_count": 2,
+                    "semantic_prefix_active": True,
+                    "semantic_prefix_tokens": 18,
                 },
                 routing_mode="kv_direct",
                 source_session="sess-a",
@@ -387,6 +390,11 @@ def test_kv_query_turn_preserves_cross_session_assignments(
     assert meta.selected_tier == "hot"
     assert meta.mask_penalty_applied is True
     assert meta.no_silent_fallback is True
+    assert meta.candidate_count == 2
+    assert meta.tier_assignment_count == 2
+    assert meta.budgeted_assignment_count == 2
+    assert meta.multi_session_count == 2
+    assert meta.semantic_prefix_active is True
 
 
 def test_kv_query_turn_preserves_natural_multi_session_assignments(
@@ -444,6 +452,9 @@ def test_kv_query_turn_preserves_natural_multi_session_assignments(
                     "mask_penalty_applied": True,
                     "vram_peak_mib": 12,
                     "vram_delta_mib": 4,
+                    "multi_session_count": 12,
+                    "semantic_prefix_active": True,
+                    "semantic_prefix_tokens": 120,
                 },
                 routing_mode="kv_direct",
                 source_session="natural-sess-0",
@@ -518,8 +529,193 @@ def test_kv_query_turn_preserves_natural_multi_session_assignments(
     assert meta.selected_tier == "hot"
     assert meta.mask_penalty_applied is True
     assert meta.no_silent_fallback is True
+    assert meta.candidate_count == 12
+    assert meta.tier_assignment_count == 12
+    assert meta.budgeted_assignment_count == 12
+    assert meta.multi_session_count == 12
+    assert meta.semantic_prefix_active is True
     assert "sage replaced" in meta.generated_answer.lower()
     assert "final direction" in meta.generated_answer.lower()
+
+
+def test_kv_query_turn_preserves_dirty_store_assignment_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("torch")
+
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+
+    handles = [SimpleNamespace(session_id=f"dirty-target-{idx}") for idx in range(12)]
+    noise_handles = [SimpleNamespace(session_id=f"dirty-noise-{idx}") for idx in range(4)]
+
+    class DirtyStoreRetriever:
+        def __init__(self) -> None:
+            self.handles = [*handles, *noise_handles]
+            self.tokenizer = object()
+            self.system_prompt = "system prompt"
+            self.captured_sessions: list[str] | None = None
+
+        def answer_with_kv_direct_multi(
+            self,
+            query_text,
+            tier_assignments,
+            *,
+            hot_budget_mib,
+            warm_config,
+            generation_config,
+            warm_scores=None,
+            query_id=None,
+            insertion_family="full_attention",
+            sliding_layer_indices=None,
+            sliding_head_indices=None,
+        ):
+            del (
+                query_text,
+                hot_budget_mib,
+                warm_config,
+                generation_config,
+                warm_scores,
+                query_id,
+                insertion_family,
+                sliding_layer_indices,
+                sliding_head_indices,
+            )
+            self.captured_sessions = [
+                assignment.candidate.handle.session_id
+                for assignment in tier_assignments
+            ]
+            return SimpleNamespace(
+                strict_assertions={
+                    "kv_direct_active": True,
+                    "mask_penalty_applied": True,
+                    "vram_peak_mib": 12,
+                    "vram_delta_mib": 4,
+                    "multi_session_count": 12,
+                    "semantic_prefix_active": True,
+                    "semantic_prefix_tokens": 256,
+                },
+                routing_mode="kv_direct",
+                source_session="dirty-target-0",
+                window_id=0,
+                routing_score=0.99,
+                matched_window_text="dirty target windows",
+                window_keywords=["website", "palette"],
+                generated_answer=(
+                    "Deep teal was too cold, sage replaced teal, and the final "
+                    "direction is warm white backgrounds, graphite headings, "
+                    "sage accents, and amber CTAs."
+                ),
+            )
+
+        def answer_with_kv_direct(self, *_args, **_kwargs):
+            raise AssertionError("single-handle fallback must not run")
+
+    class StubTokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            del text, add_special_tokens
+            return SimpleNamespace(input_ids=[1, 2, 3])
+
+    retriever = DirtyStoreRetriever()
+    chat = MemoryChat.__new__(MemoryChat)
+    chat.retriever = retriever
+    chat.tokenizer = StubTokenizer()
+    chat.model = SimpleNamespace(config=SimpleNamespace(head_dim=1, num_key_value_heads=1))
+    chat.max_new_tokens = 64
+    chat.plain_chat_turn = lambda _text: _imc.TurnMetadata(mode="plain")  # type: ignore[assignment]
+
+    routed_candidates = [
+        SimpleNamespace(handle=handle, window_id=0, ucb1_score=20.0 - idx)
+        for idx, handle in enumerate([*handles, *noise_handles])
+    ]
+    assignments = [
+        SimpleNamespace(
+            candidate=candidate,
+            tier=SimpleNamespace(
+                value=("hot" if idx < 4 else "warm" if idx < 8 else "cold")
+            ),
+            rank=idx,
+        )
+        for idx, candidate in enumerate(routed_candidates[:12])
+    ]
+
+    import chuk_lazarus.session_retrieval as session_retrieval
+
+    monkeypatch.setattr(
+        session_retrieval,
+        "asi_route_candidates",
+        lambda *_args, **_kwargs: routed_candidates,
+    )
+    monkeypatch.setattr(
+        session_retrieval,
+        "assign_tiers",
+        lambda *_args, **_kwargs: assignments,
+    )
+    monkeypatch.setenv("LAZARUS_KV_CANDIDATE_POOL", "16")
+    monkeypatch.setenv("LAZARUS_KV_K_HOT", "4")
+    monkeypatch.setenv("LAZARUS_KV_K_WARM", "4")
+
+    meta = chat.kv_query_turn(
+        "Tell me everything we discussed about the website's color scheme "
+        "across all our sessions."
+    )
+
+    assert retriever.captured_sessions == [f"dirty-target-{idx}" for idx in range(12)]
+    assert meta.mode == "kv_direct"
+    assert meta.selected_tier == "hot"
+    assert meta.candidate_count == 16
+    assert meta.tier_assignment_count == 12
+    assert meta.budgeted_assignment_count == 12
+    assert meta.multi_session_count == 12
+    assert meta.semantic_prefix_active is True
+    assert meta.no_silent_fallback is True
+
+
+def test_website_color_synthesis_filters_dirty_store_near_misses() -> None:
+    from chuk_lazarus.session_retrieval.retriever import SessionRetriever
+
+    retriever = SessionRetriever.__new__(SessionRetriever)
+    answer = retriever._synthesize_website_color_scheme_answer(
+        "Tell me everything we discussed about the website's color scheme across all our sessions.",
+        [
+            (
+                "hot",
+                (
+                    "Across our website color scheme sessions, after review, "
+                    "sage green replaced teal as the accent color."
+                ),
+            ),
+            (
+                "hot",
+                (
+                    "Final palette direction across our website color scheme "
+                    "sessions: warm white background, graphite headings, sage "
+                    "accents replacing teal, and amber primary CTA only."
+                ),
+            ),
+            (
+                "warm",
+                (
+                    "For the Acme microsite, sage and amber were only seasonal "
+                    "campaign colors and were not product website decisions."
+                ),
+            ),
+            (
+                "warm",
+                (
+                    "A different landing page kept coral buttons after "
+                    "accessibility review; do not apply that to the product website."
+                ),
+            ),
+        ],
+    )
+
+    lower = answer.lower()
+    assert "sage green replaced" in lower
+    assert "final palette direction" in lower
+    assert "acme" not in lower
+    assert "seasonal" not in lower
+    assert "coral" not in lower
 
 
 def test_derive_arch_config_preserves_gemma4_kv_direct_layers(
@@ -719,13 +915,14 @@ def test_kv_query_turn_surfaces_silent_fallback_truthfully(
         "Retriever must be available after /save"
     )
 
-    # Monkey-patch answer_with_kv_direct to simulate the axis-5 block.
+    # Monkey-patch both active KV-direct surfaces to simulate the axis-5 block.
     simulated_reason = "simulated axis-5 block"
 
     def _boom(*_args, **_kwargs):
         raise RuntimeError(simulated_reason)
 
     chat.retriever.answer_with_kv_direct = _boom  # type: ignore[assignment]
+    chat.retriever.answer_with_kv_direct_multi = _boom  # type: ignore[assignment]
 
     meta = chat.kv_query_turn(planted_phrase)
     chat.last_meta = meta
