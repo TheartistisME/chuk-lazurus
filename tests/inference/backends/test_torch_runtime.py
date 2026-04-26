@@ -22,7 +22,7 @@ from chuk_lazarus.inference.backends.torch_runtime import (
 from chuk_lazarus.inference.backends._torch_residual_bounded import (
     KVDirectMaterialization,
 )
-from chuk_lazarus.inference.backends.types import LazarusBackend
+from chuk_lazarus.inference.backends.types import LazarusBackend, ResidualState
 from chuk_lazarus.inference.generation import GenerationConfig
 from chuk_lazarus.session_retrieval.tier_policy import TierLabel
 
@@ -38,6 +38,18 @@ class DummyBlock(torch.nn.Module):
 
     def forward(self, hidden_states):
         return self.proj(hidden_states) + 1
+
+
+class RecordingBlock(DummyBlock):
+    """Dummy block that keeps the input seen after forward_pre_hooks fire."""
+
+    def __init__(self):
+        super().__init__()
+        self.last_input: torch.Tensor | None = None
+
+    def forward(self, hidden_states):
+        self.last_input = hidden_states.detach().clone()
+        return super().forward(hidden_states)
 
 
 class DummyInnerModel(torch.nn.Module):
@@ -85,8 +97,12 @@ class DummyCausalLM(torch.nn.Module):
     def __init__(self, head_dim: int = 512):
         super().__init__()
         self.model = DummyInnerModel()
+        self.embed_tokens = torch.nn.Embedding(128, 4)
         self.config = SimpleNamespace(head_dim=head_dim)
         self.last_generate_kwargs: dict[str, object] | None = None
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
 
     def forward(self, input_ids=None, attention_mask=None, use_cache=False, **kwargs):
         del attention_mask, use_cache, kwargs
@@ -329,6 +345,46 @@ class TestEngineModeRegistration:
             TorchInferenceRuntime._normalize_engine("lossless_bounded")
 
 
+class TestResidualSeededAtLayer:
+    """CPU-safe tests for the dedicated residual carrier slot."""
+
+    def test_seeded_layer_injection_preserves_last_prompt_token(self):
+        model = DummyCausalLM(head_dim=128).eval()
+        recorder = RecordingBlock()
+        model.model.layers = torch.nn.ModuleList([DummyBlock(), recorder])
+        runtime = TorchInferenceRuntime(model, DummyTokenizer(), device="cpu")
+
+        residual = torch.tensor([[9.0, 8.0, 7.0, 6.0]], dtype=torch.float32)
+        residual_state = ResidualState(
+            backend=LazarusBackend.CUDA,
+            layer_index=1,
+            tensor=residual,
+            sequence_length=3,
+            hidden_size=4,
+            dtype="float32",
+            device="cpu",
+        )
+
+        result = runtime.generate_with_residual_seeded_at_layer(
+            "inject prompt",
+            residual_state,
+            GenerationConfig(max_new_tokens=2, temperature=0.0),
+        )
+
+        assert result.text == "decoded:7,8"
+        assert runtime.last_generation_path == "torch.generate.residual_seeded_at_layer"
+        assert model.last_generate_kwargs is not None
+        assert model.last_generate_kwargs["use_cache"] is True
+        assert recorder.last_input is not None
+        # Seeded prompt is [pad, 1, 2, 3]; layer 0 adds +1 before layer 1.
+        assert tuple(recorder.last_input.shape) == (1, 4, 4)
+        torch.testing.assert_close(recorder.last_input[0, 0, :], residual[0])
+        torch.testing.assert_close(
+            recorder.last_input[0, -1, :],
+            torch.full((4,), 4.0),
+        )
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime test requires a CUDA GPU")
 class TestKvDirectMaterializationValidation:
     """Focused runtime-side validation checks that fail before patch execution."""
@@ -468,6 +524,58 @@ class TestAttentionTierMasking:
         assert masked is not baseline
 
     # ------------------------------------------------------------------
+    # V6 — HOT byte-identity preserved when hot_bonus_value == 0.0 (default)
+    #
+    # Confirms the default config (hot_bonus_value=0.0) maintains the
+    # original byte-identity contract for HOT-tier windows.
+    # ------------------------------------------------------------------
+    def test_hot_byte_identity_preserved_with_default_hot_bonus(self):
+        torch.manual_seed(0)
+        torch.cuda.manual_seed(0)
+        baseline = torch.randn((1, 4, 8, 16), device='cuda')
+
+        inputs = AttentionTierMaskInputs(
+            per_window_token_ranges={1: (0, 8), 2: (8, 16)},
+            tier_assignments={1: TierLabel.HOT, 2: TierLabel.HOT},
+            warm_config=WarmPenaltyConfig(hot_bonus_value=0.0),
+        )
+
+        masked = apply_tier_attention_mask(baseline, inputs)
+
+        # Byte-identity holds with explicit hot_bonus_value=0.0.
+        assert torch.equal(masked, baseline)
+
+    # ------------------------------------------------------------------
+    # V7 — Positive hot_bonus_value increases post-softmax mass on HOT.
+    #
+    # A positive HOT bonus adds to pre-softmax logits, which shifts
+    # softmax mass toward the HOT slice (the bonus does NOT affect
+    # COLD/WARM windows, so total mass is redistributed).
+    # ------------------------------------------------------------------
+    def test_positive_hot_bonus_increases_hot_mass(self):
+        torch.manual_seed(0)
+        torch.cuda.manual_seed(0)
+        attn_logits = torch.randn((1, 2, 4, 12), device='cuda')
+
+        def hot_mass_with_bonus(bonus: float) -> float:
+            inputs = AttentionTierMaskInputs(
+                per_window_token_ranges={1: (0, 6), 2: (6, 12)},
+                tier_assignments={1: TierLabel.HOT, 2: TierLabel.WARM},
+                warm_config=WarmPenaltyConfig(
+                    hot_bonus_value=bonus, penalty_value=4.0,
+                ),
+            )
+            masked = apply_tier_attention_mask(attn_logits, inputs)
+            post_softmax = torch.softmax(masked, dim=-1)
+            return float(post_softmax[..., 0:6].sum())
+
+        mass_with_bonus = hot_mass_with_bonus(2.0)
+        mass_without_bonus = hot_mass_with_bonus(0.0)
+
+        # Positive bonus must strictly increase HOT post-softmax mass.
+        assert mass_with_bonus > mass_without_bonus
+
+    # ------------------------------------------------------------------
     # V3 — WARM penalty is monotonically decreasing post-softmax weight.
     #
     # Implementation note: the task spec asks for parametrization over
@@ -522,7 +630,8 @@ class TestAttentionTierMasking:
                 3: TierLabel.HOT,
             },
             warm_config=WarmPenaltyConfig(
-                penalty_value=4.0, per_warm_uniform=False, clamp_min=-3.0
+                penalty_value=4.0, per_warm_uniform=False, clamp_min=-3.0,
+                hot_bonus_value=1.5,
             ),
             warm_scores={2: 0.5},
         )

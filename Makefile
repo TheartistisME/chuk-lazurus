@@ -1,4 +1,4 @@
-.PHONY: help install dev-install test test-cov check lint format typecheck security clean clean-build clean-all build publish publish-manual publish-test version
+.PHONY: help install dev-install test test-cov verify-infinite-memory verify-memory-recall-scale check lint format typecheck security clean clean-build clean-all build publish publish-manual publish-test version
 
 # Variables
 PYTHON := python3
@@ -28,6 +28,8 @@ help:
 	@echo "Testing:"
 	@echo "  make test             - Run tests"
 	@echo "  make test-cov         - Run tests with coverage report"
+	@echo "  make verify-infinite-memory - Prove infinite-memory + bounded-KV invariants"
+	@echo "  make verify-memory-recall-scale - Reuse latest PASS run and test actual model recall"
 	@echo "  make test-watch       - Run tests in watch mode"
 	@echo "  make serve-coverage   - Serve HTML coverage report on localhost:8000"
 	@echo ""
@@ -106,6 +108,22 @@ test-cov coverage:
 	fi
 	@echo ""
 	@echo "Coverage report generated in htmlcov/index.html"
+
+verify-infinite-memory:
+	@echo "Verifying infinite-memory + bounded-KV invariants..."
+	@bash scripts/run_infinite_memory_ci_gate.sh --full
+
+verify-memory-recall-scale:
+	@echo "Verifying actual-use memory recall over latest production-scale PASS run..."
+	@if [ -x .venv/bin/python3 ]; then \
+		PYTHONPATH=$(SRC_DIR) .venv/bin/python3 scripts/verify_memory_recall_scale.py --sample-size 100 --mode kv_direct --required-hit-rate 0.99; \
+	elif [ -x .venv/bin/python ]; then \
+		PYTHONPATH=$(SRC_DIR) .venv/bin/python scripts/verify_memory_recall_scale.py --sample-size 100 --mode kv_direct --required-hit-rate 0.99; \
+	elif command -v uv >/dev/null 2>&1; then \
+		uv run --extra dev python scripts/verify_memory_recall_scale.py --sample-size 100 --mode kv_direct --required-hit-rate 0.99; \
+	else \
+		PYTHONPATH=$(SRC_DIR) $(PYTHON) scripts/verify_memory_recall_scale.py --sample-size 100 --mode kv_direct --required-hit-rate 0.99; \
+	fi
 
 test-watch:
 	@echo "Running tests in watch mode..."

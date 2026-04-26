@@ -59,6 +59,34 @@ def test_child_without_torch_store_is_silently_skipped(
     assert len(handles) == 2
 
 
+def test_in_flight_manifest_is_silently_skipped(
+    tmp_path: Path, two_sessions_checkpoint_root: dict[str, Path]
+) -> None:
+    """A live-indexer in-flight manifest is not a retrieval-ready checkpoint."""
+    root = two_sessions_checkpoint_root["checkpoint_root"]
+    session_id = "d" * 32
+    torch_store = root / session_id / "torch_store"
+    torch_store.mkdir(parents=True)
+    (torch_store / "manifest.json").write_text(
+        (
+            "{\n"
+            '  "clause_aligned": true,\n'
+            '  "num_windows": 1,\n'
+            '  "num_entries": 1,\n'
+            '  "num_tokens": 0,\n'
+            '  "in_flight": true\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    handles = list(iter_checkpoint_handles(root))
+    session_ids = {handle.session_id for handle in handles}
+
+    assert session_id not in session_ids
+    assert len(handles) == 2
+
+
 def test_invalid_clause_aligned_false_raises(
     tmp_path: Path, fake_session_builder: Any
 ) -> None:

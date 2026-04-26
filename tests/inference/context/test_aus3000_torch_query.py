@@ -85,7 +85,7 @@ class _Tokenizer:
 
 
 class _FakeModel(torch.nn.Module):
-    def __init__(self, num_layers: int = 2, hidden_size: int = 8) -> None:
+    def __init__(self, num_layers: int = 2, hidden_size: int = 4) -> None:
         super().__init__()
         self.layers = torch.nn.ModuleList([torch.nn.Linear(hidden_size, hidden_size, bias=False) for _ in range(num_layers)])
         self.config = SimpleNamespace(hidden_size=hidden_size)
@@ -96,6 +96,7 @@ class _FakeRuntime:
         self._model = _FakeModel()
         self.generate_prompts: list[str] = []
         self.residual_prompts: list[str] = []
+        self.seeded_residual_prompts: list[str] = []
         self.cleared = False
 
     def _resolve_layers(self):
@@ -107,6 +108,10 @@ class _FakeRuntime:
 
     def generate_with_residual(self, prompt, residual_state, generation_config):
         self.residual_prompts.append(prompt)
+        return SimpleNamespace(text="grounded-answer", stats=SimpleNamespace(summary="fake stats"))
+
+    def generate_with_residual_seeded_at_layer(self, prompt, residual_state, generation_config):
+        self.seeded_residual_prompts.append(prompt)
         return SimpleNamespace(text="grounded-answer", stats=SimpleNamespace(summary="fake stats"))
 
     def clear_cache(self):
@@ -367,6 +372,37 @@ def test_operation_of_rcds_keeps_required_anchor_content(tmp_path: Path) -> None
     assert runtime.residual_prompts == []
 
 
+def test_auto_routed_single_window_uses_seeded_residual_carrier(tmp_path: Path) -> None:
+    store = _load_store(tmp_path)
+    runtime = _FakeRuntime()
+    tokenizer = _Tokenizer()
+
+    with patch(
+        "chuk_lazarus.inference.context.knowledge.torch_query._load_torch_runtime",
+        return_value=(runtime, tokenizer),
+    ), patch(
+        "chuk_lazarus.inference.context.knowledge.torch_query._expand_query",
+        return_value=([16], ["current"]),
+    ):
+        response = run_torch_query_command(
+            model_id="m",
+            prompt="current",
+            max_new_tokens=8,
+            temperature=0.0,
+            top_k=1,
+            store_path=store._store_path,
+            stdout=SimpleNamespace(write=lambda *_: None, flush=lambda: None),
+            stderr=SimpleNamespace(write=lambda *_: None),
+        )
+
+    assert response.routing_mode == "tfidf"
+    assert response.mode == "residual"
+    assert response.window_ids == [2]
+    assert runtime.seeded_residual_prompts
+    assert runtime.residual_prompts == []
+    assert "residual current device" in runtime.seeded_residual_prompts[-1].lower()
+
+
 def test_comparison_prompt_keeps_full_exact_clause_window_set(tmp_path: Path) -> None:
     store = _load_store(tmp_path)
     runtime = _FakeRuntime()
@@ -406,6 +442,9 @@ def test_ood_query_returns_plain_answer_without_store_context(tmp_path: Path) ->
     with patch(
         "chuk_lazarus.inference.context.knowledge.torch_query._load_torch_runtime",
         return_value=(runtime, tokenizer),
+    ), patch(
+        "chuk_lazarus.inference.context.knowledge.torch_query._expand_query",
+        return_value=([], []),
     ):
         response = run_torch_query_command(
             model_id="m",

@@ -378,7 +378,9 @@ ArchitectureConfig._KNOWN[("gemma", 26)] = ArchitectureConfig(
 # Wrapper config model_type="gemma4" with nested text_config model_type="gemma4_text".
 # L28 H7 is the copy head (score=+0.138, mean Δ=+0.229, 60% coverage across usable probes).
 # Per-probe deltas at L28 H7: [Voltara +0.31, Cerulion +0.01, Dravenport +0.22, Solmere +0.59, endorse +0.01].
-# Injection at L29 (retrieval_layer + 1).
+# Injection at L29 (retrieval_layer + 1). crystal_layer defaults to injection_layer=29.
+# AUS3000 demo (examples/inference/demo_clause_aligned_strict.py) confirmed
+# L29 boundary injection produces coherent grounded output on Gemma-4-E2B-it.
 # Gemma 4 deliberately gets its own registry bucket — it is NOT aliased to Gemma 3 calibration.
 ArchitectureConfig._KNOWN[("gemma4", 35)] = ArchitectureConfig(
     retrieval_layer=28,

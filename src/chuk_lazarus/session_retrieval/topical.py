@@ -17,6 +17,12 @@ from collections.abc import Sequence
 from typing import Any
 
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle, load_store
+from chuk_lazarus.session_retrieval.literal_match import (
+    encode_literal_sequences,
+    literal_match_scores,
+)
+
+_EXACT_LITERAL_BOOST = 1_000_000.0
 
 
 def _encode_token_ids(tokenizer: Any, text: str) -> list[int]:
@@ -60,15 +66,25 @@ def route_topical(
         return None
 
     scored: list[tuple[float, str, int, CheckpointHandle]] = []
+    query_ids = _encode_token_ids(tokenizer, query_text)
+    literal_token_sequences = encode_literal_sequences(tokenizer, query_text)
     for handle in handles:
         store = load_store(handle)
-        candidates = store.route_top_k(query_text, tokenizer, k=top_k_per_checkpoint)
+        candidates = list(store.route_top_k(query_text, tokenizer, k=top_k_per_checkpoint))
+        literal_scores = literal_match_scores(store, literal_token_sequences)
+        if literal_scores:
+            seen_candidates = {int(window_id) for window_id in candidates}
+            for window_id in sorted(literal_scores):
+                if window_id not in seen_candidates:
+                    candidates.append(window_id)
+                    seen_candidates.add(window_id)
         if not candidates:
             continue
-        query_ids = _encode_token_ids(tokenizer, query_text)
         router = store._get_tfidf_router()
         for window_id in candidates:
+            literal_score = float(literal_scores.get(int(window_id), 0.0))
             score = float(router.score_window(query_ids, int(window_id)))
+            score += _EXACT_LITERAL_BOOST * literal_score
             scored.append((score, handle.session_id, int(window_id), handle))
 
     if not scored:
@@ -95,10 +111,12 @@ def route_candidates(
     """
     scored: list[tuple[float, str, int, CheckpointHandle]] = []
     query_ids = _encode_token_ids(tokenizer, query_text)
+    literal_token_sequences = encode_literal_sequences(tokenizer, query_text)
 
     for handle in handles:
         store = load_store(handle)
         router = store._get_tfidf_router()
+        literal_scores = literal_match_scores(store, literal_token_sequences)
 
         if top_k_per_checkpoint is None:
             # Score every window the store knows about.
@@ -111,11 +129,19 @@ def route_candidates(
                     query_text, tokenizer, k=int(top_k_per_checkpoint)
                 )
             ]
+            if literal_scores:
+                seen_window_ids = set(window_ids)
+                for window_id in sorted(literal_scores):
+                    if window_id not in seen_window_ids:
+                        window_ids.append(window_id)
+                        seen_window_ids.add(window_id)
         if not window_ids:
             continue
 
         for window_id in window_ids:
+            literal_score = float(literal_scores.get(int(window_id), 0.0))
             score = float(router.score_window(query_ids, int(window_id)))
+            score += _EXACT_LITERAL_BOOST * literal_score
             scored.append((score, handle.session_id, int(window_id), handle))
 
     if not scored:

@@ -52,6 +52,37 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+def _install_residual_session_cache(runtime: TorchInferenceRuntime, max_sessions: int | None) -> Any | None:
+    """Attach the bounded-engine WARM session cache when that engine is active."""
+    if getattr(runtime, "engine_mode", None) != "residual_bounded_kv_direct":
+        return None
+    attach = getattr(runtime, "attach_session_cache", None)
+    if not callable(attach):
+        return None
+
+    from chuk_lazarus.server._residual_session_cache import (
+        DEFAULT_MAX_SESSIONS,
+        ResidualSessionCache,
+    )
+
+    eviction_hook = None
+    try:
+        from chuk_lazarus.inference.backends._torch_residual_session import (
+            make_cuda_eviction_hook,
+        )
+
+        eviction_hook = make_cuda_eviction_hook()
+    except Exception:  # pragma: no cover - torch import path defensive
+        eviction_hook = None
+
+    cache = ResidualSessionCache(
+        max_sessions=int(max_sessions or DEFAULT_MAX_SESSIONS),
+        eviction_hook=eviction_hook,
+    )
+    attach(cache)
+    return cache
+
+
 def _assert_requested_kv_selector_is_truthful(
     *,
     insertion_family: Literal["full_attention", "sliding"],
@@ -156,6 +187,9 @@ class SessionRetriever:
         device: str = "cuda",
         original_input_root: Path | None = None,
         system_prompt: str | None = None,
+        engine: str = "standard",
+        hot_budget_mib: int | None = None,
+        session_cache_size: int | None = None,
     ) -> SessionRetriever:
         """Enumerate handles, load the model+tokenizer, build the retriever.
 
@@ -239,7 +273,14 @@ class SessionRetriever:
         )
         _ = mem_before_load
 
-        runtime = TorchInferenceRuntime(model, tokenizer, device=device)
+        runtime = TorchInferenceRuntime(
+            model,
+            tokenizer,
+            device=device,
+            engine=engine,
+            hot_budget_mib=hot_budget_mib,
+        )
+        _install_residual_session_cache(runtime, session_cache_size)
 
         return cls(
             handles=handles,
@@ -275,7 +316,12 @@ class SessionRetriever:
             routing_score=None,
         )
 
-    def query_topical(self, query_text: str) -> QueryResult:
+    def query_topical(
+        self,
+        query_text: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> QueryResult:
         """Topical TF-IDF routing across all checkpoints, then generate.
 
         Raises
@@ -299,9 +345,15 @@ class SessionRetriever:
             question_text=query_text,
             routing_mode="topical",
             routing_score=score,
+            conversation_id=conversation_id,
         )
 
-    def query_entity_mention(self, query_text: str) -> QueryResult:
+    def query_entity_mention(
+        self,
+        query_text: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> QueryResult:
         """Entity-mention overlap routing across all checkpoints, then generate.
 
         Raises
@@ -323,6 +375,7 @@ class SessionRetriever:
             question_text=query_text,
             routing_mode="entity_mention",
             routing_score=score,
+            conversation_id=conversation_id,
         )
 
     def _generate_from_window(
@@ -332,6 +385,7 @@ class SessionRetriever:
         question_text: str,
         routing_mode: str,
         routing_score: float | None = None,
+        conversation_id: str | None = None,
     ) -> QueryResult:
         """Run the 13-step Apollo-11 residual-injection pipeline.
 
@@ -354,6 +408,48 @@ class SessionRetriever:
 
         # 3. Primitive-owned keywords.
         window_keywords = list(store.keywords.get(int(window_id), []))
+
+        from chuk_lazarus import tracing
+
+        if tracing.is_enabled("route"):
+            # PROP 3: emit selected window context for route relevance audit.
+            tracing.emit(
+                "route",
+                "route.selected",
+                {
+                    "routing_mode": routing_mode,
+                    "source_session": handle.session_id,
+                    "window_id": int(window_id),
+                    "routing_score": routing_score,
+                    "window_text_len": len(window_text),
+                    "window_text_head": window_text[:300],
+                    "window_text_tail": window_text[-120:],
+                    "window_keywords": window_keywords[:12],
+                    "question_text_preview": question_text[:200],
+                },
+            )
+        if tracing.is_enabled("route"):
+            # PROP 3: emit expected-substring relevance check when configured.
+            expected_substring = os.environ.get("LAZARUS_EXPECTED_SUBSTRING", "")
+            if expected_substring:
+                contains_expected = (
+                    expected_substring.lower() in window_text.lower()
+                    if expected_substring and window_text
+                    else False
+                )
+                expected_lower = expected_substring.lower()
+                contains_in_keywords = any(
+                    expected_lower in str(kw).lower() for kw in window_keywords
+                )
+                tracing.emit(
+                    "route",
+                    "route.relevance",
+                    {
+                        "expected_substring": expected_substring,
+                        "contains_expected": contains_expected,
+                        "contains_in_keywords": contains_in_keywords,
+                    },
+                )
 
         # 4. Load the boundary tensor on CPU; normalise to a torch tensor.
         boundary = store.load_boundary(int(window_id), device="cpu")
@@ -434,7 +530,12 @@ class SessionRetriever:
             # 10. Run the injection path.
             _DEFAULT_MAX_NEW = int(os.environ.get("LAZARUS_MAX_NEW_TOKENS", "120"))
             gen_config = GenerationConfig(max_new_tokens=_DEFAULT_MAX_NEW, temperature=0.0, top_p=1.0)
-            result = self.runtime.generate_with_residual_prefill_seeded(prompt, residual_state, gen_config)
+            result = self.runtime.generate_with_residual_prefill_seeded(
+                prompt,
+                residual_state,
+                gen_config,
+                conversation_id=conversation_id,
+            )
 
             # 11. Peak memory snapshot (CUDA only).
             mem_peak = int(torch.cuda.max_memory_allocated()) if on_cuda else 0
@@ -645,8 +746,17 @@ class SessionRetriever:
             materialization=materialization,
             handle=chosen_handle,
         )
+        # Build tier_map ONLY for windows that survived gather_selected_residuals
+        # — by default it includes (HOT, WARM) and excludes COLD. Without this
+        # filter the downstream apply_tier_attention_mask raises ValueError
+        # because tier_assignments has COLD wids that have no matching entry
+        # in per_window_token_ranges. (See run-3 chat-loop bug:
+        # range-only=[] tier-only=[<cold wids>].)
+        gathered_wids = set(residuals.per_window_token_ranges.keys())
         tier_map = {
-            int(a.candidate.window_id): a.tier for a in tier_seq
+            int(a.candidate.window_id): a.tier
+            for a in tier_seq
+            if int(a.candidate.window_id) in gathered_wids
         }
 
         # Wrap the raw query in a chat template so the model emits an

@@ -59,9 +59,10 @@ def iter_checkpoint_handles(
     """Yield one :class:`CheckpointHandle` per valid per-session checkpoint.
 
     A child ``<checkpoint_root>/<session_id>/`` is considered enumerable iff
-    ``<session_id>/torch_store/manifest.json`` exists. If the file is missing
-    the child is skipped silently (the session either never built a store or
-    is still in flight).
+    ``<session_id>/torch_store/manifest.json`` exists and does not declare
+    ``in_flight: true``. Missing manifests and in-flight manifests are both
+    skipped silently because they represent stores that are not ready for
+    retrieval.
 
     If the manifest exists but fails the axis-3 validity gate
     (``clause_aligned is True``, ``num_windows >= 1``, ``num_entries >= 1``),
@@ -90,6 +91,8 @@ def iter_checkpoint_handles(
             # Session never completed axis-3 build, or the build is in flight.
             continue
         manifest = json.loads(mf_path.read_text())
+        if manifest.get("in_flight") is True:
+            continue
         _enforce_validity(child.name, manifest)
         original_dir: Path | None = None
         if original_input_root is not None:

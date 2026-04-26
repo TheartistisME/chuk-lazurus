@@ -143,6 +143,9 @@ def _candidate_to_dict(candidate: AsiRouterCandidate) -> dict[str, Any]:
         "window_id": int(candidate.window_id),
         "ucb1_score": float(candidate.ucb1_score),
         "raw_router_score": float(candidate.raw_router_score),
+        "raw_tfidf_score_pre_normalization": float(
+            candidate.raw_tfidf_score_pre_normalization
+        ),
         "island_id": int(candidate.island_id),
         "visit_count": int(candidate.visit_count),
         "mean_reward": float(candidate.mean_reward),
@@ -165,6 +168,9 @@ def _candidate_from_dict(data: dict[str, Any]) -> AsiRouterCandidate:
         island_id=int(data["island_id"]),
         visit_count=int(data["visit_count"]),
         mean_reward=float(data["mean_reward"]),
+        raw_tfidf_score_pre_normalization=float(
+            data.get("raw_tfidf_score_pre_normalization", 0.0)
+        ),
     )
 
 

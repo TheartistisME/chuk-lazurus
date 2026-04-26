@@ -136,6 +136,38 @@ def run_torch_prefill_sidecar(
     checkpoint = Path(checkpoint_path)
     checkpoint.mkdir(parents=True, exist_ok=True)
 
+    # Route 'vec_inject' phase to the MLX-schema-parity torch module.
+    # When phases == {'vec_inject'} the Apollo-v12 knowledge store is NOT
+    # needed — supervisor-decision ve-ins-0mocicx9x0000d9ec75 Decision B.1
+    # preserves Apollo-v12 unchanged for every other phase set.
+    if set(requested_phases) == {"vec_inject"}:
+        from ._vec_inject_torch import (
+            VecInjectTorchArtifacts,
+            run_vec_inject_prefill_torch,
+        )
+
+        vec_artifacts: VecInjectTorchArtifacts = run_vec_inject_prefill_torch(
+            checkpoint_path=checkpoint,
+            model_id=model_id,
+            input_path=input_path,
+            raw_text=raw_text,
+            name=name,
+            window_size=window_size,
+            max_tokens=max_tokens,
+            requested_device=requested_device,
+            residual_mode=residual_mode,
+            resume=resume,
+        )
+        return TorchPrefillArtifacts(
+            metadata_path=checkpoint / "torch_vec_inject.json",
+            store_path=vec_artifacts.vec_inject_npz_path,
+            actual_device=vec_artifacts.actual_device,
+            num_tokens=vec_artifacts.num_tokens,
+            num_windows=vec_artifacts.num_windows,
+            metadata=vec_artifacts.metadata,
+            reused=vec_artifacts.reused,
+        )
+
     existing = load_existing_torch_prefill(checkpoint)
     if resume and existing is not None:
         return existing

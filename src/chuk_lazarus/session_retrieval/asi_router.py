@@ -70,6 +70,10 @@ from typing import Any
 
 from chuk_lazarus.inference.context.knowledge.route import TFIDFRouter
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle, load_store
+from chuk_lazarus.session_retrieval.literal_match import (
+    encode_literal_sequences,
+    literal_match_scores,
+)
 
 ASI_ROUTER_STATE_FILENAME: str = "asi_router_state.json"
 _STATE_SCHEMA_VERSION: int = 1
@@ -86,6 +90,7 @@ class AsiRouterCandidate:
     island_id: int
     visit_count: int
     mean_reward: float
+    raw_tfidf_score_pre_normalization: float = 0.0
 
 
 @dataclass
@@ -260,12 +265,16 @@ def _session_age_seconds(handle: CheckpointHandle) -> float:
         return 0.0
 
 
-# (raw_score, session_id, window_id, handle, keyword_count)
-_RawRow = tuple[float, str, int, CheckpointHandle, int]
+_EXACT_LITERAL_BOOST = 1_000_000.0
+
+# (rank_score, raw_tfidf_score, session_id, window_id, handle, keyword_count)
+_RawRow = tuple[float, float, str, int, CheckpointHandle, int]
 
 
 def _score_all_windows(
-    handles: Sequence[CheckpointHandle], query_ids: list[int],
+    handles: Sequence[CheckpointHandle],
+    query_ids: list[int],
+    literal_token_sequences: list[list[int]],
 ) -> list[_RawRow]:
     """Score every window via TFIDFRouter.score_window; no silent fallback."""
     raw: list[_RawRow] = []
@@ -287,15 +296,25 @@ def _score_all_windows(
             )
         router = TFIDFRouter(window_tokens, idf)
         store_keywords: dict[int, list[str]] = getattr(store, "keywords", {}) or {}
+        literal_scores = literal_match_scores(store, literal_token_sequences)
         num_windows = int(getattr(store, "num_windows", 0) or 0)
         if num_windows <= 0:
             num_windows = max(window_tokens.keys(), default=-1) + 1
         for window_id in range(num_windows):
             if window_id not in window_tokens:
                 continue
-            raw_score = float(router.score_window(query_ids, int(window_id)))
+            tfidf_score = float(router.score_window(query_ids, int(window_id)))
+            literal_score = float(literal_scores.get(int(window_id), 0.0))
+            raw_score = tfidf_score + (_EXACT_LITERAL_BOOST * literal_score)
             kc = len(store_keywords.get(int(window_id), []))
-            raw.append((raw_score, handle.session_id, int(window_id), handle, int(kc)))
+            raw.append((
+                raw_score,
+                tfidf_score,
+                handle.session_id,
+                int(window_id),
+                handle,
+                int(kc),
+            ))
     return raw
 
 
@@ -345,11 +364,12 @@ def asi_route_candidates(
         state = _fresh_state(num_islands, migration_interval, migration_rate)
 
     query_ids = _encode_token_ids(tokenizer, query_text)
-    raw_scored = _score_all_windows(handles, query_ids)
+    literal_token_sequences = encode_literal_sequences(tokenizer, query_text)
+    raw_scored = _score_all_windows(handles, query_ids, literal_token_sequences)
     if not raw_scored:
         return []
 
-    raw_scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    raw_scored.sort(key=lambda item: (-item[0], -item[1], item[2], item[3]))
     pool = raw_scored[: int(candidate_pool)]
     raw_values = [item[0] for item in pool]
     hi, lo = max(raw_values), min(raw_values)
@@ -362,7 +382,14 @@ def asi_route_candidates(
     advance_island(state)
 
     candidates: list[AsiRouterCandidate] = []
-    for (raw_score, session_id, window_id, handle, kc), q_w in zip(pool, normalised):
+    for (
+        raw_score,
+        raw_tfidf_score,
+        session_id,
+        window_id,
+        handle,
+        kc,
+    ), q_w in zip(pool, normalised):
         composite_key = f"{session_id}:{window_id}"
         n_w = int(state.visit_counts.get(composite_key, 0))
         if composite_key in state.mean_rewards:
@@ -383,6 +410,7 @@ def asi_route_candidates(
             ucb1_score=float(ucb1_score), raw_router_score=float(q_w),
             island_id=int(island_id), visit_count=int(n_w),
             mean_reward=float(mean_reward),
+            raw_tfidf_score_pre_normalization=float(raw_tfidf_score),
         ))
 
     # Primary: ucb1_score desc. At cold start every ucb1_score == +inf so
@@ -392,10 +420,12 @@ def asi_route_candidates(
     # determinism. Without the raw_router_score tie-break the final
     # ordering collapses to pure lex on session_id at cold start —
     # defeating the point of the TF-IDF pool.
+    # The explicit raw_tfidf tie-break below handles normalised-score ties.
     candidates.sort(
         key=lambda c: (
             -c.ucb1_score,
             -c.raw_router_score,
+            -c.raw_tfidf_score_pre_normalization,
             c.handle.session_id,
             c.window_id,
         )

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import sys
 import time
 from dataclasses import dataclass
@@ -218,18 +217,6 @@ def _render_prompt(
     return "\n\n".join(parts)
 
 
-def _extract_expansion_terms(expansion_text: str) -> list[str]:
-    terms: list[str] = []
-    seen: set[str] = set()
-    for match in re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", expansion_text):
-        lowered = match.lower()
-        if len(lowered) < 2 or lowered in seen:
-            continue
-        seen.add(lowered)
-        terms.append(lowered)
-    return terms
-
-
 def _expand_query(
     query_text: str,
     tokenizer: Any,
@@ -237,24 +224,78 @@ def _expand_query(
     *,
     n_tokens: int = 30,
 ) -> tuple[list[int], list[str]]:
-    prompt = (
-        f"Q: {query_text}\n"
-        "A: The specific distinctive words and phrases from this event are:"
+    # Token-level parity with MLX KnowledgeStore._expand_query (store.py:243).
+    # Capture each generated token id directly + decoded case/space variants;
+    # never regex over decoded text (MLX never decodes-then-reparses).
+    #
+    # Prompt: instruction-tuned models (Gemma-3-it, Gemma-4-E2B-it) degenerate
+    # on raw "Q:/A:" continuation. Use the model's own chat template when it
+    # exposes one; fall back to raw continuation for base/non-chat models
+    # (preserves the original MLX path for TinyLlama-class models).
+    instruction = (
+        f"List 10 specific keywords or named entities that would appear in a "
+        f"document answering this question. Reply with comma-separated keywords "
+        f"only, no explanation.\n\nQuestion: {query_text}\n\nKeywords:"
     )
-    result = runtime.generate(
-        prompt,
-        GenerationConfig(max_new_tokens=n_tokens, temperature=0.0, top_p=1.0),
-    )
-    terms = _extract_expansion_terms(result.text)
+    chat_template_fn = getattr(tokenizer, "apply_chat_template", None)
+    if callable(chat_template_fn):
+        try:
+            prompt = chat_template_fn(
+                [{"role": "user", "content": instruction}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            prompt = (
+                f"Q: {query_text}\n"
+                "A: The specific distinctive words and phrases from this event are:"
+            )
+    else:
+        prompt = (
+            f"Q: {query_text}\n"
+            "A: The specific distinctive words and phrases from this event are:"
+        )
+
+    import torch
+
+    inputs = tokenizer(prompt, return_tensors="pt")
+    input_ids = inputs["input_ids"].to(runtime._device, non_blocking=True)
+    input_length = int(input_ids.shape[1])
+
+    pad_id = getattr(tokenizer, "pad_token_id", None) or getattr(tokenizer, "eos_token_id", None)
+    with torch.inference_mode():
+        output_ids = runtime._model.generate(
+            input_ids=input_ids,
+            max_new_tokens=n_tokens,
+            do_sample=False,
+            temperature=1.0,
+            pad_token_id=pad_id,
+        )
+    new_token_ids = output_ids[0, input_length:].tolist()
 
     expansion_ids: list[int] = []
     seen_ids: set[int] = set()
-    for term in terms:
-        for variant in (term, f" {term}", term.title(), f" {term.title()}"):
-            for token_id in _encode_token_ids(tokenizer, variant, add_special_tokens=False):
-                if token_id not in seen_ids:
-                    seen_ids.add(token_id)
-                    expansion_ids.append(token_id)
+    terms: list[str] = []
+    seen_terms: set[str] = set()
+
+    for token_id in new_token_ids:
+        token_id = int(token_id)
+        if token_id not in seen_ids:
+            seen_ids.add(token_id)
+            expansion_ids.append(token_id)
+
+        decoded = tokenizer.decode([token_id], skip_special_tokens=True).strip()
+        if not decoded or len(decoded) < 2:
+            continue
+        lowered = decoded.lower()
+        if lowered not in seen_terms:
+            seen_terms.add(lowered)
+            terms.append(lowered)
+        for variant in (lowered, f" {lowered}", decoded, f" {decoded}"):
+            for var_id in _encode_token_ids(tokenizer, variant, add_special_tokens=False):
+                if var_id not in seen_ids:
+                    seen_ids.add(var_id)
+                    expansion_ids.append(var_id)
 
     return expansion_ids, terms
 
@@ -413,7 +454,9 @@ def _prepare_store_response(
                     dtype=str(boundary_tensor.dtype).replace("torch.", ""),
                     device="cpu",
                 )
-                result = runtime.generate_with_residual(prompt, residual_state, generation_config)
+                result = runtime.generate_with_residual_seeded_at_layer(
+                    prompt, residual_state, generation_config
+                )
                 mode = "residual"
             else:
                 result = runtime.generate(prompt, generation_config)

@@ -983,17 +983,22 @@ class TorchInferenceRuntime(InferenceRuntime):
         if self._engine_mode == "standard":
             raise NotImplementedError("stream_generate is only used for non-standard torch engines.")
 
-        self._ensure_kv_direct_supported()
-
         if self._engine_mode == "residual_bounded_kv_direct":
             # For streaming, fall back to the full residual-bounded pass and
             # emit decoded-suffix chunks tokenwise.  The residual-seeded
             # prefill is identical to the non-streaming path; streaming only
             # changes how the already-generated tokens are surfaced.
+            # This path is model-family-agnostic (works on Gemma-4) — it
+            # operates on the residual stream, not the Qwen-specific
+            # kv_direct internals, so the Qwen guard below does not apply.
             yield from self._stream_residual_bounded_kv_direct(
                 prompt, config, conversation_id=conversation_id
             )
             return
+
+        # kv_direct and bounded_kv_direct paths below use Qwen-specific
+        # internals; gate them on the supported-family check.
+        self._ensure_kv_direct_supported()
 
         budget_bytes = (
             self._resolved_hot_budget_bytes() if self._engine_mode == "bounded_kv_direct" else None
@@ -1292,6 +1297,8 @@ class TorchInferenceRuntime(InferenceRuntime):
         config,
         *,
         conversation_id: str | None = None,
+        model_inputs_override: dict[str, Any] | None = None,
+        stats_input_length: int | None = None,
     ):
         """Bounded KV-direct with residual-backed rebuild on the Qwen path.
 
@@ -1333,7 +1340,11 @@ class TorchInferenceRuntime(InferenceRuntime):
         self._ensure_kv_direct_supported()
 
         budget_bytes = self._resolved_hot_budget_bytes()
-        model_inputs = self._tokenize_prompt(prompt)
+        model_inputs = (
+            model_inputs_override
+            if model_inputs_override is not None
+            else self._tokenize_prompt(prompt)
+        )
         input_ids = model_inputs["input_ids"]
         attention_mask = model_inputs.get("attention_mask")
         if attention_mask is None:
@@ -1341,6 +1352,9 @@ class TorchInferenceRuntime(InferenceRuntime):
 
         batch_size = int(input_ids.shape[0])
         input_length = int(input_ids.shape[1])
+        reported_input_length = int(
+            input_length if stats_input_length is None else stats_input_length
+        )
         start_time = time.time()
         eos_token_ids = set(self._resolved_eos_token_ids())
         stop_token_ids = set(int(token_id) for token_id in config.stop_tokens)
@@ -1559,7 +1573,7 @@ class TorchInferenceRuntime(InferenceRuntime):
             self._session_cache.put(entry)
 
         return self._build_generation_result(
-            input_length=input_length,
+            input_length=reported_input_length,
             token_ids=generated_token_ids,
             start_time=start_time,
             stop_reason=stop_reason,
@@ -1649,8 +1663,269 @@ class TorchInferenceRuntime(InferenceRuntime):
         )
         return GenerationResult(text=generated_text, stats=stats, stop_reason=stop_reason)
 
-    def generate_with_residual_prefill_seeded(
+    def generate_with_residual_seeded_at_layer(
         self, prompt: str, residual_state: ResidualState, config
+    ):
+        """Inject a boundary residual into a dedicated prefix carrier slot.
+
+        ``generate_with_residual`` replaces the last live prompt token at the
+        target layer. That is useful for low-level steering experiments, but it
+        is a bad carrier for knowledge-store boundary state: even a zero vector
+        erases the token whose hidden state is used for next-token logits. This
+        path prepends one seed token and replaces that seed's hidden state at
+        ``residual_state.layer_index`` instead, leaving every real prompt token
+        unchanged while still injecting at the requested crystal layer.
+        """
+        from ..generation import GenerationResult, GenerationStats, StopReason
+
+        model_inputs = self._tokenize_prompt(prompt)
+        input_ids = model_inputs["input_ids"]
+        input_length = int(input_ids.shape[1])
+
+        seed_id = (
+            getattr(self._tokenizer, "bos_token_id", None)
+            or getattr(self._tokenizer, "pad_token_id", None)
+            or getattr(self._tokenizer, "eos_token_id", None)
+            or 0
+        )
+        if isinstance(seed_id, list):
+            seed_id = seed_id[0] if seed_id else 0
+        seed_tensor = self._torch.tensor(
+            [[int(seed_id)]], dtype=input_ids.dtype, device=input_ids.device
+        )
+        seeded_input_ids = self._torch.cat([seed_tensor, input_ids], dim=1)
+        seeded_length = int(seeded_input_ids.shape[1])
+
+        boundary = residual_state.tensor
+        if not isinstance(boundary, self._torch.Tensor):
+            boundary = self._torch.as_tensor(boundary)
+        while boundary.dim() > 1:
+            if boundary.shape[0] != 1:
+                raise RuntimeError(
+                    "STRICT: boundary has unexpected leading non-singleton dim "
+                    f"{tuple(boundary.shape)}"
+                )
+            boundary = boundary.squeeze(0)
+
+        embeddings = None
+        getter = getattr(self._model, "get_input_embeddings", None)
+        if callable(getter):
+            embeddings = getter()
+        embed_weight = getattr(embeddings, "weight", None)
+
+        if embed_weight is not None:
+            target_device = embed_weight.device
+            target_dtype = embed_weight.dtype
+            hidden_size = int(embed_weight.shape[-1])
+        else:
+            try:
+                sample_param = next(self._model.parameters())
+            except StopIteration:
+                sample_param = None
+            target_device = sample_param.device if sample_param is not None else self._device
+            target_dtype = (
+                sample_param.dtype
+                if sample_param is not None and sample_param.dtype.is_floating_point
+                else self._torch.float32
+            )
+            hidden_size = int(residual_state.hidden_size)
+
+        boundary = boundary.to(device=target_device, dtype=target_dtype, non_blocking=True)
+        if int(boundary.shape[-1]) != hidden_size:
+            raise RuntimeError(
+                "STRICT: boundary hidden size "
+                f"{int(boundary.shape[-1])} != model hidden size {hidden_size}"
+            )
+
+        layers = self._resolve_layers()
+        if residual_state.layer_index >= len(layers):
+            raise RuntimeError(
+                "STRICT: residual layer index "
+                f"{residual_state.layer_index} is outside {len(layers)} layers"
+            )
+        layer = layers[residual_state.layer_index]
+        injected_once = False
+
+        def seed_hook(_module, args, kwargs):
+            nonlocal injected_once
+            if injected_once or not args:
+                return args, kwargs
+
+            hidden_states = args[0]
+            if not hasattr(hidden_states, "shape") or hidden_states.ndim < 3:
+                return args, kwargs
+            if hidden_states.shape[1] <= 1:
+                return args, kwargs
+            if int(hidden_states.shape[-1]) != hidden_size:
+                raise RuntimeError(
+                    "STRICT: layer hidden size "
+                    f"{int(hidden_states.shape[-1])} != boundary hidden size {hidden_size}"
+                )
+
+            new_hidden = hidden_states.clone()
+            new_hidden[:, 0, :] = boundary
+            injected_once = True
+            return (new_hidden, *args[1:]), kwargs
+
+        handle = layer.register_forward_pre_hook(seed_hook, with_kwargs=True)
+
+        start_time = time.time()
+        try:
+            attention_mask = self._torch.ones(
+                (seeded_input_ids.shape[0], seeded_length),
+                dtype=self._torch.long,
+                device=seeded_input_ids.device,
+            )
+            generation_kwargs = self._generation_kwargs(
+                config, {"attention_mask": attention_mask}, use_cache=True
+            )
+            generation_kwargs["attention_mask"] = attention_mask
+
+            total_window_tokens = seeded_length + config.max_new_tokens
+            with self._torch.inference_mode(), self._generation_context(total_window_tokens):
+                output_ids = self._model.generate(
+                    input_ids=seeded_input_ids,
+                    **generation_kwargs,
+                )
+        finally:
+            handle.remove()
+
+        if not injected_once:
+            raise RuntimeError(
+                "STRICT: residual seed hook did not fire during prefill at "
+                f"layer {residual_state.layer_index}"
+            )
+
+        new_tokens = output_ids[:, seeded_length:]
+        output_length = int(new_tokens.shape[1])
+        generated_text = self._tokenizer.decode(
+            new_tokens.to("cpu")[0].tolist(), skip_special_tokens=True
+        )
+        gen_time = time.time() - start_time
+
+        stop_reason = StopReason.MAX_TOKENS
+        if output_length < config.max_new_tokens and output_length > 0:
+            last_token = int(new_tokens[0, -1].item())
+            eos_token_ids = set(self._resolved_eos_token_ids())
+            stop_reason = StopReason.EOS if last_token in eos_token_ids else StopReason.STOP_TOKEN
+
+        stats = GenerationStats(
+            input_tokens=input_length,
+            output_tokens=output_length,
+            total_time_seconds=gen_time,
+            tokens_per_second=output_length / gen_time if gen_time > 0 else 0.0,
+        )
+        self._set_generation_path("torch.generate.residual_seeded_at_layer")
+        return GenerationResult(text=generated_text, stats=stats, stop_reason=stop_reason)
+
+    def _generate_with_residual_prefill_seeded_bounded(
+        self,
+        prompt: str,
+        residual_state: ResidualState,
+        config,
+        *,
+        conversation_id: str | None = None,
+    ):
+        """Residual-seeded recall on top of the bounded active-KV engine."""
+
+        model_inputs = self._tokenize_prompt(prompt)
+        input_ids = model_inputs["input_ids"]
+        input_length = int(input_ids.shape[1])
+
+        seed_id = (
+            getattr(self._tokenizer, "bos_token_id", None)
+            or getattr(self._tokenizer, "pad_token_id", None)
+            or 0
+        )
+        if isinstance(seed_id, list):
+            seed_id = seed_id[0] if seed_id else 0
+        seed_tensor = self._torch.tensor(
+            [[int(seed_id)]], dtype=input_ids.dtype, device=input_ids.device
+        )
+        seeded_input_ids = self._torch.cat([seed_tensor, input_ids], dim=1)
+
+        boundary = residual_state.tensor
+        if not isinstance(boundary, self._torch.Tensor):
+            boundary = self._torch.as_tensor(boundary)
+        while boundary.dim() > 1:
+            if boundary.shape[0] == 1:
+                boundary = boundary.squeeze(0)
+            else:
+                raise RuntimeError(
+                    "STRICT: boundary has unexpected leading non-singleton dim "
+                    f"{tuple(boundary.shape)}"
+                )
+
+        embed_weight = self._model.get_input_embeddings().weight
+        target_dtype = embed_weight.dtype
+        target_device = embed_weight.device
+        boundary = boundary.to(
+            device=target_device, dtype=target_dtype, non_blocking=True
+        )
+        if boundary.shape[-1] != embed_weight.shape[-1]:
+            raise RuntimeError(
+                "STRICT: boundary hidden size "
+                f"{boundary.shape[-1]} != model hidden size {embed_weight.shape[-1]}"
+            )
+
+        first_layer = self._resolve_layers()[0]
+        injected_once = False
+
+        def seed_hook(_module, args, kwargs):
+            nonlocal injected_once
+            if injected_once or not args:
+                return args, kwargs
+            hidden_states = args[0]
+            if not hasattr(hidden_states, "shape") or hidden_states.ndim < 3:
+                return args, kwargs
+            if hidden_states.shape[1] <= 1:
+                return args, kwargs
+            new_hidden = hidden_states.clone()
+            new_hidden[:, 0, :] = boundary
+            injected_once = True
+            return (new_hidden, *args[1:]), kwargs
+
+        attention_mask = self._torch.ones(
+            seeded_input_ids.shape,
+            dtype=self._torch.long,
+            device=seeded_input_ids.device,
+        )
+        seeded_inputs = {
+            "input_ids": seeded_input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        seed_handle = first_layer.register_forward_pre_hook(
+            seed_hook, with_kwargs=True
+        )
+        try:
+            result = self._generate_residual_bounded_kv_direct(
+                prompt,
+                config,
+                conversation_id=conversation_id,
+                model_inputs_override=seeded_inputs,
+                stats_input_length=input_length,
+            )
+        finally:
+            seed_handle.remove()
+
+        if not injected_once:
+            raise RuntimeError(
+                "STRICT: residual seed hook did not fire during bounded prefill"
+            )
+        self._set_generation_path(
+            self._last_generation_path
+            or "torch.residual_bounded_kv_direct.residual_prefill_seeded"
+        )
+        return result
+
+    def generate_with_residual_prefill_seeded(
+        self,
+        prompt: str,
+        residual_state: ResidualState,
+        config,
+        *,
+        conversation_id: str | None = None,
     ):
         """Canonical two-stage prefill: seed position 0 with the boundary residual.
 
@@ -1681,6 +1956,14 @@ class TorchInferenceRuntime(InferenceRuntime):
         (``shape[1] == 1``) and will NOT latch on a decode call.
         """
         from ..generation import GenerationResult, GenerationStats, StopReason
+
+        if self._engine_mode == "residual_bounded_kv_direct":
+            return self._generate_with_residual_prefill_seeded_bounded(
+                prompt,
+                residual_state,
+                config,
+                conversation_id=conversation_id,
+            )
 
         # 1. Tokenise. This gives (1, S) input_ids on device.
         model_inputs = self._tokenize_prompt(prompt)

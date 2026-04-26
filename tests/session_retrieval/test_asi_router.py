@@ -67,15 +67,28 @@ class _StubTokenizer:
         return [10, 11, 12]
 
 
+class _LiteralTokenizer:
+    """Tokenizer with one known high-entropy literal sequence."""
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        if text == "abc123def456":
+            return [42, 43]
+        if text == "z9literal":
+            return [99]
+        return [10, 11, 12] if text else []
+
+
 def _make_stub_store(
     *,
     window_tokens: dict[int, set[int]],
     idf: dict[int, float],
     keywords: dict[int, list[str]] | None = None,
+    window_token_lists: dict[int, list[int]] | None = None,
     num_windows: int | None = None,
 ) -> Any:
     store = MagicMock()
     store.window_tokens = window_tokens
+    store.window_token_lists = window_token_lists or {}
     store.idf = idf
     store.keywords = keywords or {wid: [] for wid in window_tokens}
     store.num_windows = (
@@ -371,6 +384,7 @@ class TestAsiRouteCandidates:
         assert len(candidates) <= 6
         for c in candidates:
             assert isinstance(c, AsiRouterCandidate)
+            assert isinstance(c.raw_tfidf_score_pre_normalization, float)
         # Primary key: ucb1_score descending.
         scores = [c.ucb1_score for c in candidates]
         assert scores == sorted(scores, reverse=True)
@@ -524,6 +538,76 @@ class TestAsiRouteCandidates:
             archive_root=None,
         )
         assert len(candidates) <= 3
+
+    def test_asi_route_candidates_exact_literal_beats_fragment_overlap(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An exact planted ID must outrank unrelated high TF-IDF fragments."""
+        handle_a = _make_handle("a" * 32, tmp_path)
+        handle_b = _make_handle("b" * 32, tmp_path)
+        store_a = _make_stub_store(
+            window_tokens={0: {1}},
+            idf={1: 0.1},
+            window_token_lists={0: [7, 42, 43, 8]},
+        )
+        store_b = _make_stub_store(
+            window_tokens={0: {10, 11, 12}},
+            idf={10: 5.0, 11: 5.0, 12: 5.0},
+            window_token_lists={0: [10, 11, 12]},
+        )
+
+        def _fake_load_store(handle: CheckpointHandle) -> Any:
+            return store_a if handle.session_id == handle_a.session_id else store_b
+
+        monkeypatch.setattr(asi_router_module, "load_store", _fake_load_store)
+
+        candidates = asi_route_candidates(
+            [handle_b, handle_a],
+            query_text="Recall marker abc123def456",
+            tokenizer=_LiteralTokenizer(),
+            candidate_pool=2,
+            archive_root=None,
+        )
+
+        assert candidates
+        assert candidates[0].handle is handle_a
+        assert candidates[0].window_id == 0
+
+    def test_asi_route_candidates_uses_raw_tfidf_as_tie_break(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        handle_a = _make_handle("a" * 32, tmp_path)
+        handle_b = _make_handle("b" * 32, tmp_path)
+        store_a = _make_stub_store(
+            window_tokens={0: {10}},
+            idf={10: 1.0},
+            window_token_lists={0: [42, 43]},
+        )
+        store_b = _make_stub_store(
+            window_tokens={0: {10}},
+            idf={10: 1_000_001.0},
+            window_token_lists={0: [99]},
+        )
+
+        def _fake_load_store(handle: CheckpointHandle) -> Any:
+            return store_a if handle.session_id == handle_a.session_id else store_b
+
+        monkeypatch.setattr(asi_router_module, "load_store", _fake_load_store)
+
+        candidates = asi_route_candidates(
+            [handle_a, handle_b],
+            query_text="Recall markers abc123def456 and z9literal",
+            tokenizer=_LiteralTokenizer(),
+            candidate_pool=2,
+            archive_root=None,
+        )
+
+        assert candidates[0].handle is handle_b
+        assert candidates[0].raw_router_score == pytest.approx(1.0)
+        assert candidates[1].raw_router_score == pytest.approx(1.0)
+        assert candidates[0].raw_tfidf_score_pre_normalization == pytest.approx(
+            1_000_001.0
+        )
 
     def test_asi_route_candidates_no_silent_fallback_on_bad_store(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

@@ -67,6 +67,13 @@ Environment overrides:
   LAZARUS_MODEL              model id/path (default: local Gemma snapshot -> hub id)
   LAZARUS_MAX_NEW_TOKENS     decode length (default 180)
   LAZARUS_MEMORY_MODE        one of: topical (default) | entity_mention | vec_inject | off
+  LAZARUS_GENERATION_ENGINE  standard (default) | kv_direct | bounded_kv_direct |
+                              residual_bounded_kv_direct
+  LAZARUS_HOT_BUDGET_MIB     hot KV budget for bounded engines (default 150
+                              when residual_bounded_kv_direct is selected)
+  LAZARUS_SESSION_CACHE_SIZE residual session cache entries for bounded engine
+  LAZARUS_MAX_TOTAL_INJECT_TOKENS
+                              KV-direct token-equivalent budget (default 4096)
 
 Example session:
 
@@ -138,6 +145,12 @@ from chuk_lazarus.session_store.live_indexer import LiveIndexer
 DEFAULT_STORE = "/tmp/interactive-memory"
 HEADER_W = 72
 KVInsertionFamily = Literal["full_attention", "sliding"]
+GENERATION_ENGINES = (
+    "standard",
+    "kv_direct",
+    "bounded_kv_direct",
+    "residual_bounded_kv_direct",
+)
 KV_QUERY_USAGE = (
     "/kv_query <text> | "
     "/kv_query --insertion-family sliding "
@@ -155,8 +168,8 @@ DIRTY_FLAG_FILENAME = ".dirty"
 # axis-4 (Addition 1): per-session injection token budget for the
 # ASI-routed warm/hot list passed into answer_with_kv_direct. Each fact
 # costs head_dim * num_kv_heads tokens-equivalent; the governor sorts
-# by score and truncates from the bottom. Override via env or config
-# later; for run-4 the literal default is sufficient.
+# by score and truncates from the bottom. Override with
+# LAZARUS_MAX_TOTAL_INJECT_TOKENS for deployment or proof harness tuning.
 MAX_TOTAL_INJECT_TOKENS = 4096
 
 
@@ -170,6 +183,24 @@ def ts() -> str:
 
 def info(msg: str) -> None:
     print(f"[{ts()}] {msg}", flush=True)
+
+
+def _env_max_total_inject_tokens() -> int:
+    raw_value = os.environ.get(
+        "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+        str(MAX_TOTAL_INJECT_TOKENS),
+    )
+    return int(raw_value)
+
+
+def _normalize_generation_engine(raw_value: str | None) -> str:
+    normalized = str(raw_value or "standard").strip().lower()
+    if normalized not in GENERATION_ENGINES:
+        raise ValueError(
+            "generation_engine must be one of: "
+            + ", ".join(GENERATION_ENGINES)
+        )
+    return normalized
 
 
 def rule(char: str = "─") -> str:
@@ -431,6 +462,9 @@ class MemoryChat:
         max_new_tokens: int,
         memory_mode: str,
         device: str,
+        generation_engine: str = "standard",
+        hot_budget_mib: int | None = None,
+        session_cache_size: int | None = None,
     ) -> None:
         self.store_root = Path(store_root)
         self.inputs_root = self.store_root / "inputs"
@@ -444,6 +478,13 @@ class MemoryChat:
         self.max_new_tokens = max_new_tokens
         self.memory_mode = memory_mode  # "topical" | "entity_mention" | "off"
         self.device = device
+        self.generation_engine = _normalize_generation_engine(generation_engine)
+        self.hot_budget_mib = (
+            int(hot_budget_mib)
+            if hot_budget_mib is not None
+            else (150 if self.generation_engine == "residual_bounded_kv_direct" else None)
+        )
+        self.session_cache_size = session_cache_size
         self.vec_inject_provider: Any = None  # lazily loaded on first vec_inject turn
         # axis-BC: set True by save_current_session() when vec_inject.npz is
         # successfully written; gates the auto-promotion of memory_mode from
@@ -452,6 +493,8 @@ class MemoryChat:
 
         self.tokenizer: Any = None
         self.model: Any = None
+        self.runtime: Any = None
+        self.session_cache: Any = None
         self.retriever: Any = None  # SessionRetriever | None
         self.session: Any = None  # ChatLoopSession
         self.history: Any = None  # ChatHistory
@@ -475,7 +518,71 @@ class MemoryChat:
 
         t0 = time.time()
         self.tokenizer, self.model = load_gemma(self.model_path, device=self.device)
+        self._configure_generation_runtime()
         info(f"model loaded in {time.time() - t0:.1f}s")
+
+    def _configure_generation_runtime(self) -> None:
+        """Build the optional bounded generation runtime around the live model."""
+        self.runtime = None
+        self.session_cache = None
+        if self.generation_engine == "standard":
+            return
+        if self.model is None or self.tokenizer is None:
+            return
+
+        from chuk_lazarus.inference.backends.torch_runtime import TorchInferenceRuntime
+
+        self.runtime = TorchInferenceRuntime(
+            self.model,
+            self.tokenizer,
+            device=self.device,
+            engine=self.generation_engine,
+            hot_budget_mib=self.hot_budget_mib,
+        )
+        self.session_cache = self._install_runtime_session_cache(self.runtime)
+        cache_note = (
+            f" session_cache={self.session_cache.max_sessions}"
+            if self.session_cache is not None
+            else ""
+        )
+        budget_note = (
+            f" hot_budget_mib={self.hot_budget_mib}"
+            if self.hot_budget_mib is not None
+            else ""
+        )
+        info(
+            "generation runtime ready: "
+            f"engine={self.generation_engine}{budget_note}{cache_note}"
+        )
+
+    def _install_runtime_session_cache(self, runtime: Any) -> Any | None:
+        if getattr(runtime, "engine_mode", None) != "residual_bounded_kv_direct":
+            return None
+        attach = getattr(runtime, "attach_session_cache", None)
+        if not callable(attach):
+            return None
+
+        from chuk_lazarus.server._residual_session_cache import (
+            DEFAULT_MAX_SESSIONS,
+            ResidualSessionCache,
+        )
+
+        eviction_hook = None
+        try:
+            from chuk_lazarus.inference.backends._torch_residual_session import (
+                make_cuda_eviction_hook,
+            )
+
+            eviction_hook = make_cuda_eviction_hook()
+        except Exception:  # pragma: no cover - defensive on non-torch hosts
+            eviction_hook = None
+
+        cache = ResidualSessionCache(
+            max_sessions=int(self.session_cache_size or DEFAULT_MAX_SESSIONS),
+            eviction_hook=eviction_hook,
+        )
+        attach(cache)
+        return cache
 
     def maybe_load_retriever(self) -> None:
         """Build SessionRetriever if at least one checkpoint exists under store."""
@@ -516,6 +623,9 @@ class MemoryChat:
             model_id=model_id,
             device=self.device,
             system_prompt=chat_system,
+            engine=self.generation_engine,
+            hot_budget_mib=self.hot_budget_mib,
+            session_cache_size=self.session_cache_size,
         )
         info(
             f"retriever ready: {len(handles)} session(s) indexed · "
@@ -897,8 +1007,71 @@ class MemoryChat:
 
     # ── plain chat turn (no memory injection) ──────────────────────────────
 
+    def _stream_runtime_assistant_reply(
+        self,
+        *,
+        windower: Any,
+        turn: Any,
+        on_text_delta: Any = None,
+        on_chunk: Any = None,
+    ) -> str:
+        """Stream via TorchInferenceRuntime so bounded engines get session reuse."""
+        assert self.runtime is not None
+        assert self.session is not None
+
+        from chuk_lazarus.inference.chat import format_history
+        from chuk_lazarus.inference.generation import GenerationConfig
+
+        prompt = format_history(
+            self.tokenizer,
+            self.history,
+            add_generation_prompt=True,
+        )
+        config = GenerationConfig(
+            max_new_tokens=int(self.max_new_tokens),
+            temperature=float(os.environ.get("LAZARUS_GENERATION_TEMPERATURE", "0.7")),
+            top_p=float(os.environ.get("LAZARUS_GENERATION_TOP_P", "0.9")),
+        )
+
+        accumulated: list[str] = []
+        for text_delta in self.runtime.stream_generate(
+            prompt,
+            config,
+            conversation_id=self.session.session_id,
+        ):
+            if not text_delta:
+                continue
+            accumulated.append(text_delta)
+            if on_text_delta is not None:
+                on_text_delta(text_delta)
+            boundaries = windower.feed_text(text_delta)
+            for boundary in boundaries:
+                self.session.append_chunk(turn, boundary)
+                if on_chunk is not None:
+                    decoded = self.tokenizer.decode(
+                        windower._token_ids[
+                            boundary.start_token_offset : boundary.end_token_offset
+                        ],
+                        skip_special_tokens=True,
+                    )
+                    on_chunk(boundary, decoded)
+
+        tail = windower.flush()
+        if tail is not None:
+            self.session.append_chunk(turn, tail)
+            if on_chunk is not None:
+                decoded = self.tokenizer.decode(
+                    windower._token_ids[
+                        tail.start_token_offset : tail.end_token_offset
+                    ],
+                    skip_special_tokens=True,
+                )
+                on_chunk(tail, decoded)
+
+        self.session.finish_turn(turn)
+        return "".join(accumulated)
+
     def plain_chat_turn(self, user_text: str) -> TurnMetadata:
-        from chuk_lazarus.chat_loop.cli import stream_assistant_reply
         from chuk_lazarus.chat_loop.streaming import StreamingWindower
         from chuk_lazarus.inference.chat import Role
 
@@ -920,18 +1093,27 @@ class MemoryChat:
             sys.stdout.write(delta)
             sys.stdout.flush()
 
-        t0 = time.time()
-        full_reply = stream_assistant_reply(
-            model=self.model,
-            tokenizer=self.tokenizer,
-            history=self.history,
-            windower=windower,
-            session=self.session,
-            turn=assistant_turn,
-            max_new_tokens=self.max_new_tokens,
-            on_text_delta=_echo,
-        )
-        elapsed = time.time() - t0
+        t0 = time.perf_counter()
+        if self.runtime is not None and self.generation_engine != "standard":
+            full_reply = self._stream_runtime_assistant_reply(
+                windower=windower,
+                turn=assistant_turn,
+                on_text_delta=_echo,
+            )
+        else:
+            from chuk_lazarus.chat_loop.cli import stream_assistant_reply
+
+            full_reply = stream_assistant_reply(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                history=self.history,
+                windower=windower,
+                session=self.session,
+                turn=assistant_turn,
+                max_new_tokens=self.max_new_tokens,
+                on_text_delta=_echo,
+            )
+        elapsed = time.perf_counter() - t0
 
         assistant_turn.text = full_reply
         self.history.add_assistant(full_reply)
@@ -991,9 +1173,15 @@ class MemoryChat:
         meta = TurnMetadata(mode="topical")
         try:
             if self.memory_mode == "topical":
-                result = self.retriever.query_topical(chat_context)
+                result = self.retriever.query_topical(
+                    chat_context,
+                    conversation_id=self.session.session_id,
+                )
             elif self.memory_mode == "entity_mention":
-                result = self.retriever.query_entity_mention(chat_context)
+                result = self.retriever.query_entity_mention(
+                    chat_context,
+                    conversation_id=self.session.session_id,
+                )
             else:
                 raise RuntimeError(f"unknown memory_mode {self.memory_mode!r}")
         except (ValueError, RuntimeError) as exc:
@@ -1079,7 +1267,7 @@ class MemoryChat:
         self,
         tier_assignments: list[Any],
         *,
-        max_total_inject_tokens: int = MAX_TOTAL_INJECT_TOKENS,
+        max_total_inject_tokens: int | None = None,
     ) -> list[Any]:
         """axis-4 (Addition 1): cap ASI-routed assignments under MAX_TOTAL_INJECT_TOKENS.
 
@@ -1096,6 +1284,10 @@ class MemoryChat:
         """
         if not tier_assignments:
             return tier_assignments
+        if max_total_inject_tokens is None:
+            max_total_inject_tokens = _env_max_total_inject_tokens()
+        else:
+            max_total_inject_tokens = int(max_total_inject_tokens)
         cfg = getattr(self.model, "config", None)
         # Gemma-4-E2B-it ships head_dim=256, num_key_value_heads=4. Fall
         # back to those literals when config attributes are missing.
@@ -1945,6 +2137,35 @@ def main(argv: list[str] | None = None) -> int:
         help="Recall routing mode for post-save turns.",
     )
     parser.add_argument(
+        "--generation-engine",
+        choices=GENERATION_ENGINES,
+        default=os.environ.get("LAZARUS_GENERATION_ENGINE", "standard"),
+        help=(
+            "Torch generation engine for live turns. Use "
+            "residual_bounded_kv_direct for video-style bounded active KV."
+        ),
+    )
+    parser.add_argument(
+        "--hot-budget-mib",
+        type=int,
+        default=(
+            int(os.environ["LAZARUS_HOT_BUDGET_MIB"])
+            if "LAZARUS_HOT_BUDGET_MIB" in os.environ
+            else None
+        ),
+        help="Hot KV budget for bounded generation engines.",
+    )
+    parser.add_argument(
+        "--session-cache-size",
+        type=int,
+        default=(
+            int(os.environ["LAZARUS_SESSION_CACHE_SIZE"])
+            if "LAZARUS_SESSION_CACHE_SIZE" in os.environ
+            else None
+        ),
+        help="Residual session cache entries for residual_bounded_kv_direct.",
+    )
+    parser.add_argument(
         "--device",
         default="cuda",
         help="Torch device (default cuda).",
@@ -1960,6 +2181,9 @@ def main(argv: list[str] | None = None) -> int:
         max_new_tokens=args.max_new_tokens,
         memory_mode=args.memory_mode,
         device=args.device,
+        generation_engine=args.generation_engine,
+        hot_budget_mib=args.hot_budget_mib,
+        session_cache_size=args.session_cache_size,
     )
 
     try:

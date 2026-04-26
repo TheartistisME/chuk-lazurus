@@ -36,7 +36,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from chuk_lazarus.chat_loop.session import ChatLoopSession, ChunkBoundary
-from chuk_lazarus.inference.chat import Role
+from chuk_lazarus.inference.chat import ChatHistory, Role
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +321,46 @@ def test_plain_chat_turn_enqueues_user_turn_before_assistant(
     assert chat._window_counter == 2
 
 
+def test_plain_chat_turn_threads_session_id_to_bounded_runtime(
+    tmp_path: Path,
+) -> None:
+    chat = _make_chat(tmp_path)
+    chat.generation_engine = "residual_bounded_kv_direct"
+    chat.model = SimpleNamespace(device="cpu")
+    chat.tokenizer = _StubTokenizer(ids=list(range(100, 700)))
+    chat.history = ChatHistory()
+    chat.session = ChatLoopSession()
+
+    class _FakeRuntime:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.last_generation_path = "torch.residual_bounded_kv_direct.session_reused"
+
+        def stream_generate(self, prompt: str, config: Any, *, conversation_id: str | None = None):
+            self.calls.append(
+                {
+                    "prompt": prompt,
+                    "max_new_tokens": config.max_new_tokens,
+                    "conversation_id": conversation_id,
+                }
+            )
+            yield "bounded "
+            yield "reply"
+
+    runtime = _FakeRuntime()
+    chat.runtime = runtime
+    enqueue_mock = MagicMock()
+    chat.indexer = SimpleNamespace(enqueue=enqueue_mock)
+
+    meta = chat.plain_chat_turn("user asks a bounded turn")
+
+    assert meta.generated_answer == "bounded reply"
+    assert runtime.calls[0]["conversation_id"] == chat.session.session_id
+    assert runtime.calls[0]["max_new_tokens"] == chat.max_new_tokens
+    assert "user asks a bounded turn" in runtime.calls[0]["prompt"]
+    assert enqueue_mock.call_count == 2
+
+
 def test_recall_chat_turn_enqueues_user_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -348,6 +388,8 @@ def test_recall_chat_turn_enqueues_user_turn(
     assert args[3]["role"] == "user"
     assert args[3]["turn_index"] == 0
     assert chat._window_counter == 1
+    _, query_kwargs = chat.retriever.query_topical.call_args
+    assert query_kwargs["conversation_id"] == chat.session.session_id
 
 
 # ---------------------------------------------------------------------------

@@ -153,7 +153,9 @@ def _prepare_explicit_store_response(
                     dtype=str(boundary_tensor.dtype).replace("torch.", ""),
                     device="cpu",
                 )
-                result = runtime.generate_with_residual(prompt, residual_state, generation_config)
+                result = runtime.generate_with_residual_seeded_at_layer(
+                    prompt, residual_state, generation_config
+                )
                 mode = "residual"
             else:
                 result = runtime.generate(prompt, generation_config)

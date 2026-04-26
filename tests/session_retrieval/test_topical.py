@@ -31,11 +31,15 @@ def _make_handle(session_id: str, tmp_path: Path) -> CheckpointHandle:
 
 
 def _make_store(
-    *, top_k_windows: list[int], scores_by_window: dict[int, float]
+    *,
+    top_k_windows: list[int],
+    scores_by_window: dict[int, float],
+    window_token_lists: dict[int, list[int]] | None = None,
 ) -> Any:
     """Build a MagicMock store that returns the supplied routing behaviour."""
     store = MagicMock()
     store.route_top_k.return_value = list(top_k_windows)
+    store.window_token_lists = window_token_lists or {}
 
     router = MagicMock()
 
@@ -45,6 +49,13 @@ def _make_store(
     router.score_window.side_effect = _score_window
     store._get_tfidf_router.return_value = router
     return store
+
+
+class _LiteralTokenizer:
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        if text == "abc123def456":
+            return [42, 43]
+        return [10, 11, 12] if text else []
 
 
 def test_topical_returns_global_top_handle(
@@ -157,3 +168,34 @@ def test_topical_ties_broken_deterministically_by_window_id(
     _handle, window_id, score = result
     assert window_id == 2
     assert score == pytest.approx(0.8)
+
+
+def test_topical_exact_literal_beats_fragment_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """High-entropy IDs route by exact token sequence, not TF-IDF luck."""
+    session_a = "a" * 32
+    session_b = "b" * 32
+    handle_a = _make_handle(session_a, tmp_path)
+    handle_b = _make_handle(session_b, tmp_path)
+
+    store_a = _make_store(
+        top_k_windows=[1],
+        scores_by_window={0: 0.1, 1: 0.2},
+        window_token_lists={0: [7, 42, 43, 8], 1: [10, 11]},
+    )
+    store_b = _make_store(top_k_windows=[0], scores_by_window={0: 9.0})
+    mapping = {handle_a.session_id: store_a, handle_b.session_id: store_b}
+    monkeypatch.setattr(topical_module, "load_store", lambda h: mapping[h.session_id])
+
+    result = route_topical(
+        [handle_b, handle_a],
+        "Recall marker abc123def456",
+        _LiteralTokenizer(),
+    )
+
+    assert result is not None
+    handle, window_id, _score = result
+    assert handle is handle_a
+    assert window_id == 0

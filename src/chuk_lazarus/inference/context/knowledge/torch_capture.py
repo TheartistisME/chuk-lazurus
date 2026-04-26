@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -130,6 +131,10 @@ def capture_post_crystal_boundary(
 ):
     """Capture the post-crystal-layer boundary vector for one token window."""
 
+    from chuk_lazarus import tracing
+
+    _trace_t0 = time.perf_counter()
+
     torch_mod = _require_torch()
     layers = _resolve_transformer_layers(model)
     if crystal_layer < 0 or crystal_layer >= len(layers):
@@ -137,8 +142,25 @@ def capture_post_crystal_boundary(
             f"crystal_layer={crystal_layer} is outside the model's layer range (0..{len(layers) - 1})"
         )
 
+    _token_ids_list = list(token_ids)
+    if tracing.is_enabled("a1"):
+        # A1 probe: function entry metadata.
+        tracing.emit(
+            "a1",
+            "capture.begin",
+            {
+                "crystal_layer": int(crystal_layer),
+                "layers_total": int(len(layers)),
+                "layer_module": type(layers[crystal_layer]).__name__,
+                "token_count": int(len(_token_ids_list)),
+                "token_ids_head": [int(t) for t in _token_ids_list[:8]],
+                "token_ids_tail": [int(t) for t in _token_ids_list[-8:]],
+                "has_initial_residual": initial_residual is not None,
+            },
+        )
+
     model_device = torch_mod.device(device) if device is not None else _infer_model_device(model)
-    input_ids = torch_mod.as_tensor(list(token_ids), dtype=torch_mod.long, device=model_device)
+    input_ids = torch_mod.as_tensor(_token_ids_list, dtype=torch_mod.long, device=model_device)
     if input_ids.ndim == 1:
         input_ids = input_ids.unsqueeze(0)
     attention_mask = torch_mod.ones_like(input_ids, dtype=torch_mod.long)
@@ -155,6 +177,9 @@ def capture_post_crystal_boundary(
             initial_residual,
             hidden_size=int(model.get_input_embeddings().embedding_dim),
         )
+        if tracing.is_enabled("a1"):
+            # A1 probe: coerced initial residual stats.
+            tracing.emit("a1", "capture.initial_residual", tracing.tensor_stats(boundary))
 
         def _inject_hook(_module, inputs):
             if not inputs:
@@ -186,6 +211,16 @@ def capture_post_crystal_boundary(
     boundary = captured.get("tensor")
     if boundary is None:  # pragma: no cover - defensive
         raise RuntimeError(f"Failed to capture boundary for layer {crystal_layer}")
+    if tracing.is_enabled("a1"):
+        # A1 probe: final captured tensor + wall time.
+        tracing.emit(
+            "a1",
+            "capture.done",
+            {
+                "stats": tracing.tensor_stats(boundary),
+                "elapsed_sec": float(time.perf_counter() - _trace_t0),
+            },
+        )
     return boundary
 
 
@@ -197,6 +232,10 @@ def capture_window_boundaries(
     device: str | Any | None = None,
 ) -> tuple[dict[int, Any], Any | None]:
     """Capture one post-crystal boundary per window."""
+
+    from chuk_lazarus import tracing
+
+    _trace_t0 = time.perf_counter()
 
     boundaries: dict[int, Any] = {}
     final_boundary = None
@@ -213,6 +252,19 @@ def capture_window_boundaries(
         boundaries[wid] = boundary
         final_boundary = boundary
         running_boundary = boundary
+
+    if tracing.is_enabled("a1"):
+        # A1 probe: summary across all windows.
+        _final_stats = tracing.tensor_stats(final_boundary)
+        tracing.emit(
+            "a1",
+            "capture_windows.summary",
+            {
+                "n_windows": int(len(boundaries)),
+                "final_boundary_sha256": str(_final_stats.get("sha256", "")),
+                "elapsed_sec": float(time.perf_counter() - _trace_t0),
+            },
+        )
 
     return boundaries, final_boundary
 
