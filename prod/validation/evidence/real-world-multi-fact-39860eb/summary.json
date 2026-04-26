@@ -1,0 +1,119 @@
+{
+  "checks": [
+    {
+      "check": "PREFLIGHT",
+      "elapsed_s": 17.693159341812134,
+      "evidence": "Linux/CUDA preflight and MemoryChat import passed",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "LIVE_SAVE",
+      "elapsed_s": 33.754433393478394,
+      "evidence": "saved session da61079c65144d959dcb561e0d503a28 with 4 boundary file(s)",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "ROUTING_SCALE",
+      "elapsed_s": 1961.9298913478851,
+      "evidence": "routing@1 hit_rate=1.000 over 100 planted sessions",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "TOPICAL_RECALL",
+      "elapsed_s": 5.456465244293213,
+      "evidence": "topical residual injection recalled Banjo with all strict assertions true",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "PROBE_NO_MUTATION",
+      "elapsed_s": 12.268872022628784,
+      "evidence": "topical/exact/entity probes left session and history unchanged",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "KV_DIRECT_RECALL",
+      "elapsed_s": 3.9608049392700195,
+      "evidence": "KV-direct recall active with no silent fallback",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "MULTI_FACT_RECALL",
+      "elapsed_s": 84.81705641746521,
+      "evidence": "multi-fact recall HOT=4/4 WARM=4/4 COLD=0/4 selected_tier=hot",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "REAL_WORLD_MULTI_FACT_RECALL",
+      "elapsed_s": 86.84034538269043,
+      "evidence": "natural multi-fact recall HOT=4/4 WARM=4/4 COLD=0/4 conflict_preserved=True final_decision_present=True selected_tier=hot",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "TOKEN_BUDGET",
+      "elapsed_s": 13.20696234703064,
+      "evidence": "budget bound observed 1 time(s) on dedicated session e996b1102aca4db2a088fcd5bdac1b94",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "VRAM_BOUNDED",
+      "elapsed_s": 26.229097366333008,
+      "evidence": "vram peaks=[20112.0, 20112.0, 20112.0] delta=0.0 MiB",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "FALLBACK_TRUTH",
+      "elapsed_s": 5.910867214202881,
+      "evidence": "forced KV-direct failure produced WARN and no_silent_fallback=False",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "INFINITE_TURN_LATENCY",
+      "elapsed_s": 95.22870206832886,
+      "evidence": "50 measured turns flat: first10_mean=1.976s last10_mean=1.982s median=1.913s max=2.331s ceiling=2.371s",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "MEMORY_OFF",
+      "elapsed_s": 1.931488275527954,
+      "evidence": "memory off returned mode=none",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "CRASH_GATE",
+      "elapsed_s": 1.4540352821350098,
+      "evidence": "manifest-absent and in-flight partial stores stayed invisible",
+      "fields": {},
+      "status": "PASS"
+    },
+    {
+      "check": "PARALLEL_WRITES",
+      "elapsed_s": 7.49143385887146,
+      "evidence": "parallel sessions loadable: 9b31dadee3044b8d8cf77408b54fe248, cff394e774734eb3825edbd7e274ff74",
+      "fields": {},
+      "status": "PASS"
+    }
+  ],
+  "error": null,
+  "events_jsonl": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/events.jsonl",
+  "repo_root": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus",
+  "run_dir": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135",
+  "run_id": "20260426t205135",
+  "sessions": 100,
+  "status": "PASS",
+  "store_root": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store",
+  "transcript_log": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/transcript.log",
+  "turns_per_session": 100
+}

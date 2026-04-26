@@ -1,0 +1,1089 @@
+{
+  "results": [
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "product_cards_white",
+        "graphite_headings",
+        "coral_dropped"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.452932834625244,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. The client rejected the purple-blue gradient because it felt too flashy. Beige should be avoided because it made the site look dated. The logo lockup needs enough contrast on warm white. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Muted navy can work in the footer, but not in the hero.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 1,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "logo_contrast",
+        "final_palette",
+        "muted_navy_footer",
+        "sage_replaced_teal"
+      ],
+      "warm_hits": [
+        "logo_contrast",
+        "final_palette",
+        "muted_navy_footer",
+        "sage_replaced_teal"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "coral_dropped",
+        "graphite_headings",
+        "amber_cta",
+        "product_cards_white"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 1.693735122680664,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The logo lockup needs enough contrast on warm white. Beige should be avoided because it made the site look dated. Muted navy can work in the footer, but not in the hero. The client rejected the purple-blue gradient because it felt too flashy.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "sage_replaced_teal",
+        "final_palette"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "sage_replaced_teal",
+        "final_palette"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 2,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "logo_contrast",
+        "avoid_beige",
+        "muted_navy_footer",
+        "purple_gradient_rejected"
+      ],
+      "warm_hits": [
+        "logo_contrast",
+        "avoid_beige",
+        "muted_navy_footer",
+        "purple_gradient_rejected"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "product_cards_white",
+        "coral_dropped",
+        "graphite_headings"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.1258881092071533,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Muted navy can work in the footer, but not in the hero. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "purple_gradient_rejected",
+        "logo_contrast"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "purple_gradient_rejected",
+        "logo_contrast"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 3,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "sage_replaced_teal",
+        "final_palette",
+        "muted_navy_footer",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "sage_replaced_teal",
+        "final_palette",
+        "muted_navy_footer",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "graphite_headings",
+        "coral_dropped",
+        "product_cards_white",
+        "amber_cta"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.013641834259033,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Muted navy can work in the footer, but not in the hero. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 4,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "sage_replaced_teal",
+        "purple_gradient_rejected",
+        "logo_contrast",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "sage_replaced_teal",
+        "purple_gradient_rejected",
+        "logo_contrast",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "graphite_headings",
+        "product_cards_white",
+        "amber_cta",
+        "coral_dropped"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 1.6440143585205078,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The logo lockup needs enough contrast on warm white. Muted navy can work in the footer, but not in the hero. The client rejected the purple-blue gradient because it felt too flashy. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "final_palette",
+        "logo_contrast"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "final_palette",
+        "logo_contrast"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 5,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "sage_replaced_teal",
+        "muted_navy_footer",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "sage_replaced_teal",
+        "muted_navy_footer",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "graphite_headings",
+        "product_cards_white",
+        "coral_dropped"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 4.468165159225464,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Beige should be avoided because it made the site look dated. Muted navy can work in the footer, but not in the hero.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "purple_gradient_rejected",
+        "logo_contrast"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "purple_gradient_rejected",
+        "logo_contrast"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 6,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "final_palette",
+        "sage_replaced_teal",
+        "avoid_beige",
+        "muted_navy_footer"
+      ],
+      "warm_hits": [
+        "final_palette",
+        "sage_replaced_teal",
+        "avoid_beige",
+        "muted_navy_footer"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "coral_dropped",
+        "graphite_headings",
+        "product_cards_white",
+        "amber_cta"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.1437416076660156,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. The logo lockup needs enough contrast on warm white. The client rejected the purple-blue gradient because it felt too flashy. Muted navy can work in the footer, but not in the hero. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "logo_contrast",
+        "purple_gradient_rejected"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "logo_contrast",
+        "purple_gradient_rejected"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 7,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "muted_navy_footer",
+        "final_palette",
+        "sage_replaced_teal",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "muted_navy_footer",
+        "final_palette",
+        "sage_replaced_teal",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "graphite_headings",
+        "amber_cta",
+        "coral_dropped",
+        "product_cards_white"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.4114460945129395,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Muted navy can work in the footer, but not in the hero. Teal was considered, then sage green replaced it as the accent after review. The logo lockup needs enough contrast on warm white. The client rejected the purple-blue gradient because it felt too flashy. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "sage_replaced_teal"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "sage_replaced_teal"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 8,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "logo_contrast",
+        "purple_gradient_rejected",
+        "final_palette",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "logo_contrast",
+        "purple_gradient_rejected",
+        "final_palette",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "product_cards_white",
+        "graphite_headings",
+        "coral_dropped",
+        "amber_cta"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.416334867477417,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. The client rejected the purple-blue gradient because it felt too flashy. Beige should be avoided because it made the site look dated. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The logo lockup needs enough contrast on warm white. Muted navy can work in the footer, but not in the hero.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 9,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "final_palette",
+        "sage_replaced_teal",
+        "logo_contrast",
+        "muted_navy_footer"
+      ],
+      "warm_hits": [
+        "final_palette",
+        "sage_replaced_teal",
+        "logo_contrast",
+        "muted_navy_footer"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "product_cards_white",
+        "graphite_headings",
+        "coral_dropped",
+        "amber_cta"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 4.585719585418701,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Beige should be avoided because it made the site look dated. Muted navy can work in the footer, but not in the hero. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "avoid_beige",
+        "muted_navy_footer"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "avoid_beige",
+        "muted_navy_footer"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 10,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "purple_gradient_rejected",
+        "logo_contrast",
+        "final_palette",
+        "sage_replaced_teal"
+      ],
+      "warm_hits": [
+        "purple_gradient_rejected",
+        "logo_contrast",
+        "final_palette",
+        "sage_replaced_teal"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "coral_dropped",
+        "graphite_headings",
+        "product_cards_white"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 4.187406778335571,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. Teal was considered, then sage green replaced it as the accent after review. The client rejected the purple-blue gradient because it felt too flashy. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Beige should be avoided because it made the site look dated. Muted navy can work in the footer, but not in the hero. The logo lockup needs enough contrast on warm white.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "sage_replaced_teal",
+        "purple_gradient_rejected"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "sage_replaced_teal",
+        "purple_gradient_rejected"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 11,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "final_palette",
+        "avoid_beige",
+        "muted_navy_footer",
+        "logo_contrast"
+      ],
+      "warm_hits": [
+        "final_palette",
+        "avoid_beige",
+        "muted_navy_footer",
+        "logo_contrast"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "coral_dropped",
+        "graphite_headings",
+        "amber_cta",
+        "product_cards_white"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.0995960235595703,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Muted navy can work in the footer, but not in the hero. The logo lockup needs enough contrast on warm white. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The client rejected the purple-blue gradient because it felt too flashy. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "logo_contrast"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "logo_contrast"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 12,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "sage_replaced_teal",
+        "final_palette",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "sage_replaced_teal",
+        "final_palette",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "graphite_headings",
+        "product_cards_white",
+        "amber_cta",
+        "coral_dropped"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.3803670406341553,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Muted navy can work in the footer, but not in the hero. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Beige should be avoided because it made the site look dated. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 13,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "avoid_beige",
+        "purple_gradient_rejected",
+        "sage_replaced_teal",
+        "logo_contrast"
+      ],
+      "warm_hits": [
+        "avoid_beige",
+        "purple_gradient_rejected",
+        "sage_replaced_teal",
+        "logo_contrast"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "product_cards_white",
+        "amber_cta",
+        "coral_dropped",
+        "graphite_headings"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.487443447113037,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Muted navy can work in the footer, but not in the hero. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The logo lockup needs enough contrast on warm white. The client rejected the purple-blue gradient because it felt too flashy. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 14,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "logo_contrast",
+        "sage_replaced_teal",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "logo_contrast",
+        "sage_replaced_teal",
+        "purple_gradient_rejected",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "product_cards_white",
+        "coral_dropped",
+        "graphite_headings"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 4.130695343017578,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. The logo lockup needs enough contrast on warm white. The client rejected the purple-blue gradient because it felt too flashy. Teal was considered, then sage green replaced it as the accent after review. Muted navy can work in the footer, but not in the hero. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "logo_contrast",
+        "purple_gradient_rejected"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "logo_contrast",
+        "purple_gradient_rejected"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 15,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "sage_replaced_teal",
+        "muted_navy_footer",
+        "final_palette",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "sage_replaced_teal",
+        "muted_navy_footer",
+        "final_palette",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "product_cards_white",
+        "graphite_headings",
+        "coral_dropped"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 2.818742513656616,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. Beige should be avoided because it made the site look dated. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white. Muted navy can work in the footer, but not in the hero.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "avoid_beige",
+        "final_palette"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "avoid_beige",
+        "final_palette"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 16,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "purple_gradient_rejected",
+        "logo_contrast",
+        "sage_replaced_teal",
+        "muted_navy_footer"
+      ],
+      "warm_hits": [
+        "purple_gradient_rejected",
+        "logo_contrast",
+        "sage_replaced_teal",
+        "muted_navy_footer"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "coral_dropped",
+        "product_cards_white",
+        "amber_cta",
+        "graphite_headings"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.88858962059021,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. The logo lockup needs enough contrast on warm white. The client rejected the purple-blue gradient because it felt too flashy. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Muted navy can work in the footer, but not in the hero. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "logo_contrast",
+        "purple_gradient_rejected"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "logo_contrast",
+        "purple_gradient_rejected"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 17,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "final_palette",
+        "muted_navy_footer",
+        "avoid_beige",
+        "sage_replaced_teal"
+      ],
+      "warm_hits": [
+        "final_palette",
+        "muted_navy_footer",
+        "avoid_beige",
+        "sage_replaced_teal"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "graphite_headings",
+        "coral_dropped",
+        "product_cards_white"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 2.7725164890289307,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. Teal was considered, then sage green replaced it as the accent after review. The client rejected the purple-blue gradient because it felt too flashy. Muted navy can work in the footer, but not in the hero. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Beige should be avoided because it made the site look dated. The logo lockup needs enough contrast on warm white.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "sage_replaced_teal",
+        "purple_gradient_rejected"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "sage_replaced_teal",
+        "purple_gradient_rejected"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 18,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "muted_navy_footer",
+        "final_palette",
+        "avoid_beige",
+        "logo_contrast"
+      ],
+      "warm_hits": [
+        "muted_navy_footer",
+        "final_palette",
+        "avoid_beige",
+        "logo_contrast"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "product_cards_white",
+        "coral_dropped",
+        "graphite_headings"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.123157262802124,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. The client rejected the purple-blue gradient because it felt too flashy. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Muted navy can work in the footer, but not in the hero. Beige should be avoided because it made the site look dated. The logo lockup needs enough contrast on warm white.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "purple_gradient_rejected",
+        "final_palette"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "purple_gradient_rejected",
+        "final_palette"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 19,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "sage_replaced_teal",
+        "muted_navy_footer",
+        "avoid_beige",
+        "logo_contrast"
+      ],
+      "warm_hits": [
+        "sage_replaced_teal",
+        "muted_navy_footer",
+        "avoid_beige",
+        "logo_contrast"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "amber_cta",
+        "graphite_headings",
+        "product_cards_white",
+        "coral_dropped"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.1302740573883057,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Muted navy can work in the footer, but not in the hero. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The client rejected the purple-blue gradient because it felt too flashy. Beige should be avoided because it made the site look dated. The logo lockup needs enough contrast on warm white.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 20,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "purple_gradient_rejected",
+        "avoid_beige",
+        "sage_replaced_teal",
+        "logo_contrast"
+      ],
+      "warm_hits": [
+        "purple_gradient_rejected",
+        "avoid_beige",
+        "sage_replaced_teal",
+        "logo_contrast"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "product_cards_white",
+        "coral_dropped",
+        "graphite_headings",
+        "amber_cta"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 2.9504151344299316,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Muted navy can work in the footer, but not in the hero. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "purple_gradient_rejected",
+        "logo_contrast"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "purple_gradient_rejected",
+        "logo_contrast"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 21,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "final_palette",
+        "muted_navy_footer",
+        "sage_replaced_teal",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "final_palette",
+        "muted_navy_footer",
+        "sage_replaced_teal",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "graphite_headings",
+        "amber_cta",
+        "product_cards_white",
+        "coral_dropped"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.4393272399902344,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white. Muted navy can work in the footer, but not in the hero. Beige should be avoided because it made the site look dated. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "purple_gradient_rejected",
+        "logo_contrast"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "purple_gradient_rejected",
+        "logo_contrast"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 22,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "muted_navy_footer",
+        "avoid_beige",
+        "final_palette",
+        "sage_replaced_teal"
+      ],
+      "warm_hits": [
+        "muted_navy_footer",
+        "avoid_beige",
+        "final_palette",
+        "sage_replaced_teal"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "coral_dropped",
+        "amber_cta",
+        "graphite_headings",
+        "product_cards_white"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.1162285804748535,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. Muted navy can work in the footer, but not in the hero. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The client rejected the purple-blue gradient because it felt too flashy. The logo lockup needs enough contrast on warm white. Beige should be avoided because it made the site look dated.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "muted_navy_footer",
+        "sage_replaced_teal"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "muted_navy_footer",
+        "sage_replaced_teal"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 23,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "final_palette",
+        "purple_gradient_rejected",
+        "logo_contrast",
+        "avoid_beige"
+      ],
+      "warm_hits": [
+        "final_palette",
+        "purple_gradient_rejected",
+        "logo_contrast",
+        "avoid_beige"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "coral_dropped",
+        "graphite_headings",
+        "amber_cta",
+        "product_cards_white"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 1.5140612125396729,
+      "final_decision_present": true,
+      "generated_answer": "Deep teal was liked for the hero, but it made the page feel too cold. Warm white was chosen for the main background to soften the brand. Beige should be avoided because it made the site look dated. The client rejected the purple-blue gradient because it felt too flashy. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. Muted navy can work in the footer, but not in the hero. The logo lockup needs enough contrast on warm white.",
+      "hot_fact_keys": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "avoid_beige",
+        "purple_gradient_rejected"
+      ],
+      "hot_hits": [
+        "deep_teal_hero_cold",
+        "warm_white_background",
+        "avoid_beige",
+        "purple_gradient_rejected"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 24,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "sage_replaced_teal",
+        "final_palette",
+        "muted_navy_footer",
+        "logo_contrast"
+      ],
+      "warm_hits": [
+        "sage_replaced_teal",
+        "final_palette",
+        "muted_navy_footer",
+        "logo_contrast"
+      ]
+    },
+    {
+      "candidate_coverage": 12,
+      "cold_fact_keys": [
+        "graphite_headings",
+        "product_cards_white",
+        "coral_dropped",
+        "amber_cta"
+      ],
+      "cold_hits": [],
+      "conflict_preserved": true,
+      "elapsed_s": 3.2833659648895264,
+      "final_decision_present": true,
+      "generated_answer": "Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. Muted navy can work in the footer, but not in the hero. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The logo lockup needs enough contrast on warm white. Beige should be avoided because it made the site look dated. The client rejected the purple-blue gradient because it felt too flashy.",
+      "hot_fact_keys": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "hot_hits": [
+        "warm_white_background",
+        "deep_teal_hero_cold",
+        "muted_navy_footer",
+        "final_palette"
+      ],
+      "mask_penalty_applied": true,
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 25,
+      "selected_tier": "hot",
+      "warm_fact_keys": [
+        "logo_contrast",
+        "avoid_beige",
+        "sage_replaced_teal",
+        "purple_gradient_rejected"
+      ],
+      "warm_hits": [
+        "logo_contrast",
+        "avoid_beige",
+        "sage_replaced_teal",
+        "purple_gradient_rejected"
+      ]
+    }
+  ],
+  "summary": {
+    "harness_store_root": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T140535Z-20260426t140535/store",
+    "hit_rate": 1.0,
+    "mode": "real_world_multi_fact",
+    "passed": 25,
+    "required_hit_rate": 0.9,
+    "run_dir": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T140535Z-20260426t140535",
+    "sample_size": 25,
+    "store_root": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T140535Z-20260426t140535/scale-real-world-multi-fact-store"
+  }
+}

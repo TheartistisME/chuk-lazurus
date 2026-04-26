@@ -1,0 +1,1164 @@
+{
+  "results": [
+    {
+      "elapsed_s": 3.838932752609253,
+      "expected_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "generated_answer": "chartreuse, vermillion, saffron, cerulean",
+      "group_key": "scale_multi_fact_0001_fcce8ffb2324",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 1,
+      "recalled_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.675515651702881,
+      "expected_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "generated_answer": "indigo, chartreuse, saffron, vermillion",
+      "group_key": "scale_multi_fact_0002_25d91f835929",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 2,
+      "recalled_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.8629415035247803,
+      "expected_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "generated_answer": "chartreuse, indigo, magenta, vermillion",
+      "group_key": "scale_multi_fact_0003_d8a9ad8bde0d",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 3,
+      "recalled_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.3837316036224365,
+      "expected_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "generated_answer": "ochre, vermillion, indigo, magenta",
+      "group_key": "scale_multi_fact_0004_9841a2ab6483",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 4,
+      "recalled_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.760328769683838,
+      "expected_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "generated_answer": "turquoise, ochre, magenta, indigo",
+      "group_key": "scale_multi_fact_0005_fb6f8200c110",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 5,
+      "recalled_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.654191017150879,
+      "expected_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "generated_answer": "crimson, magenta, turquoise, ochre",
+      "group_key": "scale_multi_fact_0006_b91ada44f39a",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 6,
+      "recalled_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 4.191602468490601,
+      "expected_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "generated_answer": "ochre, periwinkle, crimson, turquoise",
+      "group_key": "scale_multi_fact_0007_66449d0257ae",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 7,
+      "recalled_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.3705790042877197,
+      "expected_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "generated_answer": "periwinkle, turquoise, crimson, ultramarine",
+      "group_key": "scale_multi_fact_0008_3ae0b7f5c0a1",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 8,
+      "recalled_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.809648036956787,
+      "expected_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "generated_answer": "crimson, ultramarine, periwinkle, malachite",
+      "group_key": "scale_multi_fact_0009_c815fef81638",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 9,
+      "recalled_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.501300096511841,
+      "expected_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "generated_answer": "cerulean, saffron, chartreuse, vermillion",
+      "group_key": "scale_multi_fact_0010_9abc0b7c8bbb",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 10,
+      "recalled_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.4985859394073486,
+      "expected_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "generated_answer": "chartreuse, vermillion, saffron, indigo",
+      "group_key": "scale_multi_fact_0011_9b8ef115c15b",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 11,
+      "recalled_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.595219612121582,
+      "expected_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "generated_answer": "indigo, chartreuse, magenta, vermillion",
+      "group_key": "scale_multi_fact_0012_e5cdb1fdac68",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 12,
+      "recalled_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.9677560329437256,
+      "expected_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "generated_answer": "indigo, ochre, vermillion, magenta",
+      "group_key": "scale_multi_fact_0013_b6671195a2b3",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 13,
+      "recalled_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.857407569885254,
+      "expected_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "generated_answer": "indigo, magenta, turquoise, ochre",
+      "group_key": "scale_multi_fact_0014_83f6249ddb9a",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 14,
+      "recalled_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 4.806185960769653,
+      "expected_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "generated_answer": "crimson, turquoise, magenta, ochre",
+      "group_key": "scale_multi_fact_0015_03811c80b2de",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 15,
+      "recalled_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.0554943084716797,
+      "expected_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "generated_answer": "crimson, turquoise, periwinkle, ochre",
+      "group_key": "scale_multi_fact_0016_6e9fa674c37e",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 16,
+      "recalled_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.01483154296875,
+      "expected_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "generated_answer": "crimson, turquoise, ultramarine, periwinkle",
+      "group_key": "scale_multi_fact_0017_e03269dfcba8",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 17,
+      "recalled_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 4.643167734146118,
+      "expected_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "generated_answer": "crimson, malachite, periwinkle, ultramarine",
+      "group_key": "scale_multi_fact_0018_3389a86acfab",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 18,
+      "recalled_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.736163854598999,
+      "expected_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "generated_answer": "vermillion, chartreuse, cerulean, saffron",
+      "group_key": "scale_multi_fact_0019_e387fa85c968",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 19,
+      "recalled_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 1.0541319847106934,
+      "expected_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "generated_answer": "vermillion, indigo, chartreuse, saffron",
+      "group_key": "scale_multi_fact_0020_f141eaa8c975",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 20,
+      "recalled_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.1817429065704346,
+      "expected_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "generated_answer": "magenta, indigo, chartreuse, vermillion",
+      "group_key": "scale_multi_fact_0021_8b341cbf05d7",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 21,
+      "recalled_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.6187102794647217,
+      "expected_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "generated_answer": "indigo, magenta, vermillion, ochre",
+      "group_key": "scale_multi_fact_0022_1f651f3dbb26",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 22,
+      "recalled_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.1772890090942383,
+      "expected_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "generated_answer": "indigo, magenta, turquoise, ochre",
+      "group_key": "scale_multi_fact_0023_303c6d320b82",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 23,
+      "recalled_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.945878028869629,
+      "expected_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "generated_answer": "magenta, ochre, turquoise, crimson",
+      "group_key": "scale_multi_fact_0024_630f640b7237",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 24,
+      "recalled_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.8436169624328613,
+      "expected_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "generated_answer": "crimson, periwinkle, ochre, turquoise",
+      "group_key": "scale_multi_fact_0025_6a0b9ffa3225",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 25,
+      "recalled_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.638941764831543,
+      "expected_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "generated_answer": "crimson, turquoise, ultramarine, periwinkle",
+      "group_key": "scale_multi_fact_0026_d4c6f19faa6a",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 26,
+      "recalled_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.8448619842529297,
+      "expected_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "generated_answer": "ultramarine, malachite, periwinkle, crimson",
+      "group_key": "scale_multi_fact_0027_96cc0cb24dfe",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 27,
+      "recalled_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.763737201690674,
+      "expected_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "generated_answer": "saffron, chartreuse, cerulean, vermillion",
+      "group_key": "scale_multi_fact_0028_ec8a8ebb38f2",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 28,
+      "recalled_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.253941297531128,
+      "expected_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "generated_answer": "vermillion, saffron, chartreuse, indigo",
+      "group_key": "scale_multi_fact_0029_2e8f80f44856",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 29,
+      "recalled_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.3309285640716553,
+      "expected_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "generated_answer": "magenta, vermillion, indigo, chartreuse",
+      "group_key": "scale_multi_fact_0030_d4646728a042",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 30,
+      "recalled_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.010427474975586,
+      "expected_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "generated_answer": "vermillion, ochre, indigo, magenta",
+      "group_key": "scale_multi_fact_0031_e8be1baf4225",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 31,
+      "recalled_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.8896656036376953,
+      "expected_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "generated_answer": "turquoise, magenta, indigo, ochre",
+      "group_key": "scale_multi_fact_0032_9fb6f194d358",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 32,
+      "recalled_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.8581581115722656,
+      "expected_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "generated_answer": "crimson, magenta, ochre, turquoise",
+      "group_key": "scale_multi_fact_0033_781eacc34e38",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 33,
+      "recalled_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.217970132827759,
+      "expected_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "generated_answer": "turquoise, periwinkle, ochre, crimson",
+      "group_key": "scale_multi_fact_0034_9bdc5692e1d7",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 34,
+      "recalled_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.5008397102355957,
+      "expected_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "generated_answer": "turquoise, periwinkle, ultramarine, crimson",
+      "group_key": "scale_multi_fact_0035_48877136680b",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 35,
+      "recalled_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.7643346786499023,
+      "expected_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "generated_answer": "ultramarine, crimson, malachite, periwinkle",
+      "group_key": "scale_multi_fact_0036_4b218f29197f",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 36,
+      "recalled_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.5656471252441406,
+      "expected_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "generated_answer": "vermillion, saffron, chartreuse, cerulean",
+      "group_key": "scale_multi_fact_0037_792ef24f0590",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 37,
+      "recalled_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.656722068786621,
+      "expected_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "generated_answer": "vermillion, indigo, saffron, chartreuse",
+      "group_key": "scale_multi_fact_0038_77455936f731",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 38,
+      "recalled_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.813344717025757,
+      "expected_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "generated_answer": "indigo, chartreuse, vermillion, magenta",
+      "group_key": "scale_multi_fact_0039_ccba91b719ee",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 39,
+      "recalled_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.1877639293670654,
+      "expected_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "generated_answer": "magenta, indigo, ochre, vermillion",
+      "group_key": "scale_multi_fact_0040_8f130cf044f1",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 40,
+      "recalled_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.921269655227661,
+      "expected_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "generated_answer": "ochre, turquoise, indigo, magenta",
+      "group_key": "scale_multi_fact_0041_89c5c725c3c2",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 41,
+      "recalled_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 1.2888555526733398,
+      "expected_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "generated_answer": "crimson, ochre, turquoise, magenta",
+      "group_key": "scale_multi_fact_0042_6f60d4d0a5d9",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 42,
+      "recalled_colors": [
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.604471445083618,
+      "expected_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "generated_answer": "periwinkle, ochre, crimson, turquoise",
+      "group_key": "scale_multi_fact_0043_9fcbad42a3fd",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 43,
+      "recalled_colors": [
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.3750226497650146,
+      "expected_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "generated_answer": "crimson, turquoise, periwinkle, ultramarine",
+      "group_key": "scale_multi_fact_0044_b8d752441352",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 44,
+      "recalled_colors": [
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.3108880519866943,
+      "expected_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "generated_answer": "periwinkle, ultramarine, crimson, malachite",
+      "group_key": "scale_multi_fact_0045_135bd3d4023a",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 45,
+      "recalled_colors": [
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 4.147678852081299,
+      "expected_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "generated_answer": "vermillion, cerulean, chartreuse, saffron",
+      "group_key": "scale_multi_fact_0046_c60a6caa9638",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 46,
+      "recalled_colors": [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.0581939220428467,
+      "expected_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "generated_answer": "vermillion, chartreuse, saffron, indigo",
+      "group_key": "scale_multi_fact_0047_e2a31ed23e14",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 47,
+      "recalled_colors": [
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 2.702249526977539,
+      "expected_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "generated_answer": "vermillion, indigo, magenta, chartreuse",
+      "group_key": "scale_multi_fact_0048_fa2162351035",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 48,
+      "recalled_colors": [
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 3.272799491882324,
+      "expected_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "generated_answer": "indigo, ochre, vermillion, magenta",
+      "group_key": "scale_multi_fact_0049_d7ee350f2cd4",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 49,
+      "recalled_colors": [
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre"
+      ],
+      "selected_tier": "hot"
+    },
+    {
+      "elapsed_s": 0.9492368698120117,
+      "expected_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "generated_answer": "indigo, ochre, magenta, turquoise",
+      "group_key": "scale_multi_fact_0050_23017097128f",
+      "mask_penalty_applied": false,
+      "missing_colors": [],
+      "mode": "kv_direct",
+      "no_silent_fallback": true,
+      "probe_idx": 50,
+      "recalled_colors": [
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise"
+      ],
+      "selected_tier": "hot"
+    }
+  ],
+  "summary": {
+    "harness_store_root": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store",
+    "hit_rate": 1.0,
+    "mode": "multi_fact",
+    "passed": 50,
+    "required_hit_rate": 1.0,
+    "run_dir": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135",
+    "sample_size": 50,
+    "store_root": "/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/scale-multi-fact-store"
+  }
+}

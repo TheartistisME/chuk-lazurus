@@ -1,0 +1,45 @@
+# Exact Commands
+
+```bash
+uv run --extra dev python scripts/auto_verify_memory_repl.py --list-checks
+```
+
+```bash
+uv run --extra dev python -m py_compile \
+  scripts/auto_verify_memory_repl.py \
+  scripts/verify_memory_recall_scale.py \
+  src/chuk_lazarus/session_retrieval/retriever.py
+```
+
+```bash
+uv run --extra dev pytest \
+  tests/chat_loop/test_kv_query_repl.py::test_kv_query_turn_preserves_natural_multi_session_assignments \
+  tests/chat_loop/test_kv_query_repl.py::test_kv_query_turn_preserves_cross_session_assignments \
+  tests/inference/backends/test_torch_runtime.py::test_natural_multi_token_tier_mask_mutes_cold_ranges \
+  tests/inference/backends/test_torch_runtime.py::test_multi_fact_tier_mask_12_fact_hot_warm_cold_softmax_proportions \
+  -q
+```
+
+```bash
+bash scripts/run_infinite_memory_ci_gate.sh --smoke
+```
+
+```bash
+uv run --extra dev python scripts/verify_memory_recall_scale.py \
+  --sample-size 25 \
+  --mode real_world_multi_fact \
+  --required-hit-rate 0.90 \
+  --quiet-model-output
+```
+
+```bash
+make verify-infinite-memory
+```
+
+```bash
+uv run --extra dev python scripts/verify_memory_recall_scale.py \
+  --sample-size 50 \
+  --mode multi_fact \
+  --required-hit-rate 1.0 \
+  --quiet-model-output
+```

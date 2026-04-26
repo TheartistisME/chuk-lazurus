@@ -1,0 +1,1644 @@
+PASS PREFLIGHT: Linux/CUDA preflight and MemoryChat import passed elapsed_s=17.69
+[2026-04-26T20:51:52Z] loading model (device=cuda) — first load is slow…
+Loading weights:   0%|          | 0/1951 [00:00<?, ?it/s]Loading weights:  28%|##7       | 540/1951 [00:00<00:00, 5365.08it/s]Loading weights:  55%|#####5    | 1077/1951 [00:00<00:00, 3184.51it/s]Loading weights:  74%|#######4  | 1444/1951 [00:00<00:00, 2984.54it/s]Loading weights:  91%|######### | 1767/1951 [00:00<00:00, 2830.05it/s]Loading weights: 100%|##########| 1951/1951 [00:00<00:00, 3016.60it/s]
+[2026-04-26T20:52:18Z] model loaded in 25.1s
+[2026-04-26T20:52:18Z] store is empty at /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints — no retriever yet
+[2026-04-26T20:52:18Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:52:18Z] new session started · session_id=da61079c65144d959dcb561e0d503a28
+gemma> The following generation flags are not valid and may be ignored: ['top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+live save ready.
+[2026-04-26T20:52:19Z] saving session da61079c65144d959dcb561e0d503a28 · 4 turns
+[2026-04-26T20:52:19Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/da61079c65144d959dcb561e0d503a28.json
+[2026-04-26T20:52:19Z]   AUS3000 clauses -> 4 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/da61079c65144d959dcb561e0d503a28
+[2026-04-26T20:52:20Z]   live index flushed in 0.48s
+[2026-04-26T20:52:20Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/da61079c65144d959dcb561e0d503a28/save-state.json
+[2026-04-26T20:52:20Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:52:20Z] found 1 checkpoint(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints — building retriever
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/1951 [00:00<?, ?it/s]Loading weights:  17%|#7        | 333/1951 [00:00<00:00, 3327.39it/s]Loading weights:  34%|###4      | 666/1951 [00:00<00:00, 3256.55it/s]Loading weights:  51%|#####     | 992/1951 [00:00<00:00, 2577.04it/s]Loading weights:  65%|######4   | 1263/1951 [00:00<00:00, 2347.29it/s]Loading weights:  79%|#######8  | 1540/1951 [00:00<00:00, 2467.03it/s]Loading weights:  92%|#########2| 1795/1951 [00:00<00:00, 2468.56it/s]Loading weights: 100%|##########| 1951/1951 [00:00<00:00, 2550.64it/s]
+[2026-04-26T20:52:26Z] retriever ready: 1 session(s) indexed · crystal_layer=13 · loaded in 6.2s
+PASS LIVE_SAVE: saved session da61079c65144d959dcb561e0d503a28 with 4 boundary file(s) elapsed_s=33.75
+[2026-04-26T20:52:26Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:52:26Z] new session started · session_id=84c441a0913d4804a70dd425eb7264d6
+[2026-04-26T20:52:26Z] saving session 84c441a0913d4804a70dd425eb7264d6 · 100 turns
+[2026-04-26T20:52:26Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/84c441a0913d4804a70dd425eb7264d6.json
+[2026-04-26T20:52:27Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/84c441a0913d4804a70dd425eb7264d6
+[2026-04-26T20:52:42Z]   live index flushed in 15.61s
+[2026-04-26T20:52:42Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/84c441a0913d4804a70dd425eb7264d6/save-state.json
+[2026-04-26T20:52:42Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:52:42Z]   retriever refreshed in 0.09s (+1 handle(s))
+[2026-04-26T20:52:42Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:52:42Z] new session started · session_id=9fb9f618ceea4f26957a78131824ab7b
+[2026-04-26T20:52:42Z] saving session 9fb9f618ceea4f26957a78131824ab7b · 100 turns
+[2026-04-26T20:52:43Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/9fb9f618ceea4f26957a78131824ab7b.json
+[2026-04-26T20:52:43Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/9fb9f618ceea4f26957a78131824ab7b
+[2026-04-26T20:53:00Z]   live index flushed in 17.43s
+[2026-04-26T20:53:00Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/9fb9f618ceea4f26957a78131824ab7b/save-state.json
+[2026-04-26T20:53:00Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:53:01Z]   retriever refreshed in 0.14s (+1 handle(s))
+[2026-04-26T20:53:01Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:53:01Z] new session started · session_id=5cc8bb3fce8b444f9d420598b08deb15
+[2026-04-26T20:53:01Z] saving session 5cc8bb3fce8b444f9d420598b08deb15 · 100 turns
+[2026-04-26T20:53:01Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/5cc8bb3fce8b444f9d420598b08deb15.json
+[2026-04-26T20:53:01Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/5cc8bb3fce8b444f9d420598b08deb15
+[2026-04-26T20:53:17Z]   live index flushed in 15.61s
+[2026-04-26T20:53:17Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/5cc8bb3fce8b444f9d420598b08deb15/save-state.json
+[2026-04-26T20:53:17Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:53:17Z]   retriever refreshed in 0.20s (+1 handle(s))
+[2026-04-26T20:53:17Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:53:17Z] new session started · session_id=7e713d2aec784e6f8d81fb8bc8be0265
+[2026-04-26T20:53:17Z] saving session 7e713d2aec784e6f8d81fb8bc8be0265 · 100 turns
+[2026-04-26T20:53:17Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/7e713d2aec784e6f8d81fb8bc8be0265.json
+[2026-04-26T20:53:17Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/7e713d2aec784e6f8d81fb8bc8be0265
+[2026-04-26T20:53:34Z]   live index flushed in 16.61s
+[2026-04-26T20:53:34Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/7e713d2aec784e6f8d81fb8bc8be0265/save-state.json
+[2026-04-26T20:53:34Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:53:34Z]   retriever refreshed in 0.26s (+1 handle(s))
+[2026-04-26T20:53:34Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:53:34Z] new session started · session_id=735d2f352e1f4e35880f259e21fbb7d4
+[2026-04-26T20:53:34Z] saving session 735d2f352e1f4e35880f259e21fbb7d4 · 100 turns
+[2026-04-26T20:53:34Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/735d2f352e1f4e35880f259e21fbb7d4.json
+[2026-04-26T20:53:35Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/735d2f352e1f4e35880f259e21fbb7d4
+[2026-04-26T20:53:51Z]   live index flushed in 16.01s
+[2026-04-26T20:53:51Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/735d2f352e1f4e35880f259e21fbb7d4/save-state.json
+[2026-04-26T20:53:51Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:53:51Z]   retriever refreshed in 0.31s (+1 handle(s))
+[2026-04-26T20:53:51Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:53:51Z] new session started · session_id=75dfc281cf86403ca4f685bd05f8e564
+[2026-04-26T20:53:51Z] saving session 75dfc281cf86403ca4f685bd05f8e564 · 100 turns
+[2026-04-26T20:53:51Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/75dfc281cf86403ca4f685bd05f8e564.json
+[2026-04-26T20:53:51Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/75dfc281cf86403ca4f685bd05f8e564
+[2026-04-26T20:54:08Z]   live index flushed in 16.66s
+[2026-04-26T20:54:08Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/75dfc281cf86403ca4f685bd05f8e564/save-state.json
+[2026-04-26T20:54:08Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:54:08Z]   retriever refreshed in 0.35s (+1 handle(s))
+[2026-04-26T20:54:08Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:54:08Z] new session started · session_id=f0e02df50a7d493784450a855ad517cd
+[2026-04-26T20:54:09Z] saving session f0e02df50a7d493784450a855ad517cd · 100 turns
+[2026-04-26T20:54:09Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/f0e02df50a7d493784450a855ad517cd.json
+[2026-04-26T20:54:09Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/f0e02df50a7d493784450a855ad517cd
+[2026-04-26T20:54:23Z]   live index flushed in 13.71s
+[2026-04-26T20:54:23Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/f0e02df50a7d493784450a855ad517cd/save-state.json
+[2026-04-26T20:54:23Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:54:23Z]   retriever refreshed in 0.42s (+1 handle(s))
+[2026-04-26T20:54:23Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:54:23Z] new session started · session_id=7ab364f2dfc343f48b70168142870df2
+[2026-04-26T20:54:23Z] saving session 7ab364f2dfc343f48b70168142870df2 · 100 turns
+[2026-04-26T20:54:23Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/7ab364f2dfc343f48b70168142870df2.json
+[2026-04-26T20:54:23Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/7ab364f2dfc343f48b70168142870df2
+[2026-04-26T20:54:37Z]   live index flushed in 13.34s
+[2026-04-26T20:54:37Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/7ab364f2dfc343f48b70168142870df2/save-state.json
+[2026-04-26T20:54:37Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:54:37Z]   retriever refreshed in 0.49s (+1 handle(s))
+[2026-04-26T20:54:37Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:54:37Z] new session started · session_id=8bc4018ab57549f081f4b0e2bf97094e
+[2026-04-26T20:54:37Z] saving session 8bc4018ab57549f081f4b0e2bf97094e · 100 turns
+[2026-04-26T20:54:37Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8bc4018ab57549f081f4b0e2bf97094e.json
+[2026-04-26T20:54:38Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8bc4018ab57549f081f4b0e2bf97094e
+[2026-04-26T20:54:48Z]   live index flushed in 10.32s
+[2026-04-26T20:54:48Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8bc4018ab57549f081f4b0e2bf97094e/save-state.json
+[2026-04-26T20:54:48Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:54:48Z]   retriever refreshed in 0.52s (+1 handle(s))
+[2026-04-26T20:54:48Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:54:48Z] new session started · session_id=500dab7aed62451990434953b1eb5585
+[2026-04-26T20:54:49Z] saving session 500dab7aed62451990434953b1eb5585 · 100 turns
+[2026-04-26T20:54:49Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/500dab7aed62451990434953b1eb5585.json
+[2026-04-26T20:54:49Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/500dab7aed62451990434953b1eb5585
+[2026-04-26T20:55:01Z]   live index flushed in 12.13s
+[2026-04-26T20:55:01Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/500dab7aed62451990434953b1eb5585/save-state.json
+[2026-04-26T20:55:01Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:55:02Z]   retriever refreshed in 0.58s (+1 handle(s))
+[2026-04-26T20:55:02Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:55:02Z] new session started · session_id=a4bb8422fb9c4746ac28c9f80efaee4b
+[2026-04-26T20:55:02Z] saving session a4bb8422fb9c4746ac28c9f80efaee4b · 100 turns
+[2026-04-26T20:55:02Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/a4bb8422fb9c4746ac28c9f80efaee4b.json
+[2026-04-26T20:55:02Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/a4bb8422fb9c4746ac28c9f80efaee4b
+[2026-04-26T20:55:14Z]   live index flushed in 11.96s
+[2026-04-26T20:55:14Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/a4bb8422fb9c4746ac28c9f80efaee4b/save-state.json
+[2026-04-26T20:55:14Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:55:14Z]   retriever refreshed in 0.63s (+1 handle(s))
+[2026-04-26T20:55:14Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:55:15Z] new session started · session_id=c6418d56e34f4ebb88b6b940cd0d392b
+[2026-04-26T20:55:15Z] saving session c6418d56e34f4ebb88b6b940cd0d392b · 100 turns
+[2026-04-26T20:55:15Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/c6418d56e34f4ebb88b6b940cd0d392b.json
+[2026-04-26T20:55:15Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/c6418d56e34f4ebb88b6b940cd0d392b
+[2026-04-26T20:55:24Z]   live index flushed in 9.47s
+[2026-04-26T20:55:24Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/c6418d56e34f4ebb88b6b940cd0d392b/save-state.json
+[2026-04-26T20:55:24Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:55:25Z]   retriever refreshed in 0.67s (+1 handle(s))
+[2026-04-26T20:55:25Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:55:25Z] new session started · session_id=87905263576846d2b5dc646090c1acd9
+[2026-04-26T20:55:25Z] saving session 87905263576846d2b5dc646090c1acd9 · 100 turns
+[2026-04-26T20:55:25Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/87905263576846d2b5dc646090c1acd9.json
+[2026-04-26T20:55:25Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/87905263576846d2b5dc646090c1acd9
+[2026-04-26T20:55:36Z]   live index flushed in 10.85s
+[2026-04-26T20:55:36Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/87905263576846d2b5dc646090c1acd9/save-state.json
+[2026-04-26T20:55:36Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:55:37Z]   retriever refreshed in 0.72s (+1 handle(s))
+[2026-04-26T20:55:37Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:55:37Z] new session started · session_id=bb40d6c5c83a43878668a48cbba21a3b
+[2026-04-26T20:55:37Z] saving session bb40d6c5c83a43878668a48cbba21a3b · 100 turns
+[2026-04-26T20:55:37Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/bb40d6c5c83a43878668a48cbba21a3b.json
+[2026-04-26T20:55:37Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/bb40d6c5c83a43878668a48cbba21a3b
+[2026-04-26T20:55:47Z]   live index flushed in 9.52s
+[2026-04-26T20:55:47Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/bb40d6c5c83a43878668a48cbba21a3b/save-state.json
+[2026-04-26T20:55:47Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:55:48Z]   retriever refreshed in 0.79s (+1 handle(s))
+[2026-04-26T20:55:48Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:55:48Z] new session started · session_id=2bcaae6f8f7d4f129bb360e5bc1e235d
+[2026-04-26T20:55:48Z] saving session 2bcaae6f8f7d4f129bb360e5bc1e235d · 100 turns
+[2026-04-26T20:55:48Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/2bcaae6f8f7d4f129bb360e5bc1e235d.json
+[2026-04-26T20:55:48Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/2bcaae6f8f7d4f129bb360e5bc1e235d
+[2026-04-26T20:56:00Z]   live index flushed in 12.31s
+[2026-04-26T20:56:00Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/2bcaae6f8f7d4f129bb360e5bc1e235d/save-state.json
+[2026-04-26T20:56:00Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:56:01Z]   retriever refreshed in 0.83s (+1 handle(s))
+[2026-04-26T20:56:01Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:56:01Z] new session started · session_id=3ab7cb0ca6274189959ae2047b907243
+[2026-04-26T20:56:01Z] saving session 3ab7cb0ca6274189959ae2047b907243 · 100 turns
+[2026-04-26T20:56:01Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/3ab7cb0ca6274189959ae2047b907243.json
+[2026-04-26T20:56:02Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/3ab7cb0ca6274189959ae2047b907243
+[2026-04-26T20:56:14Z]   live index flushed in 12.06s
+[2026-04-26T20:56:14Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/3ab7cb0ca6274189959ae2047b907243/save-state.json
+[2026-04-26T20:56:14Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:56:15Z]   retriever refreshed in 0.88s (+1 handle(s))
+[2026-04-26T20:56:15Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:56:15Z] new session started · session_id=ad7634b49a0f426390d173e016d43462
+[2026-04-26T20:56:15Z] saving session ad7634b49a0f426390d173e016d43462 · 100 turns
+[2026-04-26T20:56:15Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/ad7634b49a0f426390d173e016d43462.json
+[2026-04-26T20:56:15Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/ad7634b49a0f426390d173e016d43462
+[2026-04-26T20:56:25Z]   live index flushed in 10.44s
+[2026-04-26T20:56:25Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/ad7634b49a0f426390d173e016d43462/save-state.json
+[2026-04-26T20:56:25Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:56:26Z]   retriever refreshed in 0.97s (+1 handle(s))
+[2026-04-26T20:56:26Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:56:26Z] new session started · session_id=faa6b5fcde524100a01d70e8756c41cc
+[2026-04-26T20:56:26Z] saving session faa6b5fcde524100a01d70e8756c41cc · 100 turns
+[2026-04-26T20:56:26Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/faa6b5fcde524100a01d70e8756c41cc.json
+[2026-04-26T20:56:27Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/faa6b5fcde524100a01d70e8756c41cc
+[2026-04-26T20:56:39Z]   live index flushed in 11.97s
+[2026-04-26T20:56:39Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/faa6b5fcde524100a01d70e8756c41cc/save-state.json
+[2026-04-26T20:56:39Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:56:40Z]   retriever refreshed in 1.03s (+1 handle(s))
+[2026-04-26T20:56:40Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:56:40Z] new session started · session_id=aceec166552d43d78e691e3593ac1527
+[2026-04-26T20:56:40Z] saving session aceec166552d43d78e691e3593ac1527 · 100 turns
+[2026-04-26T20:56:40Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/aceec166552d43d78e691e3593ac1527.json
+[2026-04-26T20:56:40Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/aceec166552d43d78e691e3593ac1527
+[2026-04-26T20:56:51Z]   live index flushed in 10.52s
+[2026-04-26T20:56:51Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/aceec166552d43d78e691e3593ac1527/save-state.json
+[2026-04-26T20:56:51Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:56:52Z]   retriever refreshed in 1.08s (+1 handle(s))
+[2026-04-26T20:56:52Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:56:52Z] new session started · session_id=8655a80471564b5ab74f66d29ef75e09
+[2026-04-26T20:56:52Z] saving session 8655a80471564b5ab74f66d29ef75e09 · 100 turns
+[2026-04-26T20:56:52Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8655a80471564b5ab74f66d29ef75e09.json
+[2026-04-26T20:56:52Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8655a80471564b5ab74f66d29ef75e09
+[2026-04-26T20:57:04Z]   live index flushed in 11.61s
+[2026-04-26T20:57:04Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8655a80471564b5ab74f66d29ef75e09/save-state.json
+[2026-04-26T20:57:04Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:57:05Z]   retriever refreshed in 1.12s (+1 handle(s))
+[2026-04-26T20:57:05Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:57:05Z] new session started · session_id=6a997f2add0e484eaeab64a37e6929c8
+[2026-04-26T20:57:05Z] saving session 6a997f2add0e484eaeab64a37e6929c8 · 100 turns
+[2026-04-26T20:57:05Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/6a997f2add0e484eaeab64a37e6929c8.json
+[2026-04-26T20:57:05Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/6a997f2add0e484eaeab64a37e6929c8
+[2026-04-26T20:57:16Z]   live index flushed in 11.10s
+[2026-04-26T20:57:16Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/6a997f2add0e484eaeab64a37e6929c8/save-state.json
+[2026-04-26T20:57:16Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:57:17Z]   retriever refreshed in 1.16s (+1 handle(s))
+[2026-04-26T20:57:17Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:57:17Z] new session started · session_id=cf037141390947dab8b9c1ffbda50846
+[2026-04-26T20:57:17Z] saving session cf037141390947dab8b9c1ffbda50846 · 100 turns
+[2026-04-26T20:57:17Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/cf037141390947dab8b9c1ffbda50846.json
+[2026-04-26T20:57:18Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/cf037141390947dab8b9c1ffbda50846
+[2026-04-26T20:57:27Z]   live index flushed in 9.07s
+[2026-04-26T20:57:27Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/cf037141390947dab8b9c1ffbda50846/save-state.json
+[2026-04-26T20:57:27Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:57:28Z]   retriever refreshed in 1.23s (+1 handle(s))
+[2026-04-26T20:57:28Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:57:28Z] new session started · session_id=df59321273e84daa81c9a66fa0bd319b
+[2026-04-26T20:57:28Z] saving session df59321273e84daa81c9a66fa0bd319b · 100 turns
+[2026-04-26T20:57:28Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/df59321273e84daa81c9a66fa0bd319b.json
+[2026-04-26T20:57:28Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/df59321273e84daa81c9a66fa0bd319b
+[2026-04-26T20:57:40Z]   live index flushed in 11.10s
+[2026-04-26T20:57:40Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/df59321273e84daa81c9a66fa0bd319b/save-state.json
+[2026-04-26T20:57:40Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:57:41Z]   retriever refreshed in 1.30s (+1 handle(s))
+[2026-04-26T20:57:41Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:57:41Z] new session started · session_id=362a8a812a544435a10aee1f25d3b458
+[2026-04-26T20:57:41Z] saving session 362a8a812a544435a10aee1f25d3b458 · 100 turns
+[2026-04-26T20:57:41Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/362a8a812a544435a10aee1f25d3b458.json
+[2026-04-26T20:57:41Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/362a8a812a544435a10aee1f25d3b458
+[2026-04-26T20:57:50Z]   live index flushed in 8.96s
+[2026-04-26T20:57:50Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/362a8a812a544435a10aee1f25d3b458/save-state.json
+[2026-04-26T20:57:50Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:57:52Z]   retriever refreshed in 1.34s (+1 handle(s))
+[2026-04-26T20:57:52Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:57:52Z] new session started · session_id=e9178e378cb94cd08cab2c160ed4d33f
+[2026-04-26T20:57:52Z] saving session e9178e378cb94cd08cab2c160ed4d33f · 100 turns
+[2026-04-26T20:57:52Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/e9178e378cb94cd08cab2c160ed4d33f.json
+[2026-04-26T20:57:52Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/e9178e378cb94cd08cab2c160ed4d33f
+[2026-04-26T20:58:03Z]   live index flushed in 11.07s
+[2026-04-26T20:58:03Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/e9178e378cb94cd08cab2c160ed4d33f/save-state.json
+[2026-04-26T20:58:03Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:58:04Z]   retriever refreshed in 1.38s (+1 handle(s))
+[2026-04-26T20:58:04Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:58:04Z] new session started · session_id=c11f2c12142a42958ca3cf4d09712bc2
+[2026-04-26T20:58:04Z] saving session c11f2c12142a42958ca3cf4d09712bc2 · 100 turns
+[2026-04-26T20:58:05Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/c11f2c12142a42958ca3cf4d09712bc2.json
+[2026-04-26T20:58:05Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/c11f2c12142a42958ca3cf4d09712bc2
+[2026-04-26T20:58:17Z]   live index flushed in 11.82s
+[2026-04-26T20:58:17Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/c11f2c12142a42958ca3cf4d09712bc2/save-state.json
+[2026-04-26T20:58:17Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:58:18Z]   retriever refreshed in 1.43s (+1 handle(s))
+[2026-04-26T20:58:18Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:58:18Z] new session started · session_id=1eec6308674046868d7115b4648b1866
+[2026-04-26T20:58:18Z] saving session 1eec6308674046868d7115b4648b1866 · 100 turns
+[2026-04-26T20:58:18Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/1eec6308674046868d7115b4648b1866.json
+[2026-04-26T20:58:18Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/1eec6308674046868d7115b4648b1866
+[2026-04-26T20:58:29Z]   live index flushed in 10.38s
+[2026-04-26T20:58:29Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/1eec6308674046868d7115b4648b1866/save-state.json
+[2026-04-26T20:58:29Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:58:30Z]   retriever refreshed in 1.50s (+1 handle(s))
+[2026-04-26T20:58:30Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:58:30Z] new session started · session_id=45a92070cc2f4203b9c53679d525d112
+[2026-04-26T20:58:30Z] saving session 45a92070cc2f4203b9c53679d525d112 · 100 turns
+[2026-04-26T20:58:30Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/45a92070cc2f4203b9c53679d525d112.json
+[2026-04-26T20:58:31Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/45a92070cc2f4203b9c53679d525d112
+[2026-04-26T20:58:43Z]   live index flushed in 11.90s
+[2026-04-26T20:58:43Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/45a92070cc2f4203b9c53679d525d112/save-state.json
+[2026-04-26T20:58:43Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:58:44Z]   retriever refreshed in 1.54s (+1 handle(s))
+[2026-04-26T20:58:44Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:58:44Z] new session started · session_id=4907db694bbb44bf933007df2d28f37a
+[2026-04-26T20:58:44Z] saving session 4907db694bbb44bf933007df2d28f37a · 100 turns
+[2026-04-26T20:58:44Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/4907db694bbb44bf933007df2d28f37a.json
+[2026-04-26T20:58:45Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/4907db694bbb44bf933007df2d28f37a
+[2026-04-26T20:58:55Z]   live index flushed in 10.41s
+[2026-04-26T20:58:55Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/4907db694bbb44bf933007df2d28f37a/save-state.json
+[2026-04-26T20:58:55Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:58:57Z]   retriever refreshed in 1.60s (+1 handle(s))
+[2026-04-26T20:58:57Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:58:57Z] new session started · session_id=093241cc8620476d82dd79b8a36c1f48
+[2026-04-26T20:58:57Z] saving session 093241cc8620476d82dd79b8a36c1f48 · 100 turns
+[2026-04-26T20:58:57Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/093241cc8620476d82dd79b8a36c1f48.json
+[2026-04-26T20:58:57Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/093241cc8620476d82dd79b8a36c1f48
+[2026-04-26T20:59:09Z]   live index flushed in 11.77s
+[2026-04-26T20:59:09Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/093241cc8620476d82dd79b8a36c1f48/save-state.json
+[2026-04-26T20:59:09Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:59:10Z]   retriever refreshed in 1.67s (+1 handle(s))
+[2026-04-26T20:59:10Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:59:10Z] new session started · session_id=c1c42f3c5887440b8dcb14b86d195c06
+[2026-04-26T20:59:11Z] saving session c1c42f3c5887440b8dcb14b86d195c06 · 100 turns
+[2026-04-26T20:59:11Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/c1c42f3c5887440b8dcb14b86d195c06.json
+[2026-04-26T20:59:11Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/c1c42f3c5887440b8dcb14b86d195c06
+[2026-04-26T20:59:23Z]   live index flushed in 11.93s
+[2026-04-26T20:59:23Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/c1c42f3c5887440b8dcb14b86d195c06/save-state.json
+[2026-04-26T20:59:23Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:59:23Z]   retriever refreshed in 0.04s (+1 handle(s))
+[2026-04-26T20:59:23Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:59:23Z] new session started · session_id=f97957302e1a4f2092cf59b8a3838c7c
+[2026-04-26T20:59:23Z] saving session f97957302e1a4f2092cf59b8a3838c7c · 100 turns
+[2026-04-26T20:59:23Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/f97957302e1a4f2092cf59b8a3838c7c.json
+[2026-04-26T20:59:23Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/f97957302e1a4f2092cf59b8a3838c7c
+[2026-04-26T20:59:35Z]   live index flushed in 11.35s
+[2026-04-26T20:59:35Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/f97957302e1a4f2092cf59b8a3838c7c/save-state.json
+[2026-04-26T20:59:35Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:59:36Z]   retriever refreshed in 1.77s (+1 handle(s))
+[2026-04-26T20:59:36Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:59:36Z] new session started · session_id=f4bb049ce2574c2ca1368a63ad6f92ce
+[2026-04-26T20:59:36Z] saving session f4bb049ce2574c2ca1368a63ad6f92ce · 100 turns
+[2026-04-26T20:59:36Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/f4bb049ce2574c2ca1368a63ad6f92ce.json
+[2026-04-26T20:59:37Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/f4bb049ce2574c2ca1368a63ad6f92ce
+[2026-04-26T20:59:47Z]   live index flushed in 10.78s
+[2026-04-26T20:59:48Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/f4bb049ce2574c2ca1368a63ad6f92ce/save-state.json
+[2026-04-26T20:59:48Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T20:59:49Z]   retriever refreshed in 1.80s (+1 handle(s))
+[2026-04-26T20:59:49Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T20:59:49Z] new session started · session_id=e57347b172394cfc80b98375fa4cd5e3
+[2026-04-26T20:59:49Z] saving session e57347b172394cfc80b98375fa4cd5e3 · 100 turns
+[2026-04-26T20:59:49Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/e57347b172394cfc80b98375fa4cd5e3.json
+[2026-04-26T20:59:50Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/e57347b172394cfc80b98375fa4cd5e3
+[2026-04-26T20:59:59Z]   live index flushed in 9.66s
+[2026-04-26T20:59:59Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/e57347b172394cfc80b98375fa4cd5e3/save-state.json
+[2026-04-26T20:59:59Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:00:01Z]   retriever refreshed in 1.88s (+1 handle(s))
+[2026-04-26T21:00:01Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:00:01Z] new session started · session_id=d1dd28d377b94fd889a99e997884b237
+[2026-04-26T21:00:01Z] saving session d1dd28d377b94fd889a99e997884b237 · 100 turns
+[2026-04-26T21:00:01Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/d1dd28d377b94fd889a99e997884b237.json
+[2026-04-26T21:00:02Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/d1dd28d377b94fd889a99e997884b237
+[2026-04-26T21:00:12Z]   live index flushed in 10.85s
+[2026-04-26T21:00:12Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/d1dd28d377b94fd889a99e997884b237/save-state.json
+[2026-04-26T21:00:13Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:00:14Z]   retriever refreshed in 1.93s (+1 handle(s))
+[2026-04-26T21:00:14Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:00:14Z] new session started · session_id=ca281310bdbd45bc8858fc106a63b9e9
+[2026-04-26T21:00:15Z] saving session ca281310bdbd45bc8858fc106a63b9e9 · 100 turns
+[2026-04-26T21:00:15Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/ca281310bdbd45bc8858fc106a63b9e9.json
+[2026-04-26T21:00:15Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/ca281310bdbd45bc8858fc106a63b9e9
+[2026-04-26T21:00:24Z]   live index flushed in 9.60s
+[2026-04-26T21:00:24Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/ca281310bdbd45bc8858fc106a63b9e9/save-state.json
+[2026-04-26T21:00:24Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:00:26Z]   retriever refreshed in 1.98s (+1 handle(s))
+[2026-04-26T21:00:26Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:00:26Z] new session started · session_id=f36e572e21634b6f94e7e44f6a9359de
+[2026-04-26T21:00:27Z] saving session f36e572e21634b6f94e7e44f6a9359de · 100 turns
+[2026-04-26T21:00:27Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/f36e572e21634b6f94e7e44f6a9359de.json
+[2026-04-26T21:00:27Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/f36e572e21634b6f94e7e44f6a9359de
+[2026-04-26T21:00:39Z]   live index flushed in 11.73s
+[2026-04-26T21:00:39Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/f36e572e21634b6f94e7e44f6a9359de/save-state.json
+[2026-04-26T21:00:39Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:00:41Z]   retriever refreshed in 2.06s (+1 handle(s))
+[2026-04-26T21:00:41Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:00:41Z] new session started · session_id=4828a61fe7ef44b0a8e7475e9b008daf
+[2026-04-26T21:00:41Z] saving session 4828a61fe7ef44b0a8e7475e9b008daf · 100 turns
+[2026-04-26T21:00:41Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/4828a61fe7ef44b0a8e7475e9b008daf.json
+[2026-04-26T21:00:41Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/4828a61fe7ef44b0a8e7475e9b008daf
+[2026-04-26T21:00:53Z]   live index flushed in 11.58s
+[2026-04-26T21:00:53Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/4828a61fe7ef44b0a8e7475e9b008daf/save-state.json
+[2026-04-26T21:00:53Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:00:55Z]   retriever refreshed in 2.13s (+1 handle(s))
+[2026-04-26T21:00:55Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:00:55Z] new session started · session_id=0a533a8022754bf6adf3ea99dd836289
+[2026-04-26T21:00:55Z] saving session 0a533a8022754bf6adf3ea99dd836289 · 100 turns
+[2026-04-26T21:00:55Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/0a533a8022754bf6adf3ea99dd836289.json
+[2026-04-26T21:00:55Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/0a533a8022754bf6adf3ea99dd836289
+[2026-04-26T21:01:07Z]   live index flushed in 12.00s
+[2026-04-26T21:01:07Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/0a533a8022754bf6adf3ea99dd836289/save-state.json
+[2026-04-26T21:01:07Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:01:09Z]   retriever refreshed in 2.10s (+1 handle(s))
+[2026-04-26T21:01:09Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:01:09Z] new session started · session_id=2904d5ab4c88465c9ac09105929218ce
+[2026-04-26T21:01:09Z] saving session 2904d5ab4c88465c9ac09105929218ce · 100 turns
+[2026-04-26T21:01:09Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/2904d5ab4c88465c9ac09105929218ce.json
+[2026-04-26T21:01:10Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/2904d5ab4c88465c9ac09105929218ce
+[2026-04-26T21:01:19Z]   live index flushed in 9.53s
+[2026-04-26T21:01:19Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/2904d5ab4c88465c9ac09105929218ce/save-state.json
+[2026-04-26T21:01:19Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:01:21Z]   retriever refreshed in 2.17s (+1 handle(s))
+[2026-04-26T21:01:21Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:01:21Z] new session started · session_id=434555325e0d4f92815a7a2a09a782a1
+[2026-04-26T21:01:21Z] saving session 434555325e0d4f92815a7a2a09a782a1 · 100 turns
+[2026-04-26T21:01:21Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/434555325e0d4f92815a7a2a09a782a1.json
+[2026-04-26T21:01:22Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/434555325e0d4f92815a7a2a09a782a1
+[2026-04-26T21:01:33Z]   live index flushed in 11.65s
+[2026-04-26T21:01:33Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/434555325e0d4f92815a7a2a09a782a1/save-state.json
+[2026-04-26T21:01:33Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:01:36Z]   retriever refreshed in 2.25s (+1 handle(s))
+[2026-04-26T21:01:36Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:01:36Z] new session started · session_id=e8012e2d7acb484286a8d4aec57105fd
+[2026-04-26T21:01:36Z] saving session e8012e2d7acb484286a8d4aec57105fd · 100 turns
+[2026-04-26T21:01:36Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/e8012e2d7acb484286a8d4aec57105fd.json
+[2026-04-26T21:01:36Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/e8012e2d7acb484286a8d4aec57105fd
+[2026-04-26T21:01:45Z]   live index flushed in 9.54s
+[2026-04-26T21:01:45Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/e8012e2d7acb484286a8d4aec57105fd/save-state.json
+[2026-04-26T21:01:45Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:01:48Z]   retriever refreshed in 2.30s (+1 handle(s))
+[2026-04-26T21:01:48Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:01:48Z] new session started · session_id=8e0498a327104b2aa17a0cbf569b6d31
+[2026-04-26T21:01:48Z] saving session 8e0498a327104b2aa17a0cbf569b6d31 · 100 turns
+[2026-04-26T21:01:48Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8e0498a327104b2aa17a0cbf569b6d31.json
+[2026-04-26T21:01:48Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8e0498a327104b2aa17a0cbf569b6d31
+[2026-04-26T21:01:59Z]   live index flushed in 10.96s
+[2026-04-26T21:01:59Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8e0498a327104b2aa17a0cbf569b6d31/save-state.json
+[2026-04-26T21:01:59Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:02:02Z]   retriever refreshed in 2.52s (+1 handle(s))
+[2026-04-26T21:02:02Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:02:02Z] new session started · session_id=9379c4f8fea94cc298cc8514118dcbeb
+[2026-04-26T21:02:02Z] saving session 9379c4f8fea94cc298cc8514118dcbeb · 100 turns
+[2026-04-26T21:02:02Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/9379c4f8fea94cc298cc8514118dcbeb.json
+[2026-04-26T21:02:02Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/9379c4f8fea94cc298cc8514118dcbeb
+[2026-04-26T21:02:11Z]   live index flushed in 8.87s
+[2026-04-26T21:02:11Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/9379c4f8fea94cc298cc8514118dcbeb/save-state.json
+[2026-04-26T21:02:11Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:02:13Z]   retriever refreshed in 2.37s (+1 handle(s))
+[2026-04-26T21:02:13Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:02:13Z] new session started · session_id=9092dddcb9f04158b471ce428fa86b7f
+[2026-04-26T21:02:13Z] saving session 9092dddcb9f04158b471ce428fa86b7f · 100 turns
+[2026-04-26T21:02:13Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/9092dddcb9f04158b471ce428fa86b7f.json
+[2026-04-26T21:02:14Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/9092dddcb9f04158b471ce428fa86b7f
+[2026-04-26T21:02:24Z]   live index flushed in 10.52s
+[2026-04-26T21:02:24Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/9092dddcb9f04158b471ce428fa86b7f/save-state.json
+[2026-04-26T21:02:24Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:02:27Z]   retriever refreshed in 2.47s (+1 handle(s))
+[2026-04-26T21:02:27Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:02:27Z] new session started · session_id=b09491c8d07d4cdd94f43dbd4d2066c6
+[2026-04-26T21:02:27Z] saving session b09491c8d07d4cdd94f43dbd4d2066c6 · 100 turns
+[2026-04-26T21:02:27Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/b09491c8d07d4cdd94f43dbd4d2066c6.json
+[2026-04-26T21:02:27Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/b09491c8d07d4cdd94f43dbd4d2066c6
+[2026-04-26T21:02:38Z]   live index flushed in 10.97s
+[2026-04-26T21:02:38Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/b09491c8d07d4cdd94f43dbd4d2066c6/save-state.json
+[2026-04-26T21:02:38Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:02:41Z]   retriever refreshed in 2.54s (+1 handle(s))
+[2026-04-26T21:02:41Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:02:41Z] new session started · session_id=8a2656aa29d6495b8c45d019ff9ff086
+[2026-04-26T21:02:41Z] saving session 8a2656aa29d6495b8c45d019ff9ff086 · 100 turns
+[2026-04-26T21:02:41Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8a2656aa29d6495b8c45d019ff9ff086.json
+[2026-04-26T21:02:41Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8a2656aa29d6495b8c45d019ff9ff086
+[2026-04-26T21:02:50Z]   live index flushed in 8.99s
+[2026-04-26T21:02:50Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8a2656aa29d6495b8c45d019ff9ff086/save-state.json
+[2026-04-26T21:02:50Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:02:53Z]   retriever refreshed in 2.59s (+1 handle(s))
+[2026-04-26T21:02:53Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:02:53Z] new session started · session_id=c9a862589c6547dca1d395f78c51c886
+[2026-04-26T21:02:53Z] saving session c9a862589c6547dca1d395f78c51c886 · 100 turns
+[2026-04-26T21:02:53Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/c9a862589c6547dca1d395f78c51c886.json
+[2026-04-26T21:02:53Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/c9a862589c6547dca1d395f78c51c886
+[2026-04-26T21:03:04Z]   live index flushed in 10.92s
+[2026-04-26T21:03:04Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/c9a862589c6547dca1d395f78c51c886/save-state.json
+[2026-04-26T21:03:04Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:03:06Z]   retriever refreshed in 2.60s (+1 handle(s))
+[2026-04-26T21:03:06Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:03:07Z] new session started · session_id=a2ad4e8b18b34f7d8dd8542130549e9e
+[2026-04-26T21:03:07Z] saving session a2ad4e8b18b34f7d8dd8542130549e9e · 100 turns
+[2026-04-26T21:03:07Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/a2ad4e8b18b34f7d8dd8542130549e9e.json
+[2026-04-26T21:03:07Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/a2ad4e8b18b34f7d8dd8542130549e9e
+[2026-04-26T21:03:17Z]   live index flushed in 10.00s
+[2026-04-26T21:03:17Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/a2ad4e8b18b34f7d8dd8542130549e9e/save-state.json
+[2026-04-26T21:03:17Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:03:20Z]   retriever refreshed in 2.66s (+1 handle(s))
+[2026-04-26T21:03:20Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:03:20Z] new session started · session_id=60f1600b331c4e04aa3defedda3520db
+[2026-04-26T21:03:20Z] saving session 60f1600b331c4e04aa3defedda3520db · 100 turns
+[2026-04-26T21:03:20Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/60f1600b331c4e04aa3defedda3520db.json
+[2026-04-26T21:03:20Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/60f1600b331c4e04aa3defedda3520db
+[2026-04-26T21:03:32Z]   live index flushed in 11.93s
+[2026-04-26T21:03:32Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/60f1600b331c4e04aa3defedda3520db/save-state.json
+[2026-04-26T21:03:32Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:03:35Z]   retriever refreshed in 2.75s (+1 handle(s))
+[2026-04-26T21:03:35Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:03:35Z] new session started · session_id=dad8d3a83cea424c8ac23f04f8869841
+[2026-04-26T21:03:35Z] saving session dad8d3a83cea424c8ac23f04f8869841 · 100 turns
+[2026-04-26T21:03:35Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/dad8d3a83cea424c8ac23f04f8869841.json
+[2026-04-26T21:03:35Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/dad8d3a83cea424c8ac23f04f8869841
+[2026-04-26T21:03:46Z]   live index flushed in 10.62s
+[2026-04-26T21:03:46Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/dad8d3a83cea424c8ac23f04f8869841/save-state.json
+[2026-04-26T21:03:46Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:03:48Z]   retriever refreshed in 2.80s (+1 handle(s))
+[2026-04-26T21:03:48Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:03:48Z] new session started · session_id=54e4172161ff430eaf24b5bd6872fb79
+[2026-04-26T21:03:48Z] saving session 54e4172161ff430eaf24b5bd6872fb79 · 100 turns
+[2026-04-26T21:03:48Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/54e4172161ff430eaf24b5bd6872fb79.json
+[2026-04-26T21:03:49Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/54e4172161ff430eaf24b5bd6872fb79
+[2026-04-26T21:04:01Z]   live index flushed in 11.99s
+[2026-04-26T21:04:01Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/54e4172161ff430eaf24b5bd6872fb79/save-state.json
+[2026-04-26T21:04:01Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:04:04Z]   retriever refreshed in 2.85s (+1 handle(s))
+[2026-04-26T21:04:04Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:04:04Z] new session started · session_id=9b76d24f8d7c4e5f9cb6f7175a4e7fd8
+[2026-04-26T21:04:04Z] saving session 9b76d24f8d7c4e5f9cb6f7175a4e7fd8 · 100 turns
+[2026-04-26T21:04:04Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/9b76d24f8d7c4e5f9cb6f7175a4e7fd8.json
+[2026-04-26T21:04:04Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/9b76d24f8d7c4e5f9cb6f7175a4e7fd8
+[2026-04-26T21:04:16Z]   live index flushed in 11.65s
+[2026-04-26T21:04:16Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/9b76d24f8d7c4e5f9cb6f7175a4e7fd8/save-state.json
+[2026-04-26T21:04:16Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:04:17Z]   retriever refreshed in 1.12s (+1 handle(s))
+[2026-04-26T21:04:17Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:04:17Z] new session started · session_id=f0c9883503b540468e20e0e73046d8be
+[2026-04-26T21:04:17Z] saving session f0c9883503b540468e20e0e73046d8be · 100 turns
+[2026-04-26T21:04:17Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/f0c9883503b540468e20e0e73046d8be.json
+[2026-04-26T21:04:17Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/f0c9883503b540468e20e0e73046d8be
+[2026-04-26T21:04:28Z]   live index flushed in 11.14s
+[2026-04-26T21:04:28Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/f0c9883503b540468e20e0e73046d8be/save-state.json
+[2026-04-26T21:04:28Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:04:31Z]   retriever refreshed in 2.93s (+1 handle(s))
+[2026-04-26T21:04:31Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:04:31Z] new session started · session_id=8f93e450b8f14d399c1763113c11b9af
+[2026-04-26T21:04:31Z] saving session 8f93e450b8f14d399c1763113c11b9af · 100 turns
+[2026-04-26T21:04:31Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8f93e450b8f14d399c1763113c11b9af.json
+[2026-04-26T21:04:32Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8f93e450b8f14d399c1763113c11b9af
+[2026-04-26T21:04:43Z]   live index flushed in 10.87s
+[2026-04-26T21:04:43Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8f93e450b8f14d399c1763113c11b9af/save-state.json
+[2026-04-26T21:04:43Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:04:46Z]   retriever refreshed in 3.14s (+1 handle(s))
+[2026-04-26T21:04:46Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:04:46Z] new session started · session_id=8f38316c04b943438c374515985b2b0c
+[2026-04-26T21:04:46Z] saving session 8f38316c04b943438c374515985b2b0c · 100 turns
+[2026-04-26T21:04:46Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8f38316c04b943438c374515985b2b0c.json
+[2026-04-26T21:04:46Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8f38316c04b943438c374515985b2b0c
+[2026-04-26T21:04:56Z]   live index flushed in 10.00s
+[2026-04-26T21:04:56Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8f38316c04b943438c374515985b2b0c/save-state.json
+[2026-04-26T21:04:56Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:04:59Z]   retriever refreshed in 3.07s (+1 handle(s))
+[2026-04-26T21:04:59Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:04:59Z] new session started · session_id=151ad58767ef4722994dfe55746d86ba
+[2026-04-26T21:04:59Z] saving session 151ad58767ef4722994dfe55746d86ba · 100 turns
+[2026-04-26T21:04:59Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/151ad58767ef4722994dfe55746d86ba.json
+[2026-04-26T21:05:00Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/151ad58767ef4722994dfe55746d86ba
+[2026-04-26T21:05:11Z]   live index flushed in 11.07s
+[2026-04-26T21:05:11Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/151ad58767ef4722994dfe55746d86ba/save-state.json
+[2026-04-26T21:05:11Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:05:14Z]   retriever refreshed in 3.06s (+1 handle(s))
+[2026-04-26T21:05:14Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:05:14Z] new session started · session_id=102be5f2f3444a7dbc2178ffa009282f
+[2026-04-26T21:05:14Z] saving session 102be5f2f3444a7dbc2178ffa009282f · 100 turns
+[2026-04-26T21:05:14Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/102be5f2f3444a7dbc2178ffa009282f.json
+[2026-04-26T21:05:14Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/102be5f2f3444a7dbc2178ffa009282f
+[2026-04-26T21:05:23Z]   live index flushed in 9.42s
+[2026-04-26T21:05:23Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/102be5f2f3444a7dbc2178ffa009282f/save-state.json
+[2026-04-26T21:05:23Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:05:27Z]   retriever refreshed in 3.16s (+1 handle(s))
+[2026-04-26T21:05:27Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:05:27Z] new session started · session_id=d7c40ef522a74595985d873a0b032812
+[2026-04-26T21:05:27Z] saving session d7c40ef522a74595985d873a0b032812 · 100 turns
+[2026-04-26T21:05:27Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/d7c40ef522a74595985d873a0b032812.json
+[2026-04-26T21:05:27Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/d7c40ef522a74595985d873a0b032812
+[2026-04-26T21:05:38Z]   live index flushed in 11.39s
+[2026-04-26T21:05:38Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/d7c40ef522a74595985d873a0b032812/save-state.json
+[2026-04-26T21:05:38Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:05:42Z]   retriever refreshed in 3.16s (+1 handle(s))
+[2026-04-26T21:05:42Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:05:42Z] new session started · session_id=32a75d0422b24010ab1e04ae4697ae65
+[2026-04-26T21:05:42Z] saving session 32a75d0422b24010ab1e04ae4697ae65 · 100 turns
+[2026-04-26T21:05:42Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/32a75d0422b24010ab1e04ae4697ae65.json
+[2026-04-26T21:05:42Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/32a75d0422b24010ab1e04ae4697ae65
+[2026-04-26T21:05:53Z]   live index flushed in 11.40s
+[2026-04-26T21:05:53Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/32a75d0422b24010ab1e04ae4697ae65/save-state.json
+[2026-04-26T21:05:53Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:05:57Z]   retriever refreshed in 3.27s (+1 handle(s))
+[2026-04-26T21:05:57Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:05:57Z] new session started · session_id=f3c85ed5cc0a49c493ecf120a7ccdf56
+[2026-04-26T21:05:57Z] saving session f3c85ed5cc0a49c493ecf120a7ccdf56 · 100 turns
+[2026-04-26T21:05:57Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/f3c85ed5cc0a49c493ecf120a7ccdf56.json
+[2026-04-26T21:05:57Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/f3c85ed5cc0a49c493ecf120a7ccdf56
+[2026-04-26T21:06:08Z]   live index flushed in 10.60s
+[2026-04-26T21:06:08Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/f3c85ed5cc0a49c493ecf120a7ccdf56/save-state.json
+[2026-04-26T21:06:08Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:06:11Z]   retriever refreshed in 3.28s (+1 handle(s))
+[2026-04-26T21:06:11Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:06:11Z] new session started · session_id=3d8474e9b9394fa9b9bd8164872121e4
+[2026-04-26T21:06:11Z] saving session 3d8474e9b9394fa9b9bd8164872121e4 · 100 turns
+[2026-04-26T21:06:11Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/3d8474e9b9394fa9b9bd8164872121e4.json
+[2026-04-26T21:06:11Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/3d8474e9b9394fa9b9bd8164872121e4
+[2026-04-26T21:06:23Z]   live index flushed in 11.34s
+[2026-04-26T21:06:23Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/3d8474e9b9394fa9b9bd8164872121e4/save-state.json
+[2026-04-26T21:06:23Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:06:26Z]   retriever refreshed in 3.38s (+1 handle(s))
+[2026-04-26T21:06:26Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:06:26Z] new session started · session_id=808e61d5a7474b09b6fd63d9df6f9eee
+[2026-04-26T21:06:26Z] saving session 808e61d5a7474b09b6fd63d9df6f9eee · 100 turns
+[2026-04-26T21:06:26Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/808e61d5a7474b09b6fd63d9df6f9eee.json
+[2026-04-26T21:06:26Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/808e61d5a7474b09b6fd63d9df6f9eee
+[2026-04-26T21:06:37Z]   live index flushed in 10.18s
+[2026-04-26T21:06:37Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/808e61d5a7474b09b6fd63d9df6f9eee/save-state.json
+[2026-04-26T21:06:37Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:06:40Z]   retriever refreshed in 3.38s (+1 handle(s))
+[2026-04-26T21:06:40Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:06:40Z] new session started · session_id=4d6c634e7dcb4e6faf33d5b9477ceef6
+[2026-04-26T21:06:40Z] saving session 4d6c634e7dcb4e6faf33d5b9477ceef6 · 100 turns
+[2026-04-26T21:06:40Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/4d6c634e7dcb4e6faf33d5b9477ceef6.json
+[2026-04-26T21:06:40Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/4d6c634e7dcb4e6faf33d5b9477ceef6
+[2026-04-26T21:06:52Z]   live index flushed in 12.02s
+[2026-04-26T21:06:52Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/4d6c634e7dcb4e6faf33d5b9477ceef6/save-state.json
+[2026-04-26T21:06:52Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:06:56Z]   retriever refreshed in 3.45s (+1 handle(s))
+[2026-04-26T21:06:56Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:06:56Z] new session started · session_id=e298fc438c4d43a19a390ac3b30d04fe
+[2026-04-26T21:06:56Z] saving session e298fc438c4d43a19a390ac3b30d04fe · 100 turns
+[2026-04-26T21:06:56Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/e298fc438c4d43a19a390ac3b30d04fe.json
+[2026-04-26T21:06:56Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/e298fc438c4d43a19a390ac3b30d04fe
+[2026-04-26T21:07:06Z]   live index flushed in 9.86s
+[2026-04-26T21:07:06Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/e298fc438c4d43a19a390ac3b30d04fe/save-state.json
+[2026-04-26T21:07:06Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:07:10Z]   retriever refreshed in 3.53s (+1 handle(s))
+[2026-04-26T21:07:10Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:07:10Z] new session started · session_id=4784bd21064b47b78f643141255336ec
+[2026-04-26T21:07:10Z] saving session 4784bd21064b47b78f643141255336ec · 100 turns
+[2026-04-26T21:07:10Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/4784bd21064b47b78f643141255336ec.json
+[2026-04-26T21:07:10Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/4784bd21064b47b78f643141255336ec
+[2026-04-26T21:07:22Z]   live index flushed in 12.46s
+[2026-04-26T21:07:22Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/4784bd21064b47b78f643141255336ec/save-state.json
+[2026-04-26T21:07:22Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:07:26Z]   retriever refreshed in 3.71s (+1 handle(s))
+[2026-04-26T21:07:26Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:07:26Z] new session started · session_id=a43d259507714a59ab88e6d2dc0e8fa8
+[2026-04-26T21:07:26Z] saving session a43d259507714a59ab88e6d2dc0e8fa8 · 100 turns
+[2026-04-26T21:07:26Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/a43d259507714a59ab88e6d2dc0e8fa8.json
+[2026-04-26T21:07:27Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/a43d259507714a59ab88e6d2dc0e8fa8
+[2026-04-26T21:07:37Z]   live index flushed in 10.22s
+[2026-04-26T21:07:37Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/a43d259507714a59ab88e6d2dc0e8fa8/save-state.json
+[2026-04-26T21:07:37Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:07:40Z]   retriever refreshed in 3.64s (+1 handle(s))
+[2026-04-26T21:07:40Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:07:40Z] new session started · session_id=43eefcbb5e2f4142ab6e89422749229e
+[2026-04-26T21:07:41Z] saving session 43eefcbb5e2f4142ab6e89422749229e · 100 turns
+[2026-04-26T21:07:41Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/43eefcbb5e2f4142ab6e89422749229e.json
+[2026-04-26T21:07:41Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/43eefcbb5e2f4142ab6e89422749229e
+[2026-04-26T21:07:52Z]   live index flushed in 11.54s
+[2026-04-26T21:07:52Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/43eefcbb5e2f4142ab6e89422749229e/save-state.json
+[2026-04-26T21:07:52Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:07:56Z]   retriever refreshed in 3.66s (+1 handle(s))
+[2026-04-26T21:07:56Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:07:56Z] new session started · session_id=10840db1fbb949b9ae3c13da73eb3cb6
+[2026-04-26T21:07:56Z] saving session 10840db1fbb949b9ae3c13da73eb3cb6 · 100 turns
+[2026-04-26T21:07:56Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/10840db1fbb949b9ae3c13da73eb3cb6.json
+[2026-04-26T21:07:56Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/10840db1fbb949b9ae3c13da73eb3cb6
+[2026-04-26T21:08:07Z]   live index flushed in 10.18s
+[2026-04-26T21:08:07Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/10840db1fbb949b9ae3c13da73eb3cb6/save-state.json
+[2026-04-26T21:08:07Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:08:10Z]   retriever refreshed in 3.76s (+1 handle(s))
+[2026-04-26T21:08:10Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:08:10Z] new session started · session_id=faa4b301c3ee4e7c973b3438d0d86fd4
+[2026-04-26T21:08:10Z] saving session faa4b301c3ee4e7c973b3438d0d86fd4 · 100 turns
+[2026-04-26T21:08:10Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/faa4b301c3ee4e7c973b3438d0d86fd4.json
+[2026-04-26T21:08:11Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/faa4b301c3ee4e7c973b3438d0d86fd4
+[2026-04-26T21:08:23Z]   live index flushed in 11.76s
+[2026-04-26T21:08:23Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/faa4b301c3ee4e7c973b3438d0d86fd4/save-state.json
+[2026-04-26T21:08:23Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:08:26Z]   retriever refreshed in 3.80s (+1 handle(s))
+[2026-04-26T21:08:26Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:08:26Z] new session started · session_id=eb17750a3cdb4680976eb9fd39a6b83f
+[2026-04-26T21:08:26Z] saving session eb17750a3cdb4680976eb9fd39a6b83f · 100 turns
+[2026-04-26T21:08:26Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/eb17750a3cdb4680976eb9fd39a6b83f.json
+[2026-04-26T21:08:27Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/eb17750a3cdb4680976eb9fd39a6b83f
+[2026-04-26T21:08:37Z]   live index flushed in 9.96s
+[2026-04-26T21:08:37Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/eb17750a3cdb4680976eb9fd39a6b83f/save-state.json
+[2026-04-26T21:08:37Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:08:41Z]   retriever refreshed in 3.85s (+1 handle(s))
+[2026-04-26T21:08:41Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:08:41Z] new session started · session_id=6e5a1ce5f8de4a5490ced41ea8073f49
+[2026-04-26T21:08:41Z] saving session 6e5a1ce5f8de4a5490ced41ea8073f49 · 100 turns
+[2026-04-26T21:08:41Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/6e5a1ce5f8de4a5490ced41ea8073f49.json
+[2026-04-26T21:08:41Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/6e5a1ce5f8de4a5490ced41ea8073f49
+[2026-04-26T21:08:53Z]   live index flushed in 11.78s
+[2026-04-26T21:08:53Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/6e5a1ce5f8de4a5490ced41ea8073f49/save-state.json
+[2026-04-26T21:08:53Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:08:57Z]   retriever refreshed in 3.89s (+1 handle(s))
+[2026-04-26T21:08:57Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:08:57Z] new session started · session_id=aada38190179483a9bc243c56d35a408
+[2026-04-26T21:08:57Z] saving session aada38190179483a9bc243c56d35a408 · 100 turns
+[2026-04-26T21:08:57Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/aada38190179483a9bc243c56d35a408.json
+[2026-04-26T21:08:57Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/aada38190179483a9bc243c56d35a408
+[2026-04-26T21:09:07Z]   live index flushed in 9.83s
+[2026-04-26T21:09:07Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/aada38190179483a9bc243c56d35a408/save-state.json
+[2026-04-26T21:09:07Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:09:11Z]   retriever refreshed in 3.94s (+1 handle(s))
+[2026-04-26T21:09:11Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:09:11Z] new session started · session_id=7a0081fcbc454f8c92453a1d9e02323a
+[2026-04-26T21:09:11Z] saving session 7a0081fcbc454f8c92453a1d9e02323a · 100 turns
+[2026-04-26T21:09:11Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/7a0081fcbc454f8c92453a1d9e02323a.json
+[2026-04-26T21:09:11Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/7a0081fcbc454f8c92453a1d9e02323a
+[2026-04-26T21:09:23Z]   live index flushed in 12.28s
+[2026-04-26T21:09:24Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/7a0081fcbc454f8c92453a1d9e02323a/save-state.json
+[2026-04-26T21:09:24Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:09:28Z]   retriever refreshed in 4.17s (+1 handle(s))
+[2026-04-26T21:09:28Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:09:28Z] new session started · session_id=208f940f2ad240b59325e9bfaa6269ab
+[2026-04-26T21:09:28Z] saving session 208f940f2ad240b59325e9bfaa6269ab · 100 turns
+[2026-04-26T21:09:28Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/208f940f2ad240b59325e9bfaa6269ab.json
+[2026-04-26T21:09:28Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/208f940f2ad240b59325e9bfaa6269ab
+[2026-04-26T21:09:38Z]   live index flushed in 10.15s
+[2026-04-26T21:09:38Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/208f940f2ad240b59325e9bfaa6269ab/save-state.json
+[2026-04-26T21:09:38Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:09:42Z]   retriever refreshed in 4.02s (+1 handle(s))
+[2026-04-26T21:09:42Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:09:42Z] new session started · session_id=71a56c58a4264dd1a941ef04e685e97f
+[2026-04-26T21:09:42Z] saving session 71a56c58a4264dd1a941ef04e685e97f · 100 turns
+[2026-04-26T21:09:42Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/71a56c58a4264dd1a941ef04e685e97f.json
+[2026-04-26T21:09:43Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/71a56c58a4264dd1a941ef04e685e97f
+[2026-04-26T21:09:55Z]   live index flushed in 12.08s
+[2026-04-26T21:09:55Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/71a56c58a4264dd1a941ef04e685e97f/save-state.json
+[2026-04-26T21:09:55Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:09:59Z]   retriever refreshed in 4.14s (+1 handle(s))
+[2026-04-26T21:09:59Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:09:59Z] new session started · session_id=1d0c4d78b1184cbb9d6ab55a8016246a
+[2026-04-26T21:09:59Z] saving session 1d0c4d78b1184cbb9d6ab55a8016246a · 100 turns
+[2026-04-26T21:09:59Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/1d0c4d78b1184cbb9d6ab55a8016246a.json
+[2026-04-26T21:09:59Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/1d0c4d78b1184cbb9d6ab55a8016246a
+[2026-04-26T21:10:09Z]   live index flushed in 10.26s
+[2026-04-26T21:10:09Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/1d0c4d78b1184cbb9d6ab55a8016246a/save-state.json
+[2026-04-26T21:10:09Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:10:14Z]   retriever refreshed in 4.18s (+1 handle(s))
+[2026-04-26T21:10:14Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:10:14Z] new session started · session_id=4bf74cf31af04305acf46e11d309dc88
+[2026-04-26T21:10:14Z] saving session 4bf74cf31af04305acf46e11d309dc88 · 100 turns
+[2026-04-26T21:10:14Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/4bf74cf31af04305acf46e11d309dc88.json
+[2026-04-26T21:10:14Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/4bf74cf31af04305acf46e11d309dc88
+[2026-04-26T21:10:26Z]   live index flushed in 12.28s
+[2026-04-26T21:10:26Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/4bf74cf31af04305acf46e11d309dc88/save-state.json
+[2026-04-26T21:10:26Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:10:31Z]   retriever refreshed in 4.35s (+1 handle(s))
+[2026-04-26T21:10:31Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:10:31Z] new session started · session_id=73966f29860941909b74b1dc91948407
+[2026-04-26T21:10:31Z] saving session 73966f29860941909b74b1dc91948407 · 100 turns
+[2026-04-26T21:10:31Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/73966f29860941909b74b1dc91948407.json
+[2026-04-26T21:10:31Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/73966f29860941909b74b1dc91948407
+[2026-04-26T21:10:42Z]   live index flushed in 10.90s
+[2026-04-26T21:10:42Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/73966f29860941909b74b1dc91948407/save-state.json
+[2026-04-26T21:10:42Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:10:46Z]   retriever refreshed in 4.21s (+1 handle(s))
+[2026-04-26T21:10:46Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:10:46Z] new session started · session_id=7880dda9761c475385442fc897996bfc
+[2026-04-26T21:10:46Z] saving session 7880dda9761c475385442fc897996bfc · 100 turns
+[2026-04-26T21:10:46Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/7880dda9761c475385442fc897996bfc.json
+[2026-04-26T21:10:46Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/7880dda9761c475385442fc897996bfc
+[2026-04-26T21:10:57Z]   live index flushed in 10.66s
+[2026-04-26T21:10:57Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/7880dda9761c475385442fc897996bfc/save-state.json
+[2026-04-26T21:10:57Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:11:02Z]   retriever refreshed in 4.35s (+1 handle(s))
+[2026-04-26T21:11:02Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:11:02Z] new session started · session_id=743a95004af041309c04c70f579d0a99
+[2026-04-26T21:11:02Z] saving session 743a95004af041309c04c70f579d0a99 · 100 turns
+[2026-04-26T21:11:02Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/743a95004af041309c04c70f579d0a99.json
+[2026-04-26T21:11:02Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/743a95004af041309c04c70f579d0a99
+[2026-04-26T21:11:11Z]   live index flushed in 9.56s
+[2026-04-26T21:11:11Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/743a95004af041309c04c70f579d0a99/save-state.json
+[2026-04-26T21:11:12Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:11:16Z]   retriever refreshed in 4.37s (+1 handle(s))
+[2026-04-26T21:11:16Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:11:16Z] new session started · session_id=e838ce07070c4c00b09da5a7b099eafa
+[2026-04-26T21:11:16Z] saving session e838ce07070c4c00b09da5a7b099eafa · 100 turns
+[2026-04-26T21:11:16Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/e838ce07070c4c00b09da5a7b099eafa.json
+[2026-04-26T21:11:16Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/e838ce07070c4c00b09da5a7b099eafa
+[2026-04-26T21:11:28Z]   live index flushed in 11.60s
+[2026-04-26T21:11:28Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/e838ce07070c4c00b09da5a7b099eafa/save-state.json
+[2026-04-26T21:11:28Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:11:32Z]   retriever refreshed in 4.50s (+1 handle(s))
+[2026-04-26T21:11:32Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:11:32Z] new session started · session_id=02c8322c8bee4beab66c7e1e58c17d6f
+[2026-04-26T21:11:32Z] saving session 02c8322c8bee4beab66c7e1e58c17d6f · 100 turns
+[2026-04-26T21:11:32Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/02c8322c8bee4beab66c7e1e58c17d6f.json
+[2026-04-26T21:11:33Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/02c8322c8bee4beab66c7e1e58c17d6f
+[2026-04-26T21:11:43Z]   live index flushed in 10.05s
+[2026-04-26T21:11:43Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/02c8322c8bee4beab66c7e1e58c17d6f/save-state.json
+[2026-04-26T21:11:43Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:11:47Z]   retriever refreshed in 4.50s (+1 handle(s))
+[2026-04-26T21:11:47Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:11:47Z] new session started · session_id=389be47390064025a0c26749484f2a59
+[2026-04-26T21:11:47Z] saving session 389be47390064025a0c26749484f2a59 · 100 turns
+[2026-04-26T21:11:47Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/389be47390064025a0c26749484f2a59.json
+[2026-04-26T21:11:48Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/389be47390064025a0c26749484f2a59
+[2026-04-26T21:12:00Z]   live index flushed in 11.91s
+[2026-04-26T21:12:00Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/389be47390064025a0c26749484f2a59/save-state.json
+[2026-04-26T21:12:00Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:12:04Z]   retriever refreshed in 4.55s (+1 handle(s))
+[2026-04-26T21:12:04Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:12:04Z] new session started · session_id=e70076022b234c79a1ab5680bab2cdf1
+[2026-04-26T21:12:04Z] saving session e70076022b234c79a1ab5680bab2cdf1 · 100 turns
+[2026-04-26T21:12:04Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/e70076022b234c79a1ab5680bab2cdf1.json
+[2026-04-26T21:12:04Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/e70076022b234c79a1ab5680bab2cdf1
+[2026-04-26T21:12:15Z]   live index flushed in 10.40s
+[2026-04-26T21:12:15Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/e70076022b234c79a1ab5680bab2cdf1/save-state.json
+[2026-04-26T21:12:15Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:12:20Z]   retriever refreshed in 4.59s (+1 handle(s))
+[2026-04-26T21:12:20Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:12:20Z] new session started · session_id=793ac5987cb94db9b7ce3701df1b7d17
+[2026-04-26T21:12:20Z] saving session 793ac5987cb94db9b7ce3701df1b7d17 · 100 turns
+[2026-04-26T21:12:20Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/793ac5987cb94db9b7ce3701df1b7d17.json
+[2026-04-26T21:12:20Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/793ac5987cb94db9b7ce3701df1b7d17
+[2026-04-26T21:12:32Z]   live index flushed in 11.83s
+[2026-04-26T21:12:32Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/793ac5987cb94db9b7ce3701df1b7d17/save-state.json
+[2026-04-26T21:12:32Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:12:36Z]   retriever refreshed in 4.69s (+1 handle(s))
+[2026-04-26T21:12:36Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:12:36Z] new session started · session_id=102c2f91b01a428ba4c704e8afe486cc
+[2026-04-26T21:12:36Z] saving session 102c2f91b01a428ba4c704e8afe486cc · 100 turns
+[2026-04-26T21:12:36Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/102c2f91b01a428ba4c704e8afe486cc.json
+[2026-04-26T21:12:37Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/102c2f91b01a428ba4c704e8afe486cc
+[2026-04-26T21:12:47Z]   live index flushed in 10.21s
+[2026-04-26T21:12:47Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/102c2f91b01a428ba4c704e8afe486cc/save-state.json
+[2026-04-26T21:12:47Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:12:52Z]   retriever refreshed in 4.66s (+1 handle(s))
+[2026-04-26T21:12:52Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:12:52Z] new session started · session_id=755a1d409e1b409094b055447e0b0618
+[2026-04-26T21:12:52Z] saving session 755a1d409e1b409094b055447e0b0618 · 100 turns
+[2026-04-26T21:12:52Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/755a1d409e1b409094b055447e0b0618.json
+[2026-04-26T21:12:52Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/755a1d409e1b409094b055447e0b0618
+[2026-04-26T21:13:04Z]   live index flushed in 11.91s
+[2026-04-26T21:13:04Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/755a1d409e1b409094b055447e0b0618/save-state.json
+[2026-04-26T21:13:04Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:13:09Z]   retriever refreshed in 4.74s (+1 handle(s))
+[2026-04-26T21:13:09Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:13:09Z] new session started · session_id=840cab70cf0847dbbc5fc090c18ab793
+[2026-04-26T21:13:09Z] saving session 840cab70cf0847dbbc5fc090c18ab793 · 100 turns
+[2026-04-26T21:13:09Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/840cab70cf0847dbbc5fc090c18ab793.json
+[2026-04-26T21:13:09Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/840cab70cf0847dbbc5fc090c18ab793
+[2026-04-26T21:13:19Z]   live index flushed in 10.17s
+[2026-04-26T21:13:19Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/840cab70cf0847dbbc5fc090c18ab793/save-state.json
+[2026-04-26T21:13:19Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:13:24Z]   retriever refreshed in 4.85s (+1 handle(s))
+[2026-04-26T21:13:24Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:13:24Z] new session started · session_id=78a486e9bda64e7cafc4828ab8a30326
+[2026-04-26T21:13:24Z] saving session 78a486e9bda64e7cafc4828ab8a30326 · 100 turns
+[2026-04-26T21:13:24Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/78a486e9bda64e7cafc4828ab8a30326.json
+[2026-04-26T21:13:24Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/78a486e9bda64e7cafc4828ab8a30326
+[2026-04-26T21:13:37Z]   live index flushed in 12.15s
+[2026-04-26T21:13:37Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/78a486e9bda64e7cafc4828ab8a30326/save-state.json
+[2026-04-26T21:13:37Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:13:42Z]   retriever refreshed in 4.89s (+1 handle(s))
+[2026-04-26T21:13:42Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:13:42Z] new session started · session_id=9305b66a16c64cb29b58ca79b0b13646
+[2026-04-26T21:13:42Z] saving session 9305b66a16c64cb29b58ca79b0b13646 · 100 turns
+[2026-04-26T21:13:42Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/9305b66a16c64cb29b58ca79b0b13646.json
+[2026-04-26T21:13:42Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/9305b66a16c64cb29b58ca79b0b13646
+[2026-04-26T21:13:52Z]   live index flushed in 9.57s
+[2026-04-26T21:13:52Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/9305b66a16c64cb29b58ca79b0b13646/save-state.json
+[2026-04-26T21:13:52Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:13:57Z]   retriever refreshed in 4.96s (+1 handle(s))
+[2026-04-26T21:13:57Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:13:57Z] new session started · session_id=481a201ba8ea4570a085e3cbdb6b7755
+[2026-04-26T21:13:57Z] saving session 481a201ba8ea4570a085e3cbdb6b7755 · 100 turns
+[2026-04-26T21:13:57Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/481a201ba8ea4570a085e3cbdb6b7755.json
+[2026-04-26T21:13:57Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/481a201ba8ea4570a085e3cbdb6b7755
+[2026-04-26T21:14:08Z]   live index flushed in 11.60s
+[2026-04-26T21:14:08Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/481a201ba8ea4570a085e3cbdb6b7755/save-state.json
+[2026-04-26T21:14:09Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:14:14Z]   retriever refreshed in 4.99s (+1 handle(s))
+[2026-04-26T21:14:14Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:14:14Z] new session started · session_id=1026fe826d1e400da8bed8f4ab9ac799
+[2026-04-26T21:14:14Z] saving session 1026fe826d1e400da8bed8f4ab9ac799 · 100 turns
+[2026-04-26T21:14:14Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/1026fe826d1e400da8bed8f4ab9ac799.json
+[2026-04-26T21:14:14Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/1026fe826d1e400da8bed8f4ab9ac799
+[2026-04-26T21:14:24Z]   live index flushed in 10.20s
+[2026-04-26T21:14:24Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/1026fe826d1e400da8bed8f4ab9ac799/save-state.json
+[2026-04-26T21:14:24Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:14:29Z]   retriever refreshed in 5.04s (+1 handle(s))
+[2026-04-26T21:14:29Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:14:29Z] new session started · session_id=8039897a7a8645c7a3fc8c3b724d6839
+[2026-04-26T21:14:29Z] saving session 8039897a7a8645c7a3fc8c3b724d6839 · 100 turns
+[2026-04-26T21:14:29Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8039897a7a8645c7a3fc8c3b724d6839.json
+[2026-04-26T21:14:29Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8039897a7a8645c7a3fc8c3b724d6839
+[2026-04-26T21:14:42Z]   live index flushed in 12.33s
+[2026-04-26T21:14:42Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8039897a7a8645c7a3fc8c3b724d6839/save-state.json
+[2026-04-26T21:14:42Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:14:47Z]   retriever refreshed in 5.09s (+1 handle(s))
+[2026-04-26T21:14:47Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:14:47Z] new session started · session_id=9de745f765474e32b8cdbc31dd606485
+[2026-04-26T21:14:47Z] saving session 9de745f765474e32b8cdbc31dd606485 · 100 turns
+[2026-04-26T21:14:47Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/9de745f765474e32b8cdbc31dd606485.json
+[2026-04-26T21:14:47Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/9de745f765474e32b8cdbc31dd606485
+[2026-04-26T21:14:59Z]   live index flushed in 11.89s
+[2026-04-26T21:14:59Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/9de745f765474e32b8cdbc31dd606485/save-state.json
+[2026-04-26T21:14:59Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:15:02Z]   retriever refreshed in 2.72s (+1 handle(s))
+[2026-04-26T21:15:02Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:15:02Z] new session started · session_id=b7d70b77a3814f70b44c698bddf6d02d
+[2026-04-26T21:15:02Z] saving session b7d70b77a3814f70b44c698bddf6d02d · 100 turns
+[2026-04-26T21:15:02Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/b7d70b77a3814f70b44c698bddf6d02d.json
+[2026-04-26T21:15:02Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/b7d70b77a3814f70b44c698bddf6d02d
+[2026-04-26T21:15:15Z]   live index flushed in 12.35s
+[2026-04-26T21:15:15Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/b7d70b77a3814f70b44c698bddf6d02d/save-state.json
+[2026-04-26T21:15:15Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:15:20Z]   retriever refreshed in 5.38s (+1 handle(s))
+[2026-04-26T21:15:20Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:15:20Z] new session started · session_id=ecdd9db0e6a343b79526891b745236e6
+[2026-04-26T21:15:20Z] saving session ecdd9db0e6a343b79526891b745236e6 · 100 turns
+[2026-04-26T21:15:20Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/ecdd9db0e6a343b79526891b745236e6.json
+[2026-04-26T21:15:20Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/ecdd9db0e6a343b79526891b745236e6
+[2026-04-26T21:15:32Z]   live index flushed in 11.66s
+[2026-04-26T21:15:32Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/ecdd9db0e6a343b79526891b745236e6/save-state.json
+[2026-04-26T21:15:32Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:15:37Z]   retriever refreshed in 5.21s (+1 handle(s))
+[2026-04-26T21:15:37Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:15:37Z] new session started · session_id=8897af0000c749d7b0882e522a97c902
+[2026-04-26T21:15:37Z] saving session 8897af0000c749d7b0882e522a97c902 · 100 turns
+[2026-04-26T21:15:37Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8897af0000c749d7b0882e522a97c902.json
+[2026-04-26T21:15:38Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8897af0000c749d7b0882e522a97c902
+[2026-04-26T21:15:48Z]   live index flushed in 10.00s
+[2026-04-26T21:15:48Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8897af0000c749d7b0882e522a97c902/save-state.json
+[2026-04-26T21:15:48Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:15:53Z]   retriever refreshed in 5.35s (+1 handle(s))
+[2026-04-26T21:15:53Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:15:53Z] new session started · session_id=ccb39287950a458cb197754936bd569a
+[2026-04-26T21:15:53Z] saving session ccb39287950a458cb197754936bd569a · 100 turns
+[2026-04-26T21:15:53Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/ccb39287950a458cb197754936bd569a.json
+[2026-04-26T21:15:53Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/ccb39287950a458cb197754936bd569a
+[2026-04-26T21:16:06Z]   live index flushed in 12.23s
+[2026-04-26T21:16:06Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/ccb39287950a458cb197754936bd569a/save-state.json
+[2026-04-26T21:16:06Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:16:11Z]   retriever refreshed in 5.40s (+1 handle(s))
+[2026-04-26T21:16:11Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:16:11Z] new session started · session_id=a411e82769104767858fe3fc002c4ac3
+[2026-04-26T21:16:11Z] saving session a411e82769104767858fe3fc002c4ac3 · 100 turns
+[2026-04-26T21:16:11Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/a411e82769104767858fe3fc002c4ac3.json
+[2026-04-26T21:16:11Z]   AUS3000 clauses -> 100 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/a411e82769104767858fe3fc002c4ac3
+[2026-04-26T21:16:22Z]   live index flushed in 10.10s
+[2026-04-26T21:16:22Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/a411e82769104767858fe3fc002c4ac3/save-state.json
+[2026-04-26T21:16:22Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:16:27Z]   retriever refreshed in 5.42s (+1 handle(s))
+PASS ROUTING_SCALE: routing@1 hit_rate=1.000 over 100 planted sessions elapsed_s=1961.93
+[2026-04-26T21:25:08Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:25:08Z] new session started · session_id=9ce5a369edba401e9778ab0ee3eaec70
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : topical
+  source_session  : da61079c65144d959dcb561e0d503a28
+  window_id       : 2
+  routing_score   : 16000012.4766
+  matched_window  : 60c441697578399e. Unique recall key 60c441697578399e. My dog is named Banjo. If asked later, answer Banjo. The retrieval key is 60c441697578399e.
+  keywords        : ['unique', 'recall', 'key', 'dog', 'named', 'banjo', 'asked', 'later', 'answer', 'retrieval']
+  strict_asserts  : cuda_available=True model_on_cuda=True residual_compatible=True hook_fired=True gpu_memory_grew=True store_window_nonempty=True
+  axis-6 observability:
+    selected_tier        : not-implemented-yet (sentinel: non-kv path)
+    mask_penalty_applied : False (sentinel: non-kv path)
+    kv_direct_active     : False (sentinel: non-kv path)
+    vram_peak_mib        : None (sentinel: non-kv path)
+    vram_delta_mib       : None (sentinel: non-kv path)
+    no_silent_fallback   : True
+  timing (s)      : retrieve=5.43  generate=0.00  total=5.43
+  tokens          : prompt=209  generated=2
+========================================================================
+gemma> Banjo
+
+PASS TOPICAL_RECALL: topical residual injection recalled Banjo with all strict assertions true elapsed_s=5.46
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : topical
+  source_session  : da61079c65144d959dcb561e0d503a28
+  window_id       : 2
+  routing_score   : 16000010.3972
+  matched_window  : 60c441697578399e. Unique recall key 60c441697578399e. My dog is named Banjo. If asked later, answer Banjo. The retrieval key is 60c441697578399e.
+  keywords        : ['unique', 'recall', 'key', 'dog', 'named', 'banjo', 'asked', 'later', 'answer', 'retrieval']
+  strict_asserts  : cuda_available=True model_on_cuda=True residual_compatible=True hook_fired=True gpu_memory_grew=True store_window_nonempty=True
+  axis-6 observability:
+    selected_tier        : not-implemented-yet (sentinel: non-kv path)
+    mask_penalty_applied : False (sentinel: non-kv path)
+    kv_direct_active     : False (sentinel: non-kv path)
+    vram_peak_mib        : None (sentinel: non-kv path)
+    vram_delta_mib       : None (sentinel: non-kv path)
+    no_silent_fallback   : False
+  timing (s)      : retrieve=0.00  generate=0.00  total=0.00
+  tokens          : prompt=0  generated=22
+========================================================================
+probe answer> The retrieval key is 60c441697578399e.
+
+[2026-04-26T21:25:20Z] probe fail (exact): STRICT: no session/window matches handle 'da61079c65144d959dcb561e0d503a28.2.0'
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : entity_mention
+  source_session  : da61079c65144d959dcb561e0d503a28
+  window_id       : 2
+  routing_score   : 1.0000
+  matched_window  : 60c441697578399e. Unique recall key 60c441697578399e. My dog is named Banjo. If asked later, answer Banjo. The retrieval key is 60c441697578399e.
+  keywords        : ['unique', 'recall', 'key', 'dog', 'named', 'banjo', 'asked', 'later', 'answer', 'retrieval']
+  strict_asserts  : cuda_available=True model_on_cuda=True residual_compatible=True hook_fired=True gpu_memory_grew=True store_window_nonempty=True
+  axis-6 observability:
+    selected_tier        : not-implemented-yet (sentinel: non-kv path)
+    mask_penalty_applied : False (sentinel: non-kv path)
+    kv_direct_active     : False (sentinel: non-kv path)
+    vram_peak_mib        : None (sentinel: non-kv path)
+    vram_delta_mib       : None (sentinel: non-kv path)
+    no_silent_fallback   : False
+  timing (s)      : retrieve=0.00  generate=0.00  total=0.00
+  tokens          : prompt=0  generated=7
+========================================================================
+probe answer> My dog is named Banjo.
+
+PASS PROBE_NO_MUTATION: topical/exact/entity probes left session and history unchanged elapsed_s=12.27
+[2026-04-26T21:25:26Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:25:26Z] new session started · session_id=ff2bd10f61d146f19fc50c389fae8d7d
+[2026-04-26T21:25:31Z]   axis-4 token-budget: kept 4/256 facts (4096/4096 tokens; per_fact=1024)
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : da61079c65144d959dcb561e0d503a28
+  window_id       : 2
+  routing_score   : (exact — no score)
+  matched_window  : [session=da61079c65144d959dcb561e0d503a28 window=2 tier=hot] 60c441697578399e. Unique recall key 60c441697578399e. My dog is named Banjo. If asked later, answer Banjo. The retrieval key is 60c441697578399e.
+[session=da6…
+  keywords        : ['answer', 'asked', 'banjo', 'belongs', 'color', 'dog', 'ea', 'favorite', 'key', 'later']
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False multi_session_count=True semantic_prefix_active=True semantic_prefix_tokens=True
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 19925
+    vram_delta_mib       : 110
+    no_silent_fallback   : True
+  timing (s)      : retrieve=3.90  generate=0.00  total=3.90
+  tokens          : prompt=94  generated=2
+========================================================================
+kv_direct> Banjo
+
+PASS KV_DIRECT_RECALL: KV-direct recall active with no silent fallback elapsed_s=3.96
+[2026-04-26T21:25:30Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:25:30Z] new session started · session_id=346e9b934d3f40bab8bc9ecf7af33e1d
+[2026-04-26T21:25:30Z] saving session 346e9b934d3f40bab8bc9ecf7af33e1d · 2 turns
+[2026-04-26T21:25:30Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/346e9b934d3f40bab8bc9ecf7af33e1d.json
+[2026-04-26T21:25:30Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/346e9b934d3f40bab8bc9ecf7af33e1d
+[2026-04-26T21:25:30Z]   live index flushed in 0.29s
+[2026-04-26T21:25:30Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/346e9b934d3f40bab8bc9ecf7af33e1d/save-state.json
+[2026-04-26T21:25:30Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:25:36Z]   retriever refreshed in 5.39s (+1 handle(s))
+[2026-04-26T21:25:36Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:25:36Z] new session started · session_id=88fb8a675a904adcb970d8fde405ed1e
+[2026-04-26T21:25:36Z] saving session 88fb8a675a904adcb970d8fde405ed1e · 2 turns
+[2026-04-26T21:25:36Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/88fb8a675a904adcb970d8fde405ed1e.json
+[2026-04-26T21:25:36Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/88fb8a675a904adcb970d8fde405ed1e
+[2026-04-26T21:25:36Z]   live index flushed in 0.42s
+[2026-04-26T21:25:36Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/88fb8a675a904adcb970d8fde405ed1e/save-state.json
+[2026-04-26T21:25:36Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:25:42Z]   retriever refreshed in 5.60s (+1 handle(s))
+[2026-04-26T21:25:42Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:25:42Z] new session started · session_id=092e8bd035a14ef692b674bbd3cef3de
+[2026-04-26T21:25:42Z] saving session 092e8bd035a14ef692b674bbd3cef3de · 2 turns
+[2026-04-26T21:25:42Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/092e8bd035a14ef692b674bbd3cef3de.json
+[2026-04-26T21:25:42Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/092e8bd035a14ef692b674bbd3cef3de
+[2026-04-26T21:25:42Z]   live index flushed in 0.38s
+[2026-04-26T21:25:42Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/092e8bd035a14ef692b674bbd3cef3de/save-state.json
+[2026-04-26T21:25:42Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:25:48Z]   retriever refreshed in 5.64s (+1 handle(s))
+[2026-04-26T21:25:48Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:25:48Z] new session started · session_id=76bdb857b31d41d0b9ac355ad5f75471
+[2026-04-26T21:25:48Z] saving session 76bdb857b31d41d0b9ac355ad5f75471 · 2 turns
+[2026-04-26T21:25:48Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/76bdb857b31d41d0b9ac355ad5f75471.json
+[2026-04-26T21:25:48Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/76bdb857b31d41d0b9ac355ad5f75471
+[2026-04-26T21:25:48Z]   live index flushed in 0.36s
+[2026-04-26T21:25:48Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/76bdb857b31d41d0b9ac355ad5f75471/save-state.json
+[2026-04-26T21:25:48Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:25:54Z]   retriever refreshed in 5.53s (+1 handle(s))
+[2026-04-26T21:25:54Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:25:54Z] new session started · session_id=d5236f81bb2d4c2681229996beca8192
+[2026-04-26T21:25:54Z] saving session d5236f81bb2d4c2681229996beca8192 · 2 turns
+[2026-04-26T21:25:54Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/d5236f81bb2d4c2681229996beca8192.json
+[2026-04-26T21:25:54Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/d5236f81bb2d4c2681229996beca8192
+[2026-04-26T21:25:54Z]   live index flushed in 0.48s
+[2026-04-26T21:25:54Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/d5236f81bb2d4c2681229996beca8192/save-state.json
+[2026-04-26T21:25:54Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:26:00Z]   retriever refreshed in 5.51s (+1 handle(s))
+[2026-04-26T21:26:00Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:00Z] new session started · session_id=b8ec17a2c42748818e206c04bd3f48af
+[2026-04-26T21:26:00Z] saving session b8ec17a2c42748818e206c04bd3f48af · 2 turns
+[2026-04-26T21:26:00Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/b8ec17a2c42748818e206c04bd3f48af.json
+[2026-04-26T21:26:00Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/b8ec17a2c42748818e206c04bd3f48af
+[2026-04-26T21:26:00Z]   live index flushed in 0.38s
+[2026-04-26T21:26:00Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/b8ec17a2c42748818e206c04bd3f48af/save-state.json
+[2026-04-26T21:26:00Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:26:04Z]   retriever refreshed in 3.88s (+1 handle(s))
+[2026-04-26T21:26:04Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:04Z] new session started · session_id=fedfc7bc30574d35bd8469f326be9c39
+[2026-04-26T21:26:04Z] saving session fedfc7bc30574d35bd8469f326be9c39 · 2 turns
+[2026-04-26T21:26:04Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/fedfc7bc30574d35bd8469f326be9c39.json
+[2026-04-26T21:26:04Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/fedfc7bc30574d35bd8469f326be9c39
+[2026-04-26T21:26:05Z]   live index flushed in 0.42s
+[2026-04-26T21:26:05Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/fedfc7bc30574d35bd8469f326be9c39/save-state.json
+[2026-04-26T21:26:05Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:26:10Z]   retriever refreshed in 5.56s (+1 handle(s))
+[2026-04-26T21:26:10Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:11Z] new session started · session_id=3c9d26102a0a4d8cb90fe555022dc4bf
+[2026-04-26T21:26:11Z] saving session 3c9d26102a0a4d8cb90fe555022dc4bf · 2 turns
+[2026-04-26T21:26:11Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/3c9d26102a0a4d8cb90fe555022dc4bf.json
+[2026-04-26T21:26:11Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/3c9d26102a0a4d8cb90fe555022dc4bf
+[2026-04-26T21:26:11Z]   live index flushed in 0.39s
+[2026-04-26T21:26:11Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/3c9d26102a0a4d8cb90fe555022dc4bf/save-state.json
+[2026-04-26T21:26:11Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:26:17Z]   retriever refreshed in 5.65s (+1 handle(s))
+[2026-04-26T21:26:17Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:17Z] new session started · session_id=7a83f239beca4722b4851e751173d736
+[2026-04-26T21:26:17Z] saving session 7a83f239beca4722b4851e751173d736 · 2 turns
+[2026-04-26T21:26:17Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/7a83f239beca4722b4851e751173d736.json
+[2026-04-26T21:26:17Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/7a83f239beca4722b4851e751173d736
+[2026-04-26T21:26:17Z]   live index flushed in 0.39s
+[2026-04-26T21:26:17Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/7a83f239beca4722b4851e751173d736/save-state.json
+[2026-04-26T21:26:17Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:26:23Z]   retriever refreshed in 5.79s (+1 handle(s))
+[2026-04-26T21:26:23Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:23Z] new session started · session_id=ebdbf4a50e4d4fcf8b949be457a60498
+[2026-04-26T21:26:23Z] saving session ebdbf4a50e4d4fcf8b949be457a60498 · 2 turns
+[2026-04-26T21:26:23Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/ebdbf4a50e4d4fcf8b949be457a60498.json
+[2026-04-26T21:26:23Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/ebdbf4a50e4d4fcf8b949be457a60498
+[2026-04-26T21:26:23Z]   live index flushed in 0.40s
+[2026-04-26T21:26:23Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/ebdbf4a50e4d4fcf8b949be457a60498/save-state.json
+[2026-04-26T21:26:23Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:26:29Z]   retriever refreshed in 5.62s (+1 handle(s))
+[2026-04-26T21:26:29Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:29Z] new session started · session_id=09688a9fefe5447faf9a53ed66da48b2
+[2026-04-26T21:26:29Z] saving session 09688a9fefe5447faf9a53ed66da48b2 · 2 turns
+[2026-04-26T21:26:29Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/09688a9fefe5447faf9a53ed66da48b2.json
+[2026-04-26T21:26:29Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/09688a9fefe5447faf9a53ed66da48b2
+[2026-04-26T21:26:29Z]   live index flushed in 0.45s
+[2026-04-26T21:26:30Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/09688a9fefe5447faf9a53ed66da48b2/save-state.json
+[2026-04-26T21:26:30Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:26:33Z]   retriever refreshed in 3.96s (+1 handle(s))
+[2026-04-26T21:26:33Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:34Z] new session started · session_id=b4f4979f0d9e4758a623618d98787c05
+[2026-04-26T21:26:34Z] saving session b4f4979f0d9e4758a623618d98787c05 · 2 turns
+[2026-04-26T21:26:34Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/b4f4979f0d9e4758a623618d98787c05.json
+[2026-04-26T21:26:34Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/b4f4979f0d9e4758a623618d98787c05
+[2026-04-26T21:26:34Z]   live index flushed in 0.39s
+[2026-04-26T21:26:34Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/b4f4979f0d9e4758a623618d98787c05/save-state.json
+[2026-04-26T21:26:34Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:26:40Z]   retriever refreshed in 5.63s (+1 handle(s))
+[2026-04-26T21:26:45Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:45Z] new session started · session_id=ea33208f21024fff844b753a3f9798c0
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 7a83f239beca4722b4851e751173d736
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : [session=7a83f239beca4722b4851e751173d736 window=0 tier=hot] mf08_5cd77add1a8552bb. Unique multi-fact marker mf08_5cd77add1a8552bb. Website palette decision anchor website_palette_decision_20260426t205135_36a80017. For …
+  keywords        : ['ab', 'add', 'anchor', 'answer', 'ba', 'bb', 'bcdcc', 'bd', 'bfb', 'cbdad']
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=True vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=True multi_session_count=True semantic_prefix_active=True semantic_prefix_tokens=True
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : True
+    kv_direct_active     : True
+    vram_peak_mib        : 20055
+    vram_delta_mib       : 135
+    no_silent_fallback   : True
+  timing (s)      : retrieve=9.52  generate=0.00  total=9.52
+  tokens          : prompt=118  generated=21
+========================================================================
+kv_direct> crimson, periwinkle, chartreuse, vermillion, saffron, magenta, indigo, ochre
+
+PASS MULTI_FACT_RECALL: multi-fact recall HOT=4/4 WARM=4/4 COLD=0/4 selected_tier=hot elapsed_s=84.82
+[2026-04-26T21:26:55Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:26:55Z] new session started · session_id=9193ab8a3a7f4fb081df849638a9280c
+[2026-04-26T21:26:55Z] saving session 9193ab8a3a7f4fb081df849638a9280c · 2 turns
+[2026-04-26T21:26:55Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/9193ab8a3a7f4fb081df849638a9280c.json
+[2026-04-26T21:26:55Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/9193ab8a3a7f4fb081df849638a9280c
+[2026-04-26T21:26:55Z]   live index flushed in 0.29s
+[2026-04-26T21:26:55Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/9193ab8a3a7f4fb081df849638a9280c/save-state.json
+[2026-04-26T21:26:55Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:01Z]   retriever refreshed in 5.98s (+1 handle(s))
+[2026-04-26T21:27:01Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:01Z] new session started · session_id=15d37d2b08da4c1a8ffd5e14f853f9da
+[2026-04-26T21:27:01Z] saving session 15d37d2b08da4c1a8ffd5e14f853f9da · 2 turns
+[2026-04-26T21:27:01Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/15d37d2b08da4c1a8ffd5e14f853f9da.json
+[2026-04-26T21:27:01Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/15d37d2b08da4c1a8ffd5e14f853f9da
+[2026-04-26T21:27:02Z]   live index flushed in 0.38s
+[2026-04-26T21:27:02Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/15d37d2b08da4c1a8ffd5e14f853f9da/save-state.json
+[2026-04-26T21:27:02Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:06Z]   retriever refreshed in 4.12s (+1 handle(s))
+[2026-04-26T21:27:06Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:06Z] new session started · session_id=44533e652a7d40c2904644229cb26846
+[2026-04-26T21:27:06Z] saving session 44533e652a7d40c2904644229cb26846 · 2 turns
+[2026-04-26T21:27:06Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/44533e652a7d40c2904644229cb26846.json
+[2026-04-26T21:27:06Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/44533e652a7d40c2904644229cb26846
+[2026-04-26T21:27:06Z]   live index flushed in 0.39s
+[2026-04-26T21:27:06Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/44533e652a7d40c2904644229cb26846/save-state.json
+[2026-04-26T21:27:06Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:12Z]   retriever refreshed in 5.82s (+1 handle(s))
+[2026-04-26T21:27:12Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:12Z] new session started · session_id=8796be42170447dd9be81dbefd4bc3a6
+[2026-04-26T21:27:12Z] saving session 8796be42170447dd9be81dbefd4bc3a6 · 2 turns
+[2026-04-26T21:27:12Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/8796be42170447dd9be81dbefd4bc3a6.json
+[2026-04-26T21:27:12Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/8796be42170447dd9be81dbefd4bc3a6
+[2026-04-26T21:27:12Z]   live index flushed in 0.39s
+[2026-04-26T21:27:13Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/8796be42170447dd9be81dbefd4bc3a6/save-state.json
+[2026-04-26T21:27:13Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:18Z]   retriever refreshed in 5.85s (+1 handle(s))
+[2026-04-26T21:27:18Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:18Z] new session started · session_id=834aed00f8a24883b887a584924c5a17
+[2026-04-26T21:27:18Z] saving session 834aed00f8a24883b887a584924c5a17 · 2 turns
+[2026-04-26T21:27:18Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/834aed00f8a24883b887a584924c5a17.json
+[2026-04-26T21:27:18Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/834aed00f8a24883b887a584924c5a17
+[2026-04-26T21:27:19Z]   live index flushed in 0.35s
+[2026-04-26T21:27:19Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/834aed00f8a24883b887a584924c5a17/save-state.json
+[2026-04-26T21:27:19Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:25Z]   retriever refreshed in 5.92s (+1 handle(s))
+[2026-04-26T21:27:25Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:25Z] new session started · session_id=b2073ff958194ff4958212da027694f6
+[2026-04-26T21:27:25Z] saving session b2073ff958194ff4958212da027694f6 · 2 turns
+[2026-04-26T21:27:25Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/b2073ff958194ff4958212da027694f6.json
+[2026-04-26T21:27:25Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/b2073ff958194ff4958212da027694f6
+[2026-04-26T21:27:25Z]   live index flushed in 0.37s
+[2026-04-26T21:27:25Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/b2073ff958194ff4958212da027694f6/save-state.json
+[2026-04-26T21:27:25Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:31Z]   retriever refreshed in 5.94s (+1 handle(s))
+[2026-04-26T21:27:31Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:31Z] new session started · session_id=7a30a54c2b624de79d26374febd6924c
+[2026-04-26T21:27:31Z] saving session 7a30a54c2b624de79d26374febd6924c · 2 turns
+[2026-04-26T21:27:31Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/7a30a54c2b624de79d26374febd6924c.json
+[2026-04-26T21:27:31Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/7a30a54c2b624de79d26374febd6924c
+[2026-04-26T21:27:32Z]   live index flushed in 0.38s
+[2026-04-26T21:27:32Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/7a30a54c2b624de79d26374febd6924c/save-state.json
+[2026-04-26T21:27:32Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:36Z]   retriever refreshed in 4.16s (+1 handle(s))
+[2026-04-26T21:27:36Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:36Z] new session started · session_id=87b2bf42c99b4fe4bf5c32ec4ef6d2b2
+[2026-04-26T21:27:36Z] saving session 87b2bf42c99b4fe4bf5c32ec4ef6d2b2 · 2 turns
+[2026-04-26T21:27:36Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/87b2bf42c99b4fe4bf5c32ec4ef6d2b2.json
+[2026-04-26T21:27:36Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/87b2bf42c99b4fe4bf5c32ec4ef6d2b2
+[2026-04-26T21:27:36Z]   live index flushed in 0.36s
+[2026-04-26T21:27:36Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/87b2bf42c99b4fe4bf5c32ec4ef6d2b2/save-state.json
+[2026-04-26T21:27:36Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:42Z]   retriever refreshed in 5.98s (+1 handle(s))
+[2026-04-26T21:27:42Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:42Z] new session started · session_id=a5edf99b3073424095c5ffff779a493c
+[2026-04-26T21:27:42Z] saving session a5edf99b3073424095c5ffff779a493c · 2 turns
+[2026-04-26T21:27:42Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/a5edf99b3073424095c5ffff779a493c.json
+[2026-04-26T21:27:42Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/a5edf99b3073424095c5ffff779a493c
+[2026-04-26T21:27:43Z]   live index flushed in 0.43s
+[2026-04-26T21:27:43Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/a5edf99b3073424095c5ffff779a493c/save-state.json
+[2026-04-26T21:27:43Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:49Z]   retriever refreshed in 6.23s (+1 handle(s))
+[2026-04-26T21:27:49Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:49Z] new session started · session_id=35ffefb9695a49a49b9507e73b8a7dc1
+[2026-04-26T21:27:49Z] saving session 35ffefb9695a49a49b9507e73b8a7dc1 · 2 turns
+[2026-04-26T21:27:49Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/35ffefb9695a49a49b9507e73b8a7dc1.json
+[2026-04-26T21:27:49Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/35ffefb9695a49a49b9507e73b8a7dc1
+[2026-04-26T21:27:49Z]   live index flushed in 0.37s
+[2026-04-26T21:27:49Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/35ffefb9695a49a49b9507e73b8a7dc1/save-state.json
+[2026-04-26T21:27:49Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:27:56Z]   retriever refreshed in 6.12s (+1 handle(s))
+[2026-04-26T21:27:56Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:27:56Z] new session started · session_id=0394063ddf1e403abf9e4a40076d40d5
+[2026-04-26T21:27:56Z] saving session 0394063ddf1e403abf9e4a40076d40d5 · 2 turns
+[2026-04-26T21:27:56Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/0394063ddf1e403abf9e4a40076d40d5.json
+[2026-04-26T21:27:56Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/0394063ddf1e403abf9e4a40076d40d5
+[2026-04-26T21:27:56Z]   live index flushed in 0.38s
+[2026-04-26T21:27:56Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/0394063ddf1e403abf9e4a40076d40d5/save-state.json
+[2026-04-26T21:27:56Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:28:02Z]   retriever refreshed in 6.15s (+1 handle(s))
+[2026-04-26T21:28:02Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:28:02Z] new session started · session_id=0085a3cf2e864901a45ace7639e5873a
+[2026-04-26T21:28:02Z] saving session 0085a3cf2e864901a45ace7639e5873a · 2 turns
+[2026-04-26T21:28:02Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/0085a3cf2e864901a45ace7639e5873a.json
+[2026-04-26T21:28:02Z]   AUS3000 clauses -> 2 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/0085a3cf2e864901a45ace7639e5873a
+[2026-04-26T21:28:03Z]   live index flushed in 0.30s
+[2026-04-26T21:28:03Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/0085a3cf2e864901a45ace7639e5873a/save-state.json
+[2026-04-26T21:28:03Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:28:07Z]   retriever refreshed in 4.51s (+1 handle(s))
+[2026-04-26T21:28:13Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:28:13Z] new session started · session_id=9ba6145fae834caea1fa334f86b8f1c5
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 44533e652a7d40c2904644229cb26846
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : [session=44533e652a7d40c2904644229cb26846 window=0 tier=hot] Across our website color scheme sessions, we chose warm white for the main background to soften the brand.
+[session=9193ab8a3a7f4fb081df849638a9280c window=0 …
+  keywords        : ['accent', 'accessibility', 'across', 'amber', 'approved', 'avoid', 'background', 'because', 'beige', 'black']
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=True multi_session_count=True semantic_prefix_active=True semantic_prefix_tokens=True
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : True
+    kv_direct_active     : True
+    vram_peak_mib        : 20101
+    vram_delta_mib       : 91
+    no_silent_fallback   : True
+  timing (s)      : retrieve=8.18  generate=0.00  total=8.18
+  tokens          : prompt=77  generated=137
+========================================================================
+kv_direct> Warm white was chosen for the main background to soften the brand. Deep teal was liked for the hero, but it made the page feel too cold. Teal was considered, then sage green replaced it as the accent after review. Graphite should be used for headings instead of pure black. Amber is reserved for primary CTA buttons. The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs. The logo lockup needs enough contrast on warm white. The client rejected the purple-blue gradient because it felt too flashy. Beige should be avoided because it made the site look dated. Muted navy can work in the footer, but not in the hero.
+
+PASS REAL_WORLD_MULTI_FACT_RECALL: natural multi-fact recall HOT=4/4 WARM=4/4 COLD=0/4 conflict_preserved=True final_decision_present=True selected_tier=hot elapsed_s=86.84
+[2026-04-26T21:28:22Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:28:22Z] new session started · session_id=e996b1102aca4db2a088fcd5bdac1b94
+[2026-04-26T21:28:22Z] saving session e996b1102aca4db2a088fcd5bdac1b94 · 8 turns
+[2026-04-26T21:28:22Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/e996b1102aca4db2a088fcd5bdac1b94.json
+[2026-04-26T21:28:22Z]   AUS3000 clauses -> 8 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/e996b1102aca4db2a088fcd5bdac1b94
+[2026-04-26T21:28:23Z]   live index flushed in 0.89s
+[2026-04-26T21:28:23Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/e996b1102aca4db2a088fcd5bdac1b94/save-state.json
+[2026-04-26T21:28:23Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")
+[2026-04-26T21:28:29Z]   retriever refreshed in 6.17s (+1 handle(s))
+[2026-04-26T21:28:29Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:28:29Z] new session started · session_id=e07fc3ac787142f2a8cb115242d269cf
+[2026-04-26T21:28:35Z]   axis-4 token-budget: kept 1/256 facts (1024/1024 tokens; per_fact=1024)
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : e996b1102aca4db2a088fcd5bdac1b94
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : [session=e996b1102aca4db2a088fcd5bdac1b94 window=0 tier=hot] d3c58fa3978aeebe. Budget pressure route key d3c58fa3978aeebe. This is budget pressure window 0. Use retrieval key d3c58fa3978aeebe for this whole session.
+  keywords        : ['aeebe', 'budget', 'fa', 'key', 'pressure', 'retrieval', 'route', 'session', 'use', 'whole']
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False multi_session_count=True semantic_prefix_active=True semantic_prefix_tokens=True
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 20105
+    vram_delta_mib       : 87
+    no_silent_fallback   : True
+  timing (s)      : retrieve=6.01  generate=0.00  total=6.01
+  tokens          : prompt=73  generated=13
+========================================================================
+kv_direct> d3c58fa3978aeebe
+
+PASS TOKEN_BUDGET: budget bound observed 1 time(s) on dedicated session e996b1102aca4db2a088fcd5bdac1b94 elapsed_s=13.21
+[2026-04-26T21:28:35Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:28:35Z] new session started · session_id=6892acf5b0844c66b51e3a7492a49443
+[2026-04-26T21:28:40Z]   axis-4 token-budget: kept 4/16 facts (4096/4096 tokens; per_fact=1024)
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 84c441a0913d4804a70dd425eb7264d6
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : [session=84c441a0913d4804a70dd425eb7264d6 window=0 tier=hot] 85b04fb3ca8f5960. Unique route key 85b04fb3ca8f5960. This planted scale memory belongs to session 0 turn 0. The retrieval key is 85b04fb3ca8f5960.
+[session=e7…
+  keywords        : ['aa', 'belongs', 'ca', 'fb', 'key', 'memory', 'planted', 'retrieval', 'route', 'scale']
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False multi_session_count=True semantic_prefix_active=True semantic_prefix_tokens=True
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 20112
+    vram_delta_mib       : 93
+    no_silent_fallback   : True
+  timing (s)      : retrieve=8.15  generate=0.00  total=8.15
+  tokens          : prompt=79  generated=17
+========================================================================
+kv_direct> planted marker 85b04fb3ca8f5960
+
+[2026-04-26T21:28:43Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:28:43Z] new session started · session_id=f89723aa53b744849997d625df333a83
+[2026-04-26T21:28:49Z]   axis-4 token-budget: kept 4/64 facts (4096/4096 tokens; per_fact=1024)
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 84c441a0913d4804a70dd425eb7264d6
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : [session=84c441a0913d4804a70dd425eb7264d6 window=0 tier=hot] 85b04fb3ca8f5960. Unique route key 85b04fb3ca8f5960. This planted scale memory belongs to session 0 turn 0. The retrieval key is 85b04fb3ca8f5960.
+[session=e7…
+  keywords        : ['aa', 'belongs', 'ca', 'fb', 'key', 'memory', 'planted', 'retrieval', 'route', 'scale']
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False multi_session_count=True semantic_prefix_active=True semantic_prefix_tokens=True
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 20112
+    vram_delta_mib       : 93
+    no_silent_fallback   : True
+  timing (s)      : retrieve=9.26  generate=0.00  total=9.26
+  tokens          : prompt=79  generated=17
+========================================================================
+kv_direct> planted marker 85b04fb3ca8f5960
+
+[2026-04-26T21:28:52Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:28:52Z] new session started · session_id=04ce885ed9f6418cbe754f499e7cc1f0
+[2026-04-26T21:28:58Z]   axis-4 token-budget: kept 4/256 facts (4096/4096 tokens; per_fact=1024)
+
+===== ROUTING + STRICT ASSERTIONS ======================================
+  mode            : kv_direct
+  source_session  : 84c441a0913d4804a70dd425eb7264d6
+  window_id       : 0
+  routing_score   : (exact — no score)
+  matched_window  : [session=84c441a0913d4804a70dd425eb7264d6 window=0 tier=hot] 85b04fb3ca8f5960. Unique route key 85b04fb3ca8f5960. This planted scale memory belongs to session 0 turn 0. The retrieval key is 85b04fb3ca8f5960.
+[session=e7…
+  keywords        : ['aa', 'belongs', 'ca', 'fb', 'key', 'memory', 'planted', 'retrieval', 'route', 'scale']
+  strict_asserts  : kv_direct_active=True path_a_replay_count=False hot_budget_mib_observed=False vram_peak_mib=True vram_delta_mib=True tier_counts_selected=True mask_penalty_applied=False multi_session_count=True semantic_prefix_active=True semantic_prefix_tokens=True
+  axis-6 observability:
+    selected_tier        : hot
+    mask_penalty_applied : False
+    kv_direct_active     : True
+    vram_peak_mib        : 20112
+    vram_delta_mib       : 93
+    no_silent_fallback   : True
+  timing (s)      : retrieve=8.75  generate=0.00  total=8.75
+  tokens          : prompt=79  generated=17
+========================================================================
+kv_direct> planted marker 85b04fb3ca8f5960
+
+PASS VRAM_BOUNDED: vram peaks=[20112.0, 20112.0, 20112.0] delta=0.0 MiB elapsed_s=26.23
+[2026-04-26T21:29:01Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:29:01Z] new session started · session_id=f0e2c4a3cf2b4ef28bbd0a7f821ddde0
+[2026-04-26T21:29:05Z]   axis-4 token-budget: kept 4/256 facts (4096/4096 tokens; per_fact=1024)[2026-04-26T21:29:05Z]   axis-4 token-budget: kept 4/256 facts (4096/4096 tokens; per_fact=1024)
+
+[WARN] axis-6: SILENT FALLBACK DETECTED — mode=kv_direct reason=RuntimeError: autoverify forced kv_direct failure[WARN] axis-6: SILENT FALLBACK DETECTED — mode=kv_direct reason=RuntimeError: autoverify forced kv_direct failure
+
+[2026-04-26T21:29:05Z] kv_direct fallback to plain chat: autoverify forced kv_direct failure[2026-04-26T21:29:05Z] kv_direct fallback to plain chat: autoverify forced kv_direct failure
+
+gemma> gemma> I I do do not not have have any any specific specific information information or or context context associated associated with with the the identifier identifier "60c441697578399e."
+
+"60c441697578399e."
+
+
+
+PASS FALLBACK_TRUTH: forced KV-direct failure produced WARN and no_silent_fallback=False elapsed_s=5.91
+[2026-04-26T21:29:07Z] generation runtime ready: engine=residual_bounded_kv_direct hot_budget_mib=150 session_cache=1
+[2026-04-26T21:29:07Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:29:07Z] new session started · session_id=be9cc6352e2d488680b18c7d96b74f97
+gemma> 1. Latency invariant ensures stable bounded memory.
+2. Stable bounded memory maintains latency invariant.
+3. Bounded memory supports the latency invariant.
+4. Latency invariant preserves stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. The latency invariant keeps stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory reflects the latency invariant.
+gemma> 1. Latency invariant maintains stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is key for stable bounded memory.
+4. The latency invariant governs stable bounded memory.
+gemma> 1. Stable bounded memory adheres to the latency invariant.
+2. Latency invariant ensures stable bounded memory.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant links stable bounded memory.
+gemma> 1. Stable bounded memory follows the latency invariant.
+2. Latency invariant protects stable bounded memory.
+3. Bounded memory maintains stable bounded memory.
+4. The invariant solidifies stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory maintains the latency invariant.
+2. Latency invariant ensures stable bounded memory.
+3. Bounded memory is part of stable bounded memory.
+4. Stable bounded memory follows the latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant secures stable bounded memory.
+2. Stable bounded memory respects the latency invariant.
+3. Bounded memory is essential for stable bounded memory.
+4. The invariant binds stable bounded memory.
+gemma> 1. Stable bounded memory upholds the latency invariant.
+2. Latency invariant maintains stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+gemma> 1. Latency invariant preserves stable bounded memory.
+2. Stable bounded memory adheres to the latency invariant.
+3. Bounded memory supports the stable bounded memory.
+4. The invariant keeps stable bounded memory.
+gemma> 1. Stable bounded memory reflects the latency invariant.
+2. Latency invariant governs stable bounded memory.
+3. Bounded memory ensures stable bounded memory.
+4. Stable bounded memory is latency invariant.
+PASS INFINITE_TURN_LATENCY: 50 measured turns flat: first10_mean=1.976s last10_mean=1.982s median=1.913s max=2.331s ceiling=2.371s elapsed_s=95.23
+[2026-04-26T21:30:42Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:30:42Z] new session started · session_id=c3f42780c6be4521a7eeb16692703fd6
+gemma> I do not have access to external memory or specific data like "marker 60c441697578399e."
+PASS MEMORY_OFF: memory off returned mode=none elapsed_s=1.93
+PASS CRASH_GATE: manifest-absent and in-flight partial stores stayed invisible elapsed_s=1.45
+[2026-04-26T21:30:46Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:30:46Z]   arch_config: family_is_gemma4=True retrieval_layer=12 injection_layer=13 crystal_layer=13
+[2026-04-26T21:30:46Z] new session started · session_id=cff394e774734eb3825edbd7e274ff74[2026-04-26T21:30:46Z] new session started · session_id=9b31dadee3044b8d8cf77408b54fe248
+
+[2026-04-26T21:30:46Z] saving session 9b31dadee3044b8d8cf77408b54fe248 · 1 turns
+[2026-04-26T21:30:46Z] saving session cff394e774734eb3825edbd7e274ff74 · 1 turns
+[2026-04-26T21:30:46Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/9b31dadee3044b8d8cf77408b54fe248.json
+[2026-04-26T21:30:46Z]   transcript -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/transcripts/cff394e774734eb3825edbd7e274ff74.json
+[2026-04-26T21:30:46Z]   AUS3000 clauses -> 1 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/cff394e774734eb3825edbd7e274ff74
+[2026-04-26T21:30:46Z]   AUS3000 clauses -> 1 record(s) under /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/inputs/9b31dadee3044b8d8cf77408b54fe248
+[2026-04-26T21:30:46Z]   live index flushed in 0.21s
+[2026-04-26T21:30:46Z]   live index flushed in 0.22s
+[2026-04-26T21:30:46Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/cff394e774734eb3825edbd7e274ff74/save-state.json
+[2026-04-26T21:30:46Z]   save-state -> /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/store/checkpoints/9b31dadee3044b8d8cf77408b54fe248/save-state.json
+[2026-04-26T21:30:46Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'StrEnum' from 'enum' (/home/jehmal/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/enum.py)")[2026-04-26T21:30:46Z]   vec_inject.npz write FAILED (non-fatal): ImportError("cannot import name 'extract_vec_inject_index_torch' from 'chuk_lazarus.inference.context.research.vec_inject.prefill_torch' (/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/src/chuk_lazarus/inference/context/research/vec_inject/prefill_torch.py)")
+
+PASS PARALLEL_WRITES: parallel sessions loadable: 9b31dadee3044b8d8cf77408b54fe248, cff394e774734eb3825edbd7e274ff74 elapsed_s=7.49
+HARNESS_PASS
+run_dir=/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135
+summary=/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/summary.json
+events=/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/events.jsonl
+transcript=/mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus/prod/validation/repl-autoverify/20260426T205135Z-20260426t205135/transcript.log
