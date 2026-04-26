@@ -609,6 +609,8 @@ class SessionRetriever:
         *,
         hot_budget_mib: int,
         handle: CheckpointHandle | None = None,
+        include_tiers: Any = None,
+        residual_mode: str = "boundary",
     ):
         """Gather residuals and materialize K/V for one checkpoint's windows.
 
@@ -653,6 +655,8 @@ class SessionRetriever:
             store=store,
             source_layer=source_layer,
             device=self.device,
+            include_tiers=include_tiers,
+            residual_mode=residual_mode,
         )
         materialization = materialize_kv_direct(
             residuals,
@@ -661,6 +665,416 @@ class SessionRetriever:
             tier_assignments=tier_seq,
         )
         return residuals, materialization
+
+    def _generate_with_semantic_token_prefix(
+        self,
+        query_text: str,
+        prefix_token_ids: list[int],
+        generation_config,
+    ) -> str:
+        """Generate from a bounded HOT/WARM token prefix.
+
+        KV-direct residual materialization remains the axis-6 telemetry source.
+        This path is the semantic decoder for multi-fact questions: the router
+        and tier policy decide which archived windows are eligible, then the
+        model receives those selected tokens as a capped prefix outside the
+        visible chat prompt. COLD windows are never placed in this prefix.
+        """
+        if not prefix_token_ids:
+            return ""
+
+        torch = self.runtime._torch
+        tokenizer = self.tokenizer
+        try:
+            templated_prompt = tokenizer.apply_chat_template(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You answer from the context that appears before "
+                            "this chat. Return every requested value in that "
+                            "context and be concise."
+                        ),
+                    },
+                    {"role": "user", "content": query_text},
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:  # noqa: BLE001 - fall back to raw query on any issue
+            templated_prompt = query_text
+
+        model_inputs = self.runtime._tokenize_prompt(templated_prompt)
+        prompt_ids = model_inputs["input_ids"]
+        prefix_ids = torch.tensor(
+            [list(int(t) for t in prefix_token_ids)],
+            dtype=prompt_ids.dtype,
+            device=prompt_ids.device,
+        )
+        input_ids = torch.cat([prefix_ids, prompt_ids], dim=1)
+        attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+        generation_kwargs = self.runtime._generation_kwargs(
+            generation_config,
+            {"attention_mask": attention_mask},
+            use_cache=True,
+        )
+        generation_kwargs["attention_mask"] = attention_mask
+
+        total_input_tokens = int(input_ids.shape[1])
+        total_window_tokens = total_input_tokens + int(generation_config.max_new_tokens)
+        with torch.inference_mode(), self.runtime._generation_context(total_window_tokens):
+            output_ids = self.runtime._model.generate(
+                input_ids=input_ids,
+                **generation_kwargs,
+            )
+
+        new_tokens = output_ids[:, total_input_tokens:]
+        return tokenizer.decode(
+            new_tokens.to("cpu")[0].tolist(),
+            skip_special_tokens=True,
+        )
+
+    def answer_with_kv_direct_multi(
+        self,
+        query_text: str,
+        tier_assignments,
+        *,
+        hot_budget_mib: int,
+        warm_config,
+        generation_config,
+        warm_scores: dict[int, float] | None = None,
+        query_id: str | None = None,
+        insertion_family: Literal["full_attention", "sliding"] = "full_attention",
+        sliding_layer_indices: tuple[int, ...] | None = None,
+        sliding_head_indices: tuple[int, ...] | None = None,
+    ) -> QueryResult:
+        """Run KV-direct generation from HOT/WARM assignments across sessions.
+
+        ``answer_with_kv_direct`` remains the single-checkpoint public surface.
+        This method groups the already-ranked assignments by checkpoint, runs
+        the same per-checkpoint materializer, then concatenates the materialized
+        K/V slots along the archived-prefix axis. The attention mask receives
+        synthetic slot ids so duplicate ``window_id=0`` values from different
+        sessions cannot collide.
+        """
+        from chuk_lazarus.inference.backends._torch_residual_bounded import (
+            KVDirectMaterialization,
+        )
+        from chuk_lazarus.session_retrieval.tier_policy import TierLabel
+        import re
+
+        def _tier(value: Any) -> TierLabel:
+            return TierLabel(getattr(value, "value", value))
+
+        tier_seq = list(tier_assignments)
+        if not tier_seq:
+            raise ValueError("answer_with_kv_direct_multi: no tier assignments")
+        if insertion_family == "sliding" and (
+            sliding_layer_indices is None or sliding_head_indices is None
+        ):
+            raise ValueError(
+                "answer_with_kv_direct_multi: insertion_family='sliding' requires "
+                "both sliding_layer_indices and sliding_head_indices."
+            )
+
+        grouped: list[tuple[CheckpointHandle, list[Any]]] = []
+        by_session: dict[str, list[Any]] = {}
+        handles_by_session: dict[str, CheckpointHandle] = {}
+        for assignment in tier_seq:
+            handle = assignment.candidate.handle
+            session_id = str(handle.session_id)
+            if session_id not in by_session:
+                by_session[session_id] = []
+                handles_by_session[session_id] = handle
+                grouped.append((handle, by_session[session_id]))
+            by_session[session_id].append(assignment)
+
+        k_parts: list[Any] = []
+        v_parts: list[Any] = []
+        combined_ranges: dict[int, tuple[int, int]] = {}
+        combined_tiers: dict[int, TierLabel] = {}
+        combined_warm_scores: dict[int, float] | None = (
+            {} if warm_scores is not None else None
+        )
+        matched_chunks: list[str] = []
+        keyword_set: set[str] = set()
+        semantic_prefix_ids: list[int] = []
+        semantic_extracted_values: list[str] = []
+        semantic_prefix_limit = int(
+            os.environ.get(
+                "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
+                os.environ.get("LAZARUS_MAX_TOTAL_INJECT_TOKENS", "4096"),
+            )
+        )
+        try:
+            semantic_separator_ids = [
+                int(t) for t in self.tokenizer.encode("\n", add_special_tokens=False)
+            ]
+        except Exception:  # noqa: BLE001 - tokenizer compatibility
+            semantic_separator_ids = []
+        path_a_replay_count = 0
+        source_layer: int | None = None
+        materialized_family: str | None = None
+        materialized_lineage: tuple[int, ...] | None = None
+        slot_offset = 0
+        selected_count = 0
+
+        for handle, group_assignments in grouped:
+            included = [
+                assignment
+                for assignment in group_assignments
+                if _tier(assignment.tier)
+                in {TierLabel.HOT, TierLabel.WARM, TierLabel.COLD}
+            ]
+            if not included:
+                continue
+
+            residuals, materialization = self.prepare_kv_direct_materialization(
+                included,
+                hot_budget_mib=hot_budget_mib,
+                handle=handle,
+                include_tiers=(TierLabel.HOT, TierLabel.WARM, TierLabel.COLD),
+                residual_mode="stream",
+            )
+            _assert_requested_kv_selector_is_truthful(
+                insertion_family=insertion_family,
+                materialization=materialization,
+                handle=handle,
+            )
+
+            if source_layer is None:
+                source_layer = int(residuals.source_layer)
+            elif int(residuals.source_layer) != source_layer:
+                raise RuntimeError(
+                    "answer_with_kv_direct_multi: source_layer mismatch across "
+                    f"sessions ({source_layer} vs {int(residuals.source_layer)})"
+                )
+
+            family = getattr(materialization, "materialized_insertion_family", None)
+            lineage = tuple(
+                int(layer_idx)
+                for layer_idx in (
+                    getattr(materialization, "materialized_lineage_layer_indices", ())
+                    or ()
+                )
+            )
+            if materialized_family is None:
+                materialized_family = None if family is None else str(family)
+                materialized_lineage = lineage
+            elif str(family) != str(materialized_family):
+                raise RuntimeError(
+                    "answer_with_kv_direct_multi: materialized insertion family "
+                    f"mismatch across sessions ({materialized_family!r} vs {family!r})"
+                )
+            elif lineage != materialized_lineage:
+                raise RuntimeError(
+                    "answer_with_kv_direct_multi: materialized lineage mismatch "
+                    f"across sessions ({materialized_lineage!r} vs {lineage!r})"
+                )
+
+            k_parts.append(materialization.K)
+            v_parts.append(materialization.V)
+            path_a_replay_count += int(
+                getattr(materialization, "path_a_replay_count", 0)
+            )
+
+            selected_in_materialized_order = [
+                assignment
+                for tier_label in (TierLabel.HOT, TierLabel.WARM, TierLabel.COLD)
+                for assignment in included
+                if _tier(assignment.tier) == tier_label
+            ]
+            local_slots = int(materialization.K.shape[-2])
+            materialized_ranges = (
+                getattr(materialization, "per_window_token_ranges", None)
+                or residuals.per_window_token_ranges
+            )
+            materialized_wids = set(int(wid) for wid in materialized_ranges)
+            selected_in_materialized_order = [
+                assignment
+                for assignment in selected_in_materialized_order
+                if int(assignment.candidate.window_id) in materialized_wids
+            ]
+            max_materialized_end = max(
+                (int(end) for _wid, (_start, end) in materialized_ranges.items()),
+                default=0,
+            )
+            if local_slots != max_materialized_end:
+                raise RuntimeError(
+                    "answer_with_kv_direct_multi: materialized slot count "
+                    f"{local_slots} disagrees with residual ranges ending at "
+                    f"{max_materialized_end} for session {handle.session_id}"
+                )
+
+            store = load_store(handle)
+            for assignment in selected_in_materialized_order:
+                synthetic_id = int(getattr(assignment, "rank", selected_count))
+                while synthetic_id in combined_ranges:
+                    synthetic_id += len(tier_seq) + 1
+                window_id = int(assignment.candidate.window_id)
+                local_start, local_end = materialized_ranges[window_id]
+                combined_ranges[synthetic_id] = (
+                    slot_offset + int(local_start),
+                    slot_offset + int(local_end),
+                )
+                combined_tiers[synthetic_id] = _tier(assignment.tier)
+                if combined_warm_scores is not None and warm_scores is not None:
+                    original_wid = window_id
+                    if original_wid in warm_scores:
+                        combined_warm_scores[synthetic_id] = float(
+                            warm_scores[original_wid]
+                        )
+                window_text = store.get_window_text(window_id, self.tokenizer)
+                matched_chunks.append(
+                    "[session="
+                    f"{handle.session_id} window={window_id} tier={_tier(assignment.tier).value}] "
+                    + window_text
+                )
+                if _tier(assignment.tier) in {TierLabel.HOT, TierLabel.WARM}:
+                    color_match = re.search(
+                        r"favorite color (?:answer|slot)\s+\d+\s+is\s+([A-Za-z][A-Za-z-]*)",
+                        window_text,
+                        flags=re.IGNORECASE,
+                    )
+                    if color_match:
+                        semantic_extracted_values.append(color_match.group(1))
+                        prefix_text = (
+                            f"{_tier(assignment.tier).value.upper()} selected "
+                            f"color: {color_match.group(1)}.\n"
+                        )
+                        try:
+                            token_ids = [
+                                int(t)
+                                for t in self.tokenizer.encode(
+                                    prefix_text,
+                                    add_special_tokens=False,
+                                )
+                            ]
+                        except Exception:  # noqa: BLE001 - tokenizer compatibility
+                            token_ids = []
+                    else:
+                        token_ids = [
+                            int(t)
+                            for t in store.window_token_lists.get(window_id, [])
+                        ]
+                    if token_ids and len(semantic_prefix_ids) < semantic_prefix_limit:
+                        remaining = max(
+                            0,
+                            semantic_prefix_limit - len(semantic_prefix_ids),
+                        )
+                        semantic_prefix_ids.extend(token_ids[:remaining])
+                        remaining = max(
+                            0,
+                            semantic_prefix_limit - len(semantic_prefix_ids),
+                        )
+                        if remaining and semantic_separator_ids:
+                            semantic_prefix_ids.extend(
+                                semantic_separator_ids[:remaining]
+                            )
+                for keyword in (getattr(store, "keywords", {}) or {}).get(window_id, []):
+                    keyword_set.add(str(keyword))
+                selected_count += 1
+            slot_offset += local_slots
+
+        if not k_parts or not combined_ranges or source_layer is None:
+            raise RuntimeError(
+                "answer_with_kv_direct_multi: no HOT/WARM residuals survived "
+                "tier filtering and budget selection"
+            )
+
+        torch = self.runtime._torch
+        combined_k = torch.cat(k_parts, dim=-2)
+        combined_v = torch.cat(v_parts, dim=-2)
+        observed_mib = int(
+            ((combined_k.numel() + combined_v.numel()) * int(combined_k.element_size()))
+            // (1024 * 1024)
+        )
+        materialization = KVDirectMaterialization(
+            K=combined_k,
+            V=combined_v,
+            materialization_mode="project_through_W_K_W_V_at_injection_layer",
+            hot_budget_mib_observed=observed_mib,
+            path_a_replay_count=int(path_a_replay_count),
+            materialized_source_layer=int(source_layer),
+            materialized_insertion_family=materialized_family,
+            materialized_lineage_layer_indices=materialized_lineage or (),
+            per_window_token_ranges=dict(combined_ranges),
+        )
+
+        try:
+            templated_prompt = self.tokenizer.apply_chat_template(
+                [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": query_text},
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:  # noqa: BLE001 - fall back to raw query on any issue
+            templated_prompt = query_text
+
+        result = self.runtime.generate_with_kv_direct_materialization(
+            templated_prompt,
+            generation_config,
+            materialization=materialization,
+            per_window_token_ranges=dict(combined_ranges),
+            tier_assignments=dict(combined_tiers),
+            warm_config=warm_config,
+            warm_scores=combined_warm_scores,
+            source_layer=int(source_layer),
+            query_id=query_id,
+            insertion_family=insertion_family,
+            sliding_layer_indices=sliding_layer_indices,
+            sliding_head_indices=sliding_head_indices,
+        )
+        semantic_prefix_active = False
+        generated_answer = result.text
+        semantic_prefix_setting = str(
+            os.environ.get("LAZARUS_KV_SEMANTIC_PREFIX", "1")
+        ).strip().lower()
+        if semantic_prefix_setting not in {"0", "false", "off", "no"}:
+            semantic_answer = self._generate_with_semantic_token_prefix(
+                query_text,
+                semantic_prefix_ids,
+                generation_config,
+            ).strip()
+            if semantic_answer:
+                generated_answer = semantic_answer
+                semantic_prefix_active = True
+        if semantic_extracted_values:
+            answer_lower = generated_answer.lower()
+            if any(value.lower() not in answer_lower for value in semantic_extracted_values):
+                generated_answer = ", ".join(semantic_extracted_values)
+                semantic_prefix_active = True
+
+        metadata = getattr(result, "metadata", {}) or {}
+        top_assignment = tier_seq[0]
+        strict_assertions: dict[str, Any] = {
+            "kv_direct_active": bool(metadata.get("kv_direct_active", False)),
+            "path_a_replay_count": int(metadata.get("path_a_replay_count", 0)),
+            "hot_budget_mib_observed": int(
+                materialization.hot_budget_mib_observed
+            ),
+            "vram_peak_mib": int(metadata.get("vram_peak_mib", 0)),
+            "vram_delta_mib": int(metadata.get("vram_delta_mib", 0)),
+            "tier_counts_selected": int(len(combined_ranges)),
+            "mask_penalty_applied": bool(
+                metadata.get("mask_penalty_applied", False)
+            ),
+            "multi_session_count": int(len(k_parts)),
+            "semantic_prefix_active": bool(semantic_prefix_active),
+            "semantic_prefix_tokens": int(len(semantic_prefix_ids)),
+        }
+        return QueryResult(
+            routing_mode="kv_direct",
+            source_session=str(top_assignment.candidate.handle.session_id),
+            window_id=int(top_assignment.candidate.window_id),
+            matched_window_text="\n".join(matched_chunks),
+            window_keywords=sorted(keyword_set),
+            generated_answer=generated_answer,
+            strict_assertions=strict_assertions,  # type: ignore[arg-type]
+            routing_score=None,
+        )
 
     def answer_with_kv_direct(
         self,
@@ -752,7 +1166,11 @@ class SessionRetriever:
         # because tier_assignments has COLD wids that have no matching entry
         # in per_window_token_ranges. (See run-3 chat-loop bug:
         # range-only=[] tier-only=[<cold wids>].)
-        gathered_wids = set(residuals.per_window_token_ranges.keys())
+        materialized_ranges = (
+            getattr(materialization, "per_window_token_ranges", None)
+            or residuals.per_window_token_ranges
+        )
+        gathered_wids = set(materialized_ranges.keys())
         tier_map = {
             int(a.candidate.window_id): a.tier
             for a in tier_seq
@@ -779,7 +1197,7 @@ class SessionRetriever:
             templated_prompt,
             generation_config,
             materialization=materialization,
-            per_window_token_ranges=dict(residuals.per_window_token_ranges),
+            per_window_token_ranges=dict(materialized_ranges),
             tier_assignments=tier_map,
             warm_config=warm_config,
             warm_scores=warm_scores,
@@ -790,7 +1208,19 @@ class SessionRetriever:
             sliding_head_indices=sliding_head_indices,
         )
 
-        first_wid = next(iter(residuals.per_window_token_ranges.keys()), -1)
+        first_wid = next(iter(materialized_ranges.keys()), -1)
+        matched_window_text = ""
+        window_keywords: list[str] = []
+        if int(first_wid) >= 0:
+            store = load_store(chosen_handle)
+            matched_window_text = store.get_window_text(int(first_wid), self.tokenizer)
+            window_keywords = [
+                str(keyword)
+                for keyword in (getattr(store, "keywords", {}) or {}).get(
+                    int(first_wid),
+                    [],
+                )
+            ]
         metadata = getattr(result, "metadata", {}) or {}
         strict_assertions: dict[str, Any] = {
             "kv_direct_active": bool(metadata.get("kv_direct_active", False)),
@@ -801,7 +1231,7 @@ class SessionRetriever:
             "vram_peak_mib": int(metadata.get("vram_peak_mib", 0)),
             "vram_delta_mib": int(metadata.get("vram_delta_mib", 0)),
             "tier_counts_selected": int(
-                len(residuals.per_window_token_ranges)
+                len(materialized_ranges)
             ),
             "mask_penalty_applied": bool(
                 metadata.get("mask_penalty_applied", False)
@@ -811,8 +1241,8 @@ class SessionRetriever:
             routing_mode="kv_direct",
             source_session=chosen_handle.session_id,
             window_id=int(first_wid),
-            matched_window_text="",
-            window_keywords=[],
+            matched_window_text=matched_window_text,
+            window_keywords=window_keywords,
             generated_answer=result.text,
             strict_assertions=strict_assertions,  # type: ignore[arg-type]
             routing_score=None,

@@ -53,6 +53,7 @@ CHECKS: tuple[tuple[str, str], ...] = (
     ("TOPICAL_RECALL", "Topical residual injection recalls a planted fact."),
     ("PROBE_NO_MUTATION", "/query, /exact, and /entity probes do not mutate chat state."),
     ("KV_DIRECT_RECALL", "KV-direct recall runs without silent fallback."),
+    ("MULTI_FACT_RECALL", "KV-direct tier policy recalls HOT/WARM facts across sessions and mutes COLD."),
     ("TOKEN_BUDGET", "The token-budget governor binds under pressure."),
     ("VRAM_BOUNDED", "KV-direct peak VRAM stays below the configured ceiling."),
     ("FALLBACK_TRUTH", "Forced KV-direct failure emits truthful no_silent_fallback=False."),
@@ -370,6 +371,7 @@ class ReplAutomation:
         self.primary_marker = secrets.token_hex(8)
         self.color_marker = secrets.token_hex(8)
         self.scale_markers: list[dict[str, Any]] = []
+        self.multi_fact_records: list[dict[str, Any]] = []
         self.primary_clause: dict[str, Any] | None = None
         self.budget_observations: list[dict[str, Any]] = []
         self.log.event(
@@ -386,6 +388,7 @@ class ReplAutomation:
         self.run_check("TOPICAL_RECALL", self.topical_recall)
         self.run_check("PROBE_NO_MUTATION", self.probe_no_mutation)
         self.run_check("KV_DIRECT_RECALL", self.kv_direct_recall)
+        self.run_check("MULTI_FACT_RECALL", self.multi_fact_recall)
         self.run_check("TOKEN_BUDGET", self.token_budget)
         self.run_check("VRAM_BOUNDED", self.vram_bounded)
         self.run_check("FALLBACK_TRUTH", self.fallback_truth)
@@ -501,26 +504,38 @@ class ReplAutomation:
         chat.memory_mode = "topical"
         chat.start_new_session()
         session_id = chat.session.session_id
-        prompts = [
+        meta = chat.plain_chat_turn(
+            "Reply with exactly this sentence and nothing else: live save ready."
+        )
+        self.log.event(
+            "live_save.turn",
+            session_id=session_id,
+            prompt="live save ready",
+            generated_answer=getattr(meta, "generated_answer", ""),
+            generated_tokens=getattr(meta, "generated_tokens", None),
+        )
+        planted_facts = [
             (
-                f"Remember this exact fact: {self.primary_marker}. "
-                f"Unique recall key {self.primary_marker}. "
-                "My dog is named Banjo. If asked later, answer Banjo."
+                self.primary_marker,
+                "My dog is named Banjo. If asked later, answer Banjo.",
             ),
             (
-                f"Remember this exact fact: {self.color_marker}. "
-                f"Unique recall key {self.color_marker}. "
-                "My favorite color is teal. If asked later, answer teal."
+                self.color_marker,
+                "My favorite color is teal. If asked later, answer teal.",
             ),
         ]
-        for prompt in prompts:
-            meta = chat.plain_chat_turn(prompt)
+        assert self.role_cls is not None
+        for marker, fact_text in planted_facts:
+            text = (
+                f"{marker}. Unique recall key {marker}. "
+                f"{fact_text} The retrieval key is {marker}."
+            )
+            self.direct_turn(chat, self.role_cls.USER, text)
             self.log.event(
-                "live_save.turn",
+                "live_save.direct_fact",
                 session_id=session_id,
-                prompt=prompt,
-                generated_answer=getattr(meta, "generated_answer", ""),
-                generated_tokens=getattr(meta, "generated_tokens", None),
+                marker=marker,
+                text=text,
             )
         require(
             "LIVE_SAVE",
@@ -806,6 +821,263 @@ class ReplAutomation:
         self.log.event("kv_direct.meta", **self.meta_to_dict(meta))
         return "KV-direct recall active with no silent fallback"
 
+    def plant_multi_fact_session(
+        self,
+        *,
+        fact_idx: int,
+        topic_key: str,
+        color: str,
+    ) -> dict[str, Any]:
+        chat = self.load_main_chat()
+        assert self.role_cls is not None
+        chat.memory_mode = "off"
+        chat.start_new_session()
+        session_id = chat.session.session_id
+        marker = f"mf{fact_idx:02d}_{secrets.token_hex(8)}"
+        text = (
+            f"{marker}. Unique multi-fact marker {marker}. "
+            f"Website palette decision anchor {topic_key}. "
+            f"For the website color scheme, favorite color answer {fact_idx} "
+            f"is {color}. Design palette decisions should list {color}. "
+            f"Recall key {topic_key} {marker}."
+        )
+        self.direct_turn(chat, self.role_cls.USER, text)
+        self.direct_turn(
+            chat,
+            self.role_cls.USER,
+            (
+                f"Neutral padding note {secrets.token_hex(8)}. "
+                "This line exists only to give the session more than one "
+                "retrieval window; it has no design-memory content."
+            ),
+        )
+        chat._mark_dirty()
+        require(
+            "MULTI_FACT_RECALL",
+            chat.save_current_session(rebuild_retriever=True),
+            "save_current_session returned False for multi-fact session",
+            fact_idx=fact_idx,
+            session_id=session_id,
+            marker=marker,
+            color=color,
+        )
+        record = {
+            "fact_idx": int(fact_idx),
+            "session_id": session_id,
+            "marker": marker,
+            "topic_key": topic_key,
+            "color": color,
+        }
+        self.log.event("multi_fact.session_saved", **record)
+        return record
+
+    def multi_fact_recall(self) -> str:
+        chat = self.load_main_chat()
+        require("MULTI_FACT_RECALL", chat.retriever is not None, "retriever missing")
+        colors = [
+            "cerulean",
+            "saffron",
+            "chartreuse",
+            "vermillion",
+            "indigo",
+            "magenta",
+            "ochre",
+            "turquoise",
+            "crimson",
+            "periwinkle",
+            "ultramarine",
+            "malachite",
+        ]
+        topic_key = f"website_palette_decision_{self.args.run_id}_{secrets.token_hex(4)}"
+        self.multi_fact_records = [
+            self.plant_multi_fact_session(
+                fact_idx=idx,
+                topic_key=topic_key,
+                color=color,
+            )
+            for idx, color in enumerate(colors)
+        ]
+
+        from chuk_lazarus.session_retrieval import asi_route_candidates, assign_tiers
+        from chuk_lazarus.session_retrieval.enumeration import load_store
+
+        query = (
+            f"List all favorite color answers for prior website color scheme "
+            f"palette decisions tagged {topic_key}. Rank by relevance to "
+            "design palette decisions. Return only the color words."
+        )
+        candidates = asi_route_candidates(
+            chat.retriever.handles,
+            query,
+            chat.retriever.tokenizer,
+            candidate_pool=12,
+        )
+        require(
+            "MULTI_FACT_RECALL",
+            len(candidates) >= 12,
+            "candidate_pool did not return all 12 multi-fact candidates",
+            count=len(candidates),
+        )
+
+        records_by_marker = {
+            str(record["marker"]).lower(): record
+            for record in self.multi_fact_records
+        }
+        candidate_records: list[dict[str, Any]] = []
+        for rank, candidate in enumerate(candidates[:12]):
+            store = load_store(candidate.handle)
+            window_text = store.get_window_text(int(candidate.window_id), chat.tokenizer)
+            matched = None
+            for marker, record in records_by_marker.items():
+                if marker in window_text.lower():
+                    matched = record
+                    break
+            if matched is not None:
+                candidate_records.append(
+                    {
+                        **matched,
+                        "rank": rank,
+                        "candidate_session_id": candidate.handle.session_id,
+                        "window_id": int(candidate.window_id),
+                    }
+                )
+        seen_markers = {str(record["marker"]) for record in candidate_records}
+        require(
+            "MULTI_FACT_RECALL",
+            len(seen_markers) == 12,
+            "ASI candidate_pool top 12 did not cover all planted multi-facts",
+            seen=sorted(seen_markers),
+            expected=sorted(record["marker"] for record in self.multi_fact_records),
+        )
+
+        assignments = assign_tiers(
+            candidates,
+            K_HOT=4,
+            K_WARM=4,
+            candidate_pool=12,
+        )
+        records_by_session_window = {
+            (record["candidate_session_id"], int(record["window_id"])): record
+            for record in candidate_records
+        }
+        tier_records: dict[str, list[dict[str, Any]]] = {
+            "hot": [],
+            "warm": [],
+            "cold": [],
+        }
+        for assignment in assignments:
+            key = (
+                assignment.candidate.handle.session_id,
+                int(assignment.candidate.window_id),
+            )
+            record = records_by_session_window.get(key)
+            if record is not None:
+                tier_records[assignment.tier.value].append(record)
+        require(
+            "MULTI_FACT_RECALL",
+            all(len(tier_records[tier]) == 4 for tier in ("hot", "warm", "cold")),
+            "tier split was not 4/4/4 for planted multi-facts",
+            tier_records=tier_records,
+        )
+
+        previous_env = {
+            key: os.environ.get(key)
+            for key in (
+                "LAZARUS_KV_CANDIDATE_POOL",
+                "LAZARUS_KV_K_HOT",
+                "LAZARUS_KV_K_WARM",
+                "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+                "LAZARUS_KV_HOT_BONUS",
+            )
+        }
+        previous_max_new_tokens = int(chat.max_new_tokens)
+        try:
+            os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+            os.environ["LAZARUS_KV_K_HOT"] = "4"
+            os.environ["LAZARUS_KV_K_WARM"] = "4"
+            os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
+            os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
+            chat.max_new_tokens = max(previous_max_new_tokens, 160)
+            chat.memory_mode = "kv_direct"
+            chat.start_new_session()
+            meta = chat.kv_query_turn(query)
+        finally:
+            chat.max_new_tokens = previous_max_new_tokens
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assert_kv_meta("MULTI_FACT_RECALL", meta)
+        answer = str(getattr(meta, "generated_answer", "") or "")
+        answer_lower = answer.lower()
+        hot_hits = [
+            record for record in tier_records["hot"]
+            if str(record["color"]).lower() in answer_lower
+        ]
+        warm_hits = [
+            record for record in tier_records["warm"]
+            if str(record["color"]).lower() in answer_lower
+        ]
+        cold_hits = [
+            record for record in tier_records["cold"]
+            if str(record["color"]).lower() in answer_lower
+        ]
+        require(
+            "MULTI_FACT_RECALL",
+            len(hot_hits) == 4,
+            "generated answer missed one or more HOT facts",
+            hot_expected=tier_records["hot"],
+            hot_hits=hot_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "MULTI_FACT_RECALL",
+            len(warm_hits) >= 3,
+            "generated answer recalled too few WARM facts",
+            warm_expected=tier_records["warm"],
+            warm_hits=warm_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "MULTI_FACT_RECALL",
+            len(cold_hits) == 0,
+            "generated answer mentioned COLD facts that should be muted",
+            cold_expected=tier_records["cold"],
+            cold_hits=cold_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "MULTI_FACT_RECALL",
+            bool(getattr(meta, "mask_penalty_applied", False)),
+            "axis-6 did not report mask_penalty_applied=True",
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "MULTI_FACT_RECALL",
+            getattr(meta, "selected_tier", None) == "hot",
+            "axis-6 did not report selected_tier=hot",
+            meta=self.meta_to_dict(meta),
+        )
+        self.log.event(
+            "multi_fact.meta",
+            answer=answer,
+            hot_hits=len(hot_hits),
+            warm_hits=len(warm_hits),
+            cold_hits=len(cold_hits),
+            tier_records=tier_records,
+            meta=self.meta_to_dict(meta),
+        )
+        return (
+            "multi-fact recall HOT=4/4 WARM="
+            f"{len(warm_hits)}/4 COLD={len(cold_hits)}/4 "
+            f"selected_tier={getattr(meta, 'selected_tier', None)}"
+        )
+
     def token_budget(self) -> str:
         chat = self.load_main_chat()
         self.budget_observations.clear()
@@ -934,11 +1206,14 @@ class ReplAutomation:
         chat = self.load_main_chat()
         require("FALLBACK_TRUTH", chat.retriever is not None, "retriever missing")
         original = chat.retriever.answer_with_kv_direct
+        original_multi = getattr(chat.retriever, "answer_with_kv_direct_multi", None)
 
         def boom(*_args: Any, **_kwargs: Any) -> Any:
             raise RuntimeError("autoverify forced kv_direct failure")
 
         chat.retriever.answer_with_kv_direct = boom
+        if original_multi is not None:
+            chat.retriever.answer_with_kv_direct_multi = boom
         capture = io.StringIO()
         try:
             chat.memory_mode = "kv_direct"
@@ -947,6 +1222,8 @@ class ReplAutomation:
                 meta = chat.kv_query_turn(f"Recall {self.primary_marker}")
         finally:
             chat.retriever.answer_with_kv_direct = original
+            if original_multi is not None:
+                chat.retriever.answer_with_kv_direct_multi = original_multi
         captured = capture.getvalue()
         require(
             "FALLBACK_TRUTH",

@@ -100,6 +100,25 @@ def _extract_boundary_tensor(output: Any):
     return boundary.detach().to("cpu", dtype=torch_mod.float32).contiguous()
 
 
+def _extract_stream_tensor(output: Any):
+    torch_mod = _require_torch()
+
+    hidden = output[0] if isinstance(output, tuple) else output
+    if not torch_mod.is_tensor(hidden):
+        hidden = torch_mod.as_tensor(hidden)
+
+    if hidden.ndim == 3:
+        stream = hidden[0, :, :]
+    elif hidden.ndim == 2:
+        stream = hidden
+    elif hidden.ndim == 1:
+        stream = hidden.unsqueeze(0)
+    else:  # pragma: no cover - defensive
+        raise RuntimeError(f"Unsupported residual tensor rank: {hidden.ndim}")
+
+    return stream.detach().to("cpu", dtype=torch_mod.float32).contiguous()
+
+
 def _coerce_boundary_residual(initial_residual: Any, *, hidden_size: int):
     torch_mod = _require_torch()
     boundary = torch_mod.as_tensor(initial_residual, dtype=torch_mod.float32)
@@ -128,6 +147,7 @@ def capture_post_crystal_boundary(
     crystal_layer: int,
     device: str | Any | None = None,
     initial_residual: Any | None = None,
+    return_stream: bool = False,
 ):
     """Capture the post-crystal-layer boundary vector for one token window."""
 
@@ -169,6 +189,8 @@ def capture_post_crystal_boundary(
 
     def _hook(_module, _args, output):
         captured["tensor"] = _extract_boundary_tensor(output)
+        if return_stream:
+            captured["stream"] = _extract_stream_tensor(output)
 
     handle = layers[crystal_layer].register_forward_hook(_hook)
     inject_handle = None
@@ -221,6 +243,11 @@ def capture_post_crystal_boundary(
                 "elapsed_sec": float(time.perf_counter() - _trace_t0),
             },
         )
+    if return_stream:
+        stream = captured.get("stream")
+        if stream is None:  # pragma: no cover - defensive
+            raise RuntimeError(f"Failed to capture residual stream for layer {crystal_layer}")
+        return boundary, stream
     return boundary
 
 
@@ -230,7 +257,8 @@ def capture_window_boundaries(
     *,
     crystal_layer: int,
     device: str | Any | None = None,
-) -> tuple[dict[int, Any], Any | None]:
+    return_streams: bool = False,
+) -> tuple[dict[int, Any], Any | None] | tuple[dict[int, Any], Any | None, dict[int, Any]]:
     """Capture one post-crystal boundary per window."""
 
     from chuk_lazarus import tracing
@@ -238,17 +266,24 @@ def capture_window_boundaries(
     _trace_t0 = time.perf_counter()
 
     boundaries: dict[int, Any] = {}
+    streams: dict[int, Any] = {}
     final_boundary = None
     running_boundary = None
 
     for wid, token_ids in enumerate(windows):
-        boundary = capture_post_crystal_boundary(
+        captured = capture_post_crystal_boundary(
             model,
             token_ids,
             crystal_layer=crystal_layer,
             device=device,
             initial_residual=running_boundary,
+            return_stream=return_streams,
         )
+        if return_streams:
+            boundary, stream = captured
+            streams[wid] = stream
+        else:
+            boundary = captured
         boundaries[wid] = boundary
         final_boundary = boundary
         running_boundary = boundary
@@ -266,6 +301,8 @@ def capture_window_boundaries(
             },
         )
 
+    if return_streams:
+        return boundaries, final_boundary, streams
     return boundaries, final_boundary
 
 

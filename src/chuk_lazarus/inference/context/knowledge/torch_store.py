@@ -31,6 +31,7 @@ IDF_FILE = "idf.json"
 KEYWORDS_FILE = "keywords.json"
 WINDOW_METADATA_FILE = "window_metadata.json"
 BOUNDARIES_DIR = "boundaries"
+RESIDUAL_STREAMS_DIR = "residual_streams"
 STORE_VERSION = 12
 
 
@@ -277,6 +278,26 @@ class TorchKnowledgeStore:
         boundary_np = np.array(np.load(str(boundary_path), allow_pickle=False), dtype=np.float32)
         boundary_1d = boundary_np.reshape(-1)
         return torch.from_numpy(boundary_1d).to(device=device)
+
+    def load_residual_stream(self, window_id: int, device: str | Any = "cpu"):
+        """Load a persisted post-crystal residual stream for ``window_id``.
+
+        New live-indexed stores persist the full hidden stream that was already
+        computed while capturing the boundary residual. Older stores only carry
+        one boundary vector; callers that need a semantic token stream should
+        treat ``FileNotFoundError`` as a strict unsupported-store condition.
+        """
+        if torch is None:  # pragma: no cover - local safety net
+            raise RuntimeError("TorchKnowledgeStore requires torch to load residual streams")
+        if self._store_path is None:
+            raise ValueError("No store path available for residual stream loading")
+        stream_path = self._store_path / RESIDUAL_STREAMS_DIR / f"window_{window_id:03d}.npy"
+        if not stream_path.exists():
+            raise FileNotFoundError(f"Residual stream not found: {stream_path}")
+
+        stream_np = np.array(np.load(str(stream_path), allow_pickle=False), dtype=np.float32)
+        stream_2d = stream_np.reshape(-1, stream_np.shape[-1])
+        return torch.from_numpy(stream_2d).to(device=device)
 
     def log_stats(self, file=sys.stderr) -> None:
         window_token_bytes = sum(len(tokens) * 2 for tokens in self.window_tokens.values())

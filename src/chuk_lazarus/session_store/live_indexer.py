@@ -16,6 +16,7 @@ Files written into ``checkpoint_dir`` match the baseline store byte-for-byte
 in terms of *schema*:
 
 * ``boundaries/window_NNN.npy``           (float32, 1D hidden_size)
+* ``residual_streams/window_NNN.npy``     (float32, 2D token_count x hidden_size)
 * ``window_token_lists.npz``              (int64 arrays keyed by ``str(wid)``)
 * ``window_tokens.npz``                   (same data as token_lists)
 * ``keywords.json``                       (``{str(wid): [str, ...]}``)
@@ -108,6 +109,7 @@ from chuk_lazarus.inference.context.knowledge.torch_store import (
     IDF_FILE,
     KEYWORDS_FILE,
     MANIFEST_FILE,
+    RESIDUAL_STREAMS_DIR,
     STORE_VERSION,
     WINDOW_METADATA_FILE,
     WINDOW_TOKEN_LISTS_FILE,
@@ -346,6 +348,9 @@ class LiveIndexer:
         self._checkpoint_dir: Path = Path(checkpoint_dir)
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         (self._checkpoint_dir / BOUNDARIES_DIR).mkdir(parents=True, exist_ok=True)
+        (self._checkpoint_dir / RESIDUAL_STREAMS_DIR).mkdir(
+            parents=True, exist_ok=True
+        )
         (self._checkpoint_dir / _SHARDS_DIRNAME).mkdir(parents=True, exist_ok=True)
         # axis-1 (asi-kv-direct-chat): per-window selection-ready RS descriptor
         # dir. Created here so _process_one's best-effort write does not have
@@ -542,33 +547,54 @@ class LiveIndexer:
         keywords: list[str],
         clause_metadata: dict[str, Any],
     ) -> None:
-        # 1. Capture residual under the shared forward semaphore, on a low-prio
-        #    CUDA stream when available (overlaps with chat decode on default).
-        with self._forward_semaphore:
-            if torch is not None and self._stream is not None:
-                with torch.cuda.stream(self._stream):  # type: ignore[attr-defined]
-                    boundary_tensor = capture_post_crystal_boundary(
-                        self._model,
-                        token_ids,
-                        crystal_layer=self._crystal_layer,
-                    )
-                # Ensure the capture stream is done before we pull the CPU tensor.
-                self._stream.synchronize()
-            else:
-                boundary_tensor = capture_post_crystal_boundary(
+        def _capture_with_optional_stream():
+            try:
+                return capture_post_crystal_boundary(
+                    self._model,
+                    token_ids,
+                    crystal_layer=self._crystal_layer,
+                    return_stream=True,
+                )
+            except TypeError as exc:
+                if "return_stream" not in str(exc):
+                    raise
+                return capture_post_crystal_boundary(
                     self._model,
                     token_ids,
                     crystal_layer=self._crystal_layer,
                 )
 
+        # 1. Capture residual under the shared forward semaphore, on a low-prio
+        #    CUDA stream when available (overlaps with chat decode on default).
+        with self._forward_semaphore:
+            if torch is not None and self._stream is not None:
+                with torch.cuda.stream(self._stream):  # type: ignore[attr-defined]
+                    captured = _capture_with_optional_stream()
+                # Ensure the capture stream is done before we pull the CPU tensor.
+                self._stream.synchronize()
+            else:
+                captured = _capture_with_optional_stream()
+        if isinstance(captured, tuple):
+            boundary_tensor, stream_tensor = captured
+        else:  # pragma: no cover - compatibility with older monkeypatches
+            boundary_tensor = captured
+            stream_tensor = None
+
         # 2. Finalize residual (adapter-overridable).
         array = self._finalize(boundary_tensor)
 
-        # 3. Persist boundary atomically.
+        # 3. Persist boundary and full residual stream atomically.
         boundary_path = (
             self._checkpoint_dir / BOUNDARIES_DIR / f"window_{int(window_id):03d}.npy"
         )
         self._write_boundary(boundary_path, array)
+        stream_path = (
+            self._checkpoint_dir
+            / RESIDUAL_STREAMS_DIR
+            / f"window_{int(window_id):03d}.npy"
+        )
+        if stream_tensor is not None:
+            self._write_residual_stream(stream_path, stream_tensor)
 
         # 4. Append shards (tokens / keywords / metadata).
         shard_dir = self._checkpoint_dir / _SHARDS_DIRNAME
@@ -598,6 +624,7 @@ class LiveIndexer:
                 clause_metadata=clause_metadata,
                 array=array,
                 boundary_path=boundary_path,
+                residual_stream_path=stream_path if stream_tensor is not None else None,
             )
         except Exception as exc:  # noqa: BLE001 - additive observer; never fatal
             sys.stderr.write(
@@ -632,6 +659,13 @@ class LiveIndexer:
         # default/CUDA path
         _atomic_save_npy(path, np.asarray(array, dtype=np.float32))
 
+    def _write_residual_stream(self, path: Path, tensor: Any) -> None:
+        if torch is not None and torch.is_tensor(tensor):
+            array = tensor.detach().to("cpu", dtype=torch.float32).numpy()
+        else:
+            array = np.asarray(tensor, dtype=np.float32)
+        _atomic_save_npy(path, np.asarray(array, dtype=np.float32))
+
     def _should_flush(self) -> bool:
         if self._adapter is not None:
             return bool(self._adapter.should_flush_manifest())
@@ -656,6 +690,7 @@ class LiveIndexer:
         clause_metadata: dict[str, Any],
         array: Any,
         boundary_path: Path,
+        residual_stream_path: Path | None = None,
     ) -> None:
         """Persist a single-object JSON descriptor describing the boundary RS.
 
@@ -743,6 +778,15 @@ class LiveIndexer:
             "kv_direct_ready": False,
             "kv_direct_pending_reason": _KV_DIRECT_PENDING_REASON,
         }
+        if residual_stream_path is not None:
+            try:
+                descriptor["residual_stream_path"] = str(
+                    residual_stream_path.relative_to(self._checkpoint_dir).as_posix()
+                )
+            except ValueError:
+                descriptor["residual_stream_path"] = (
+                    f"{RESIDUAL_STREAMS_DIR}/window_{int(window_id):03d}.npy"
+                )
         if residual_stats_on_quantized:
             descriptor["residual_stats_on_quantized"] = True
 
@@ -863,6 +907,12 @@ class LiveIndexer:
         # Manifest LAST. Readers gate on its presence.
         num_windows = max(token_lists.keys()) + 1 if token_lists else 0
         num_tokens = sum(len(tl) for tl in token_lists.values())
+        residual_stream_count = 0
+        residual_stream_dir = self._checkpoint_dir / RESIDUAL_STREAMS_DIR
+        if residual_stream_dir.exists():
+            residual_stream_count = sum(
+                1 for _ in residual_stream_dir.glob("window_*.npy")
+            )
         manifest: dict[str, Any] = {
             "store_version": STORE_VERSION,
             "clause_aligned": True,
@@ -871,6 +921,8 @@ class LiveIndexer:
             "num_tokens": int(num_tokens),
             "window_metadata": WINDOW_METADATA_FILE,
             "arch_config": dict(self._arch_config),
+            "has_residual_streams": residual_stream_count > 0,
+            "residual_stream_count": int(residual_stream_count),
         }
         _atomic_write_text_via_tmp(
             self._checkpoint_dir / MANIFEST_FILE,

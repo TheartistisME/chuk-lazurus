@@ -279,6 +279,116 @@ def test_kv_query_turn_propagates_selector_kwargs_to_retriever(
     assert meta.kv_direct_active is True
 
 
+def test_kv_query_turn_preserves_cross_session_assignments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("torch")
+
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+
+    handle_a = SimpleNamespace(session_id="sess-a")
+    handle_b = SimpleNamespace(session_id="sess-b")
+
+    class MultiAwareRetriever:
+        def __init__(self) -> None:
+            self.handles = [handle_a, handle_b]
+            self.tokenizer = object()
+            self.system_prompt = "system prompt"
+            self.captured_sessions: list[str] | None = None
+
+        def answer_with_kv_direct_multi(
+            self,
+            query_text,
+            tier_assignments,
+            *,
+            hot_budget_mib,
+            warm_config,
+            generation_config,
+            warm_scores=None,
+            query_id=None,
+            insertion_family="full_attention",
+            sliding_layer_indices=None,
+            sliding_head_indices=None,
+        ):
+            del (
+                query_text,
+                hot_budget_mib,
+                warm_config,
+                generation_config,
+                warm_scores,
+                query_id,
+                insertion_family,
+                sliding_layer_indices,
+                sliding_head_indices,
+            )
+            self.captured_sessions = [
+                assignment.candidate.handle.session_id
+                for assignment in tier_assignments
+            ]
+            return SimpleNamespace(
+                strict_assertions={
+                    "kv_direct_active": True,
+                    "mask_penalty_applied": True,
+                    "vram_peak_mib": 12,
+                    "vram_delta_mib": 4,
+                },
+                routing_mode="kv_direct",
+                source_session="sess-a",
+                window_id=0,
+                routing_score=0.99,
+                matched_window_text="matched windows",
+                window_keywords=["palette"],
+                generated_answer="retrieved answer",
+            )
+
+        def answer_with_kv_direct(self, *_args, **_kwargs):
+            raise AssertionError("single-handle fallback must not run")
+
+    class StubTokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            del text, add_special_tokens
+            return SimpleNamespace(input_ids=[1, 2, 3])
+
+    retriever = MultiAwareRetriever()
+    chat = MemoryChat.__new__(MemoryChat)
+    chat.retriever = retriever
+    chat.tokenizer = StubTokenizer()
+    chat.model = SimpleNamespace(config=SimpleNamespace(head_dim=1, num_key_value_heads=1))
+    chat.max_new_tokens = 32
+    chat.plain_chat_turn = lambda _text: _imc.TurnMetadata(mode="plain")  # type: ignore[assignment]
+
+    candidates = [
+        SimpleNamespace(handle=handle_a, window_id=0, ucb1_score=2.0),
+        SimpleNamespace(handle=handle_b, window_id=0, ucb1_score=1.0),
+    ]
+    assignments = [
+        SimpleNamespace(candidate=candidates[0], tier=SimpleNamespace(value="hot"), rank=0),
+        SimpleNamespace(candidate=candidates[1], tier=SimpleNamespace(value="warm"), rank=1),
+    ]
+
+    import chuk_lazarus.session_retrieval as session_retrieval
+
+    monkeypatch.setattr(
+        session_retrieval,
+        "asi_route_candidates",
+        lambda *_args, **_kwargs: candidates,
+    )
+    monkeypatch.setattr(
+        session_retrieval,
+        "assign_tiers",
+        lambda *_args, **_kwargs: assignments,
+    )
+
+    meta = chat.kv_query_turn("list the palette facts")
+
+    assert retriever.captured_sessions == ["sess-a", "sess-b"]
+    assert meta.mode == "kv_direct"
+    assert meta.selected_tier == "hot"
+    assert meta.mask_penalty_applied is True
+    assert meta.no_silent_fallback is True
+
+
 def test_derive_arch_config_preserves_gemma4_kv_direct_layers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -25,6 +25,7 @@ IDF_FILE = "idf.json"
 KEYWORDS_FILE = "keywords.json"
 BOUNDARY_RESIDUAL_FILE = "boundary_residual.npy"
 BOUNDARIES_DIR = "boundaries"
+RESIDUAL_STREAMS_DIR = "residual_streams"
 
 _ENTRY_DTYPE = np.dtype(
     [
@@ -369,10 +370,11 @@ def build_knowledge_store_torch(
         if progress_fn is not None:
             progress_fn(wid, num_windows)
 
-    boundaries, final_boundary = capture_window_boundaries(
+    boundaries, final_boundary, residual_streams = capture_window_boundaries(
         model,
         windows,
         crystal_layer=config.crystal_layer,
+        return_streams=True,
     )
 
     for wid, chunk_ids in enumerate(windows):
@@ -417,6 +419,13 @@ def build_knowledge_store_torch(
             boundary_np = np.asarray(boundary, dtype=np.float32).reshape(-1)
             np.save(str(boundary_dir / f"window_{wid:03d}.npy"), boundary_np)
 
+    if residual_streams:
+        stream_dir = output_path / RESIDUAL_STREAMS_DIR
+        stream_dir.mkdir(exist_ok=True)
+        for wid, stream in residual_streams.items():
+            stream_np = np.asarray(stream, dtype=np.float32)
+            np.save(str(stream_dir / f"window_{wid:03d}.npy"), stream_np)
+
     if final_boundary is not None:
         final_np = np.asarray(final_boundary, dtype=np.float32).reshape(1, 1, -1)
         np.save(str(output_path / BOUNDARY_RESIDUAL_FILE), final_np)
@@ -431,6 +440,8 @@ def build_knowledge_store_torch(
         "window_size": config.window_size,
         "arch_config": config.to_dict(),
         "has_residuals": False,
+        "has_residual_streams": bool(residual_streams),
+        "residual_stream_count": len(residual_streams),
     }
     (output_path / MANIFEST_FILE).write_text(json.dumps(manifest, indent=2) + "\n")
 

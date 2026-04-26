@@ -15,7 +15,10 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import re
+import secrets
+import shutil
 import sys
 import time
 import traceback
@@ -56,6 +59,21 @@ class RecallResult:
     answer_contains_turn: bool
     generated_answer: str
     matched_window_text: str
+    elapsed_s: float
+
+
+@dataclass
+class MultiFactRecallResult:
+    probe_idx: int
+    group_key: str
+    mode: str | None
+    no_silent_fallback: bool
+    selected_tier: str | None
+    mask_penalty_applied: bool
+    expected_colors: list[str]
+    recalled_colors: list[str]
+    missing_colors: list[str]
+    generated_answer: str
     elapsed_s: float
 
 
@@ -236,6 +254,121 @@ def run_probe(chat: Any, probe: RecallProbe, *, mode: str) -> RecallResult:
     )
 
 
+def direct_turn(chat: Any, role: Any, text: str) -> None:
+    turn = chat.session.begin_turn(role, text)
+    chat.session.finish_turn(turn)
+    chat._capture_turn_text_live(turn)
+
+
+def plant_multi_fact_group(
+    chat: Any,
+    role: Any,
+    *,
+    probe_idx: int,
+    colors: list[str],
+) -> tuple[str, list[dict[str, Any]]]:
+    group_key = f"scale_multi_fact_{probe_idx:04d}_{secrets.token_hex(6)}"
+    facts: list[dict[str, Any]] = []
+    for fact_idx, color in enumerate(colors):
+        chat.memory_mode = "off"
+        chat.start_new_session()
+        session_id = chat.session.session_id
+        marker = f"smf{probe_idx:04d}_{fact_idx}_{secrets.token_hex(6)}"
+        text = (
+            f"{marker}. Unique multi-fact recall marker {marker}. "
+            f"Website palette decision group {group_key}. "
+            f"For this website color scheme, favorite color slot {fact_idx} "
+            f"is {color}. Design palette decisions for {group_key} include {color}."
+        )
+        direct_turn(chat, role, text)
+        direct_turn(
+            chat,
+            role,
+            (
+                f"Neutral padding note {secrets.token_hex(8)}. "
+                "This line gives the session a second retrieval window without "
+                "adding palette facts."
+            ),
+        )
+        chat._mark_dirty()
+        if not chat.save_current_session(rebuild_retriever=True):
+            raise RuntimeError(
+                "save_current_session returned False while planting "
+                f"multi_fact probe {probe_idx} fact {fact_idx}"
+            )
+        facts.append(
+            {
+                "fact_idx": fact_idx,
+                "session_id": session_id,
+                "marker": marker,
+                "color": color,
+            }
+        )
+    return group_key, facts
+
+
+def reset_multi_fact_probe_store(chat: Any) -> None:
+    """Clear the verifier's disposable store between independent probes."""
+    if getattr(chat, "indexer", None) is not None:
+        with contextlib.suppress(Exception):
+            chat.indexer.stop()
+    chat.indexer = None
+    chat.retriever = None
+    chat.session = None
+    chat.history = None
+    chat.vec_inject_provider = None
+    for root in (chat.inputs_root, chat.checkpoints_root, chat.transcripts_root):
+        root.mkdir(parents=True, exist_ok=True)
+        for child in root.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+
+
+def run_multi_fact_probe(
+    chat: Any,
+    role: Any,
+    *,
+    probe_idx: int,
+    colors: list[str],
+) -> MultiFactRecallResult:
+    group_key, facts = plant_multi_fact_group(
+        chat,
+        role,
+        probe_idx=probe_idx,
+        colors=colors,
+    )
+    query = (
+        f"List all favorite color answers from prior website color scheme "
+        f"palette decisions in group {group_key}. Return only the four color "
+        "words."
+    )
+    chat.memory_mode = "kv_direct"
+    chat.start_new_session()
+    started = time.time()
+    meta = chat.kv_query_turn(query)
+    elapsed = time.time() - started
+    answer = str(getattr(meta, "generated_answer", "") or "")
+    answer_lower = answer.lower()
+    expected = [str(fact["color"]) for fact in facts]
+    recalled = [color for color in expected if color.lower() in answer_lower]
+    missing = [color for color in expected if color not in recalled]
+    return MultiFactRecallResult(
+        probe_idx=probe_idx,
+        group_key=group_key,
+        mode=getattr(meta, "mode", None),
+        no_silent_fallback=bool(getattr(meta, "no_silent_fallback", False)),
+        selected_tier=getattr(meta, "selected_tier", None),
+        mask_penalty_applied=bool(getattr(meta, "mask_penalty_applied", False)),
+        expected_colors=expected,
+        recalled_colors=recalled,
+        missing_colors=missing,
+        generated_answer=answer,
+        elapsed_s=elapsed,
+    )
+
+
 def result_passed(result: RecallResult, *, mode: str) -> bool:
     if result.mode != mode:
         return False
@@ -249,7 +382,17 @@ def result_passed(result: RecallResult, *, mode: str) -> bool:
     )
 
 
-def write_report(report_path: Path, results: list[RecallResult], summary: dict[str, Any]) -> None:
+def multi_fact_result_passed(result: MultiFactRecallResult) -> bool:
+    if result.mode != "kv_direct":
+        return False
+    if not result.no_silent_fallback:
+        return False
+    if result.selected_tier != "hot":
+        return False
+    return len(result.missing_colors) == 0
+
+
+def write_report(report_path: Path, results: list[Any], summary: dict[str, Any]) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "summary": summary,
@@ -265,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-non-pass", action="store_true")
     parser.add_argument("--min-sessions", type=int, default=100)
     parser.add_argument("--sample-size", type=int, default=100, help="0 means all parsed probes.")
-    parser.add_argument("--mode", choices=("kv_direct", "topical"), default="kv_direct")
+    parser.add_argument("--mode", choices=("kv_direct", "topical", "multi_fact"), default="kv_direct")
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-new-tokens", type=int, default=48)
@@ -276,11 +419,149 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run_multi_fact_mode(args: argparse.Namespace, run_dir: Path, store_root: Path) -> int:
+    harness_store_root = store_root
+    store_root = localize_path(str(run_dir / "scale-multi-fact-store"))
+    if store_root.exists():
+        shutil.rmtree(store_root)
+    imc = load_interactive_memory_chat()
+    force_deterministic_streaming()
+    chat = imc.MemoryChat(
+        store_root=store_root,
+        model_path=args.model_path,
+        max_new_tokens=max(int(args.max_new_tokens), 96),
+        memory_mode="kv_direct",
+        device=args.device,
+    )
+    chat.load_model()
+    chat.maybe_load_retriever()
+
+    from chuk_lazarus.inference.chat import Role
+
+    palette = [
+        "cerulean",
+        "saffron",
+        "chartreuse",
+        "vermillion",
+        "indigo",
+        "magenta",
+        "ochre",
+        "turquoise",
+        "crimson",
+        "periwinkle",
+        "ultramarine",
+        "malachite",
+    ]
+    probe_count = max(1, int(args.sample_size))
+    previous_env = {
+        key: os.environ.get(key)
+        for key in (
+            "LAZARUS_KV_CANDIDATE_POOL",
+            "LAZARUS_KV_K_HOT",
+            "LAZARUS_KV_K_WARM",
+            "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+            "LAZARUS_KV_HOT_BONUS",
+        )
+    }
+    results: list[MultiFactRecallResult] = []
+    passed = 0
+    try:
+        os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "4"
+        os.environ["LAZARUS_KV_K_HOT"] = "4"
+        os.environ["LAZARUS_KV_K_WARM"] = "0"
+        os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
+        os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
+        for probe_idx in range(1, probe_count + 1):
+            reset_multi_fact_probe_store(chat)
+            offset = (probe_idx - 1) % (len(palette) - 3)
+            colors = palette[offset : offset + 4]
+            try:
+                if args.quiet_model_output:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        result = run_multi_fact_probe(
+                            chat,
+                            Role.USER,
+                            probe_idx=probe_idx,
+                            colors=colors,
+                        )
+                else:
+                    result = run_multi_fact_probe(
+                        chat,
+                        Role.USER,
+                        probe_idx=probe_idx,
+                        colors=colors,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"FAIL SCALE_ACTUAL_RECALL probe={probe_idx}/{probe_count} "
+                    f"mode=multi_fact: {exc!r}"
+                )
+                print(traceback.format_exc())
+                return 1
+            results.append(result)
+            ok = multi_fact_result_passed(result)
+            passed += int(ok)
+            verdict = "PASS" if ok else "FAIL"
+            print(
+                f"{verdict} SCALE_ACTUAL_RECALL probe={probe_idx}/{probe_count} "
+                f"mode=multi_fact recalled={len(result.recalled_colors)}/4 "
+                f"elapsed_s={result.elapsed_s:.2f}",
+                flush=True,
+            )
+            if not ok:
+                print(
+                    json.dumps(asdict(result), indent=2, sort_keys=True)[:2400],
+                    flush=True,
+                )
+    finally:
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    hit_rate = passed / max(1, len(results))
+    final_summary = {
+        "run_dir": str(run_dir),
+        "store_root": str(store_root),
+        "harness_store_root": str(harness_store_root),
+        "mode": args.mode,
+        "sample_size": len(results),
+        "passed": passed,
+        "hit_rate": hit_rate,
+        "required_hit_rate": args.required_hit_rate,
+    }
+    report_path = args.report_json or (run_dir / "scale-actual-recall-multi_fact.json")
+    write_report(report_path, results, final_summary)
+    if hit_rate < args.required_hit_rate:
+        print(
+            f"FAIL SCALE_ACTUAL_RECALL: mode=multi_fact hit_rate={hit_rate:.3f} "
+            f"required={args.required_hit_rate:.3f} report={report_path}",
+            flush=True,
+        )
+        return 1
+    print(
+        f"PASS SCALE_ACTUAL_RECALL: mode=multi_fact hit_rate={hit_rate:.3f} "
+        f"passed={passed}/{len(results)} report={report_path}",
+        flush=True,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     run_dir, harness_summary = load_run_summary(args)
     events_path = localize_path(str(harness_summary.get("events_jsonl") or run_dir / "events.jsonl"))
     store_root = localize_path(str(harness_summary.get("store_root") or run_dir / "store"))
+    if args.mode == "multi_fact":
+        if args.dry_run:
+            print(
+                f"DRY_RUN SCALE_ACTUAL_RECALL: run_dir={run_dir} "
+                f"store_root={store_root} mode=multi_fact probes={args.sample_size}",
+                flush=True,
+            )
+            return 0
+        return run_multi_fact_mode(args, run_dir, store_root)
     probes = select_probes(parse_scale_probes(events_path), args.sample_size)
     if not probes:
         raise RuntimeError(f"No scale routing probes found in {events_path}")

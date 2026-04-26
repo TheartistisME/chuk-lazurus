@@ -43,6 +43,7 @@ forward behaviour of an existing model.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -347,6 +348,7 @@ class KVDirectMaterialization:
     materialized_source_layer: int | None = None
     materialized_insertion_family: str | None = None
     materialized_lineage_layer_indices: tuple[int, ...] = ()
+    per_window_token_ranges: dict[int, tuple[int, int]] | None = None
 
 
 class PathAReplayGuard:
@@ -444,6 +446,7 @@ def gather_selected_residuals(
     source_layer: int,
     include_tiers: Any = None,
     device: str = "cuda",
+    residual_mode: str = "boundary",
 ) -> GatheredResiduals:
     """Gather per-window residuals for selected tiers from the LIVE archive.
 
@@ -484,6 +487,13 @@ def gather_selected_residuals(
     """
     from chuk_lazarus.session_retrieval.tier_policy import TierLabel
 
+    residual_mode = str(residual_mode).strip().lower()
+    if residual_mode not in {"boundary", "stream"}:
+        raise ValueError(
+            "gather_selected_residuals: residual_mode must be 'boundary' or "
+            f"'stream', got {residual_mode!r}"
+        )
+
     if include_tiers is None:
         include_tiers = (TierLabel.HOT, TierLabel.WARM)
     include_set = set(include_tiers)
@@ -504,15 +514,44 @@ def gather_selected_residuals(
         if assignment.tier not in include_set:
             continue
         wid = int(assignment.candidate.window_id)
-        residual = store.load_boundary(wid, device=device)
+        if residual_mode == "stream":
+            try:
+                residual = store.load_residual_stream(wid, device=device)
+                provenance_dir = "residual_streams"
+            except FileNotFoundError:
+                warnings.warn(
+                    "gather_selected_residuals: residual stream missing for "
+                    f"window {wid}; falling back to boundary residual for "
+                    f"checkpoint {checkpoint_handle.checkpoint_dir}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                residual = store.load_boundary(wid, device=device)
+                provenance_dir = "boundaries"
+            while getattr(residual, "dim", lambda: 0)() > 2 and residual.shape[0] == 1:
+                residual = residual.squeeze(0)
+            if residual.dim() == 1:
+                residual = residual.unsqueeze(0)
+            if residual.dim() != 2:
+                raise RuntimeError(
+                    "gather_selected_residuals: residual stream for window "
+                    f"{wid} must be rank-2, got shape {tuple(residual.shape)}"
+                )
+            slot_count = int(residual.shape[0])
+        else:
+            residual = store.load_boundary(wid, device=device)
+            provenance_dir = "boundaries"
+            slot_count = 1
         per_window_residuals[wid] = residual
-        per_window_token_ranges[wid] = (slot, slot + 1)
+        per_window_token_ranges[wid] = (slot, slot + slot_count)
         archive_provenance[wid] = str(
             (
-                checkpoint_handle.checkpoint_dir / "boundaries" / f"window_{wid:03d}.npy"
+                checkpoint_handle.checkpoint_dir
+                / provenance_dir
+                / f"window_{wid:03d}.npy"
             ).as_posix()
         )
-        slot += 1
+        slot += slot_count
 
     return GatheredResiduals(
         per_window_residuals=per_window_residuals,
@@ -723,19 +762,50 @@ def materialize_kv_direct(
     max_slots = max(1, budget_bytes // per_slot_bytes)
 
     ordered_wids = list(residuals.per_window_residuals.keys())
+
+    def _slot_count(window_id: int) -> int:
+        start, end = residuals.per_window_token_ranges.get(int(window_id), (0, 0))
+        return max(0, int(end) - int(start))
+
     if tier_assignments is not None:
         tier_map: dict[int, Any] = {
             int(a.candidate.window_id): a.tier for a in tier_assignments
         }
         hot_wids = [w for w in ordered_wids if tier_map.get(w) == TierLabel.HOT]
         warm_wids = [w for w in ordered_wids if tier_map.get(w) == TierLabel.WARM]
-        # Preserve HOT; truncate WARM tail first.
-        if len(hot_wids) + len(warm_wids) > max_slots:
-            warm_keep = max(0, int(max_slots) - len(hot_wids))
-            warm_wids = warm_wids[:warm_keep]
-        ordered_wids = hot_wids + warm_wids
+        cold_wids = [w for w in ordered_wids if tier_map.get(w) == TierLabel.COLD]
+        # Preserve ranked tier order and enforce the budget in materialized
+        # token slots rather than windows. COLD is naturally last and drops
+        # first when the active prefix is too large.
+        kept: list[int] = []
+        used_slots = 0
+        for wid in hot_wids:
+            count = _slot_count(wid)
+            if count <= 0:
+                continue
+            kept.append(wid)
+            used_slots += count
+        for wid in warm_wids + cold_wids:
+            count = _slot_count(wid)
+            if count <= 0:
+                continue
+            if used_slots + count > max_slots:
+                continue
+            kept.append(wid)
+            used_slots += count
+        ordered_wids = kept
     else:
-        ordered_wids = ordered_wids[: int(max_slots)]
+        kept = []
+        used_slots = 0
+        for wid in ordered_wids:
+            count = _slot_count(wid)
+            if count <= 0:
+                continue
+            if used_slots + count > max_slots:
+                continue
+            kept.append(wid)
+            used_slots += count
+        ordered_wids = kept
 
     if not ordered_wids:
         raise RuntimeError(
@@ -743,16 +813,28 @@ def materialize_kv_direct(
             f"hot_budget_mib={hot_budget_mib} is too small for even one slot."
         )
 
-    stacked = torch.stack(
-        [
-            residuals.per_window_residuals[w].to(
-                device=model_device, dtype=model_dtype, non_blocking=True
+    chunks = []
+    materialized_ranges: dict[int, tuple[int, int]] = {}
+    slot_offset = 0
+    for wid in ordered_wids:
+        tensor = residuals.per_window_residuals[wid].to(
+            device=model_device, dtype=model_dtype, non_blocking=True
+        )
+        while tensor.dim() > 2 and tensor.shape[0] == 1:
+            tensor = tensor.squeeze(0)
+        if tensor.dim() == 1:
+            tensor = tensor.unsqueeze(0)
+        if tensor.dim() != 2:
+            raise RuntimeError(
+                "materialize_kv_direct: residual for window "
+                f"{wid} must be rank-1 or rank-2, got shape {tuple(tensor.shape)}"
             )
-            for w in ordered_wids
-        ],
-        dim=0,
-    )  # (N, hidden)
-    stacked = stacked.unsqueeze(0)  # (1, N, hidden)
+        slot_count = int(tensor.shape[0])
+        chunks.append(tensor)
+        materialized_ranges[int(wid)] = (slot_offset, slot_offset + slot_count)
+        slot_offset += slot_count
+
+    stacked = torch.cat(chunks, dim=0).unsqueeze(0)  # (1, N, hidden)
 
     guard = PathAReplayGuard(model, injection_layer, resolve_layers=_resolve_default_layers)
     with guard:
@@ -790,6 +872,7 @@ def materialize_kv_direct(
         materialized_source_layer=injection_layer,
         materialized_insertion_family=materialized_insertion_family,
         materialized_lineage_layer_indices=materialized_lineage_layer_indices,
+        per_window_token_ranges=materialized_ranges,
     )
 
 

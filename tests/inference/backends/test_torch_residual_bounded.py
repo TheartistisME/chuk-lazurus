@@ -430,6 +430,10 @@ class TestAxis5GatherAndMaterialize:
             "materialization_mode",
             "hot_budget_mib_observed",
             "path_a_replay_count",
+            "materialized_source_layer",
+            "materialized_insertion_family",
+            "materialized_lineage_layer_indices",
+            "per_window_token_ranges",
         }
         with pytest.raises(dataclasses.FrozenInstanceError):
             mat.path_a_replay_count = 99  # type: ignore[misc]

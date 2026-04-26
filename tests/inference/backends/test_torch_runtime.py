@@ -385,6 +385,35 @@ class TestResidualSeededAtLayer:
         )
 
 
+def test_multi_fact_tier_mask_12_fact_hot_warm_cold_softmax_proportions():
+    """A 4/4/4 split yields HOT mass > WARM mass > 0 and zero COLD mass."""
+    attn_logits = torch.zeros((1, 2, 3, 12), dtype=torch.float32)
+    inputs = AttentionTierMaskInputs(
+        per_window_token_ranges={idx: (idx, idx + 1) for idx in range(12)},
+        tier_assignments={
+            **{idx: TierLabel.HOT for idx in range(4)},
+            **{idx: TierLabel.WARM for idx in range(4, 8)},
+            **{idx: TierLabel.COLD for idx in range(8, 12)},
+        },
+        warm_config=WarmPenaltyConfig(penalty_value=4.0, hot_bonus_value=0.0),
+    )
+
+    masked = apply_tier_attention_mask(attn_logits, inputs)
+    post_softmax = torch.softmax(masked, dim=-1)
+
+    hot_mass = post_softmax[..., 0:4].sum(dim=-1)
+    warm_mass = post_softmax[..., 4:8].sum(dim=-1)
+    cold_mass = post_softmax[..., 8:12].sum(dim=-1)
+
+    assert torch.all(hot_mass > warm_mass)
+    assert torch.all(warm_mass > 0)
+    assert torch.all(cold_mass == 0)
+    torch.testing.assert_close(
+        post_softmax.sum(dim=-1),
+        torch.ones_like(hot_mass),
+    )
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime test requires a CUDA GPU")
 class TestKvDirectMaterializationValidation:
     """Focused runtime-side validation checks that fail before patch execution."""

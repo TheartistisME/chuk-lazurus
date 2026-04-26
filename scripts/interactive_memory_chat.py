@@ -795,8 +795,11 @@ class MemoryChat:
         any OS error is logged and swallowed; the chat must never crash
         because of a flag-write failure (e.g. read-only mount, ENOSPC).
         """
+        store_root = getattr(self, "store_root", None)
+        if store_root is None:
+            return
         try:
-            (self.store_root / DIRTY_FLAG_FILENAME).touch(exist_ok=True)
+            (store_root / DIRTY_FLAG_FILENAME).touch(exist_ok=True)
         except OSError as exc:
             info(f"  .dirty mark FAILED (non-fatal): {exc!r}")
 
@@ -1288,7 +1291,7 @@ class MemoryChat:
             max_total_inject_tokens = _env_max_total_inject_tokens()
         else:
             max_total_inject_tokens = int(max_total_inject_tokens)
-        cfg = getattr(self.model, "config", None)
+        cfg = getattr(getattr(self, "model", None), "config", None)
         # Gemma-4-E2B-it ships head_dim=256, num_key_value_heads=4. Fall
         # back to those literals when config attributes are missing.
         head_dim = int(getattr(cfg, "head_dim", 256) or 256)
@@ -1397,28 +1400,14 @@ class MemoryChat:
             if not tier_assignments:
                 raise RuntimeError("assign_tiers produced zero assignments")
 
-            # Group assignments by the handle that owns the candidate.
-            # The top-ranked candidate's handle is used as the target
-            # checkpoint; all tier assignments for that same handle are
-            # passed to materialization (axis-5 requires single-handle
-            # assignments per prepare_kv_direct_materialization call).
-            top_handle = tier_assignments[0].candidate.handle
-            assignments_for_handle = [
-                a for a in tier_assignments
-                if a.candidate.handle.session_id == top_handle.session_id
-            ]
-            if not assignments_for_handle:
-                raise RuntimeError(
-                    "no tier assignments owned by top-ranked candidate's handle"
-                )
-
-            # axis-4 (Addition 1): apply token-budget governor BEFORE
-            # answer_with_kv_direct. Caps the per-call injection footprint
-            # at MAX_TOTAL_INJECT_TOKENS; truncates lowest-scoring facts.
-            assignments_for_handle = self._apply_token_budget(
-                assignments_for_handle
+            # axis-4 (Addition 1): apply the token-budget governor BEFORE
+            # materialization. The real retriever can now consume assignments
+            # across multiple sessions; legacy test doubles fall back to the
+            # original single-handle path below.
+            assignments_for_generation = self._apply_token_budget(
+                list(tier_assignments)
             )
-            if not assignments_for_handle:
+            if not assignments_for_generation:
                 raise RuntimeError(
                     "axis-4 token-budget governor truncated all assignments"
                 )
@@ -1446,15 +1435,43 @@ class MemoryChat:
                     f"{selector_kwargs['sliding_head_indices']}"
                 )
 
-            result = self.retriever.answer_with_kv_direct(
-                query_text,
-                assignments_for_handle,
-                hot_budget_mib=hot_budget_mib,
-                warm_config=warm_config,
-                generation_config=gen_config,
-                handle=top_handle,
-                **selector_kwargs,
+            answer_multi = getattr(
+                self.retriever,
+                "answer_with_kv_direct_multi",
+                None,
             )
+            if callable(answer_multi):
+                result = answer_multi(
+                    query_text,
+                    assignments_for_generation,
+                    hot_budget_mib=hot_budget_mib,
+                    warm_config=warm_config,
+                    generation_config=gen_config,
+                    **selector_kwargs,
+                )
+            else:
+                # Compatibility path for older retrievers and unit-test
+                # doubles. It intentionally preserves the old single-session
+                # materialization behaviour when the multi-handle API is not
+                # available.
+                top_handle = assignments_for_generation[0].candidate.handle
+                assignments_for_generation = [
+                    a for a in assignments_for_generation
+                    if a.candidate.handle.session_id == top_handle.session_id
+                ]
+                if not assignments_for_generation:
+                    raise RuntimeError(
+                        "no tier assignments owned by top-ranked candidate's handle"
+                    )
+                result = self.retriever.answer_with_kv_direct(
+                    query_text,
+                    assignments_for_generation,
+                    hot_budget_mib=hot_budget_mib,
+                    warm_config=warm_config,
+                    generation_config=gen_config,
+                    handle=top_handle,
+                    **selector_kwargs,
+                )
         except (ValueError, RuntimeError) as exc:
             # axis-6: SILENT FALLBACK DETECTED — first-class WARN.
             print(
@@ -1490,17 +1507,21 @@ class MemoryChat:
         meta.mask_penalty_applied = bool(kv_strict.get("mask_penalty_applied", False))
         meta.vram_peak_mib = kv_strict.get("vram_peak_mib", None)
         meta.vram_delta_mib = kv_strict.get("vram_delta_mib", None)
-        # selected_tier: derive from the tier assignments used for this
-        # handle. When the assignments span HOT + WARM we label "hot+warm"
-        # (or "mixed" when COLD sneaks in). Single-tier sets return the
-        # single label.
-        tiers_used = {a.tier.value for a in assignments_for_handle}
+        # selected_tier: report the highest-priority tier that contributed to
+        # this generation. Multi-fact queries can include HOT and WARM slots in
+        # one answer, but the selected tier remains the top active tier.
+        tiers_used = {
+            str(getattr(a.tier, "value", a.tier))
+            for a in assignments_for_generation
+        }
         if not tiers_used:
             meta.selected_tier = "kv_direct"
-        elif len(tiers_used) == 1:
-            meta.selected_tier = next(iter(tiers_used))
-        elif tiers_used == {"hot", "warm"}:
-            meta.selected_tier = "hot+warm"
+        elif "hot" in tiers_used:
+            meta.selected_tier = "hot"
+        elif "warm" in tiers_used:
+            meta.selected_tier = "warm"
+        elif "cold" in tiers_used:
+            meta.selected_tier = "cold"
         else:
             meta.selected_tier = "mixed"
 
@@ -1734,6 +1755,7 @@ class MemoryChat:
             torch_store_dir = session_root / "torch_store"
             manifest_abs = torch_store_dir / "manifest.json"
             boundaries_abs = torch_store_dir / "boundaries"
+            residual_streams_abs = torch_store_dir / "residual_streams"
             selection_ready_abs = torch_store_dir / "selection_ready"
 
             # Window count: prefer the manifest the indexer just wrote, fall
@@ -1755,6 +1777,11 @@ class MemoryChat:
             boundary_residual_count = (
                 sum(1 for _ in boundaries_abs.glob("window_*.npy"))
                 if boundaries_abs.exists()
+                else 0
+            )
+            residual_stream_count = (
+                sum(1 for _ in residual_streams_abs.glob("window_*.npy"))
+                if residual_streams_abs.exists()
                 else 0
             )
             selection_ready_descriptor_count = (
@@ -1783,6 +1810,8 @@ class MemoryChat:
                 ),
                 "boundary_residual_dir": "torch_store/boundaries",
                 "boundary_residual_count": int(boundary_residual_count),
+                "residual_stream_dir": "torch_store/residual_streams",
+                "residual_stream_count": int(residual_stream_count),
                 "transcript_path": str(transcript_path),
                 "aus3000_clauses_count": int(len(written)),
                 "indexer_flush_seconds": float(dt),
