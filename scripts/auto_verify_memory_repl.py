@@ -54,6 +54,10 @@ CHECKS: tuple[tuple[str, str], ...] = (
     ("PROBE_NO_MUTATION", "/query, /exact, and /entity probes do not mutate chat state."),
     ("KV_DIRECT_RECALL", "KV-direct recall runs without silent fallback."),
     ("MULTI_FACT_RECALL", "KV-direct tier policy recalls HOT/WARM facts across sessions and mutes COLD."),
+    (
+        "REAL_WORLD_MULTI_FACT_RECALL",
+        "Natural website color-scheme memories synthesize HOT/WARM facts and mute COLD.",
+    ),
     ("TOKEN_BUDGET", "The token-budget governor binds under pressure."),
     ("VRAM_BOUNDED", "KV-direct peak VRAM stays below the configured ceiling."),
     ("FALLBACK_TRUTH", "Forced KV-direct failure emits truthful no_silent_fallback=False."),
@@ -360,6 +364,175 @@ def parse_csv_ints(raw: str) -> list[int]:
     return values
 
 
+REAL_WORLD_COLOR_MEMORIES: tuple[dict[str, str], ...] = (
+    {
+        "fact_key": "deep_teal_hero_cold",
+        "match_phrase": "deep teal for the hero",
+        "text": (
+            "Across our website color scheme sessions, we liked deep teal "
+            "for the hero, but worried it made the page feel cold."
+        ),
+    },
+    {
+        "fact_key": "purple_gradient_rejected",
+        "match_phrase": "purple-to-blue gradient",
+        "text": (
+            "Across our website color scheme sessions, the client rejected "
+            "the purple-to-blue gradient because it felt too flashy."
+        ),
+    },
+    {
+        "fact_key": "warm_white_background",
+        "match_phrase": "warm white for the main background",
+        "text": (
+            "Across our website color scheme sessions, we chose warm white "
+            "for the main background to soften the brand."
+        ),
+    },
+    {
+        "fact_key": "graphite_headings",
+        "match_phrase": "graphite should be used for headings",
+        "text": (
+            "Across our website color scheme sessions, graphite should be "
+            "used for headings instead of pure black."
+        ),
+    },
+    {
+        "fact_key": "amber_cta",
+        "match_phrase": "amber is approved only",
+        "text": (
+            "Across our website color scheme sessions, amber is approved "
+            "only for primary CTA buttons."
+        ),
+    },
+    {
+        "fact_key": "sage_replaced_teal",
+        "match_phrase": "sage green replaced teal",
+        "text": (
+            "Across our website color scheme sessions, after review, sage "
+            "green replaced teal as the accent color."
+        ),
+    },
+    {
+        "fact_key": "avoid_beige",
+        "match_phrase": "avoid beige",
+        "text": (
+            "Across our website color scheme sessions, avoid beige because "
+            "it made the site look dated."
+        ),
+    },
+    {
+        "fact_key": "muted_navy_footer",
+        "match_phrase": "muted navy",
+        "text": (
+            "Across our website color scheme sessions, the footer can use a "
+            "muted navy, but that navy should not move into the hero."
+        ),
+    },
+    {
+        "fact_key": "coral_dropped",
+        "match_phrase": "coral was considered",
+        "text": (
+            "Across our website color scheme sessions, coral was considered "
+            "for buttons, then dropped for accessibility contrast."
+        ),
+    },
+    {
+        "fact_key": "product_cards_white",
+        "match_phrase": "product cards should stay white",
+        "text": (
+            "Across our website color scheme sessions, product cards should "
+            "stay white with subtle gray borders."
+        ),
+    },
+    {
+        "fact_key": "logo_contrast",
+        "match_phrase": "logo lockup needs enough contrast",
+        "text": (
+            "Across our website color scheme sessions, the logo lockup needs "
+            "enough contrast on warm white."
+        ),
+    },
+    {
+        "fact_key": "final_palette",
+        "match_phrase": "final palette direction",
+        "text": (
+            "Final palette direction across our website color scheme sessions: "
+            "warm white background, graphite headings, sage accents replacing "
+            "teal, and amber primary CTA only."
+        ),
+    },
+)
+
+
+def real_world_fact_mentioned(fact_key: str, answer: str) -> bool:
+    lower = answer.lower()
+    if fact_key == "deep_teal_hero_cold":
+        return "teal" in lower and "hero" in lower and "cold" in lower
+    if fact_key == "purple_gradient_rejected":
+        return "purple" in lower and "gradient" in lower and "reject" in lower
+    if fact_key == "warm_white_background":
+        return "warm white" in lower and "background" in lower
+    if fact_key == "graphite_headings":
+        return "graphite" in lower and "heading" in lower
+    if fact_key == "amber_cta":
+        return "amber" in lower and "cta" in lower
+    if fact_key == "sage_replaced_teal":
+        return "sage" in lower and "teal" in lower and "replac" in lower
+    if fact_key == "avoid_beige":
+        return "beige" in lower and ("avoid" in lower or "dated" in lower)
+    if fact_key == "muted_navy_footer":
+        return "navy" in lower and "footer" in lower and "hero" in lower
+    if fact_key == "coral_dropped":
+        return "coral" in lower and ("contrast" in lower or "accessibility" in lower)
+    if fact_key == "product_cards_white":
+        return "product card" in lower and "white" in lower and "border" in lower
+    if fact_key == "logo_contrast":
+        return "logo" in lower and "contrast" in lower and "warm white" in lower
+    if fact_key == "final_palette":
+        return (
+            "final" in lower
+            and "warm white" in lower
+            and "graphite" in lower
+            and "sage" in lower
+            and "amber" in lower
+        )
+    raise KeyError(f"unknown real-world fact key: {fact_key}")
+
+
+def real_world_conflict_preserved(answer: str) -> bool:
+    lower = answer.lower()
+    return "teal" in lower and "sage" in lower and "replac" in lower
+
+
+def real_world_final_decision_present(answer: str) -> bool:
+    lower = answer.lower()
+    return (
+        ("final" in lower or "direction" in lower)
+        and "warm white" in lower
+        and "graphite" in lower
+        and "sage" in lower
+        and "amber" in lower
+    )
+
+
+def real_world_fact_entailed_by_selected(
+    fact_key: str,
+    selected_fact_keys: set[str],
+) -> bool:
+    """Return True when a fact is already covered by a HOT/WARM memory."""
+    if fact_key in selected_fact_keys:
+        return True
+    if "final_palette" in selected_fact_keys and fact_key in {
+        "warm_white_background",
+        "graphite_headings",
+        "amber_cta",
+        "sage_replaced_teal",
+    }:
+        return True
+    return False
+
+
 class ReplAutomation:
     def __init__(self, args: argparse.Namespace, log: AuditLog) -> None:
         self.args = args
@@ -371,6 +544,7 @@ class ReplAutomation:
         self.primary_marker = secrets.token_hex(8)
         self.color_marker = secrets.token_hex(8)
         self.scale_markers: list[dict[str, Any]] = []
+        self.real_world_records: list[dict[str, Any]] = []
         self.multi_fact_records: list[dict[str, Any]] = []
         self.primary_clause: dict[str, Any] | None = None
         self.budget_observations: list[dict[str, Any]] = []
@@ -389,6 +563,10 @@ class ReplAutomation:
         self.run_check("PROBE_NO_MUTATION", self.probe_no_mutation)
         self.run_check("KV_DIRECT_RECALL", self.kv_direct_recall)
         self.run_check("MULTI_FACT_RECALL", self.multi_fact_recall)
+        self.run_check(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            self.real_world_multi_fact_recall,
+        )
         self.run_check("TOKEN_BUDGET", self.token_budget)
         self.run_check("VRAM_BOUNDED", self.vram_bounded)
         self.run_check("FALLBACK_TRUTH", self.fallback_truth)
@@ -820,6 +998,264 @@ class ReplAutomation:
         )
         self.log.event("kv_direct.meta", **self.meta_to_dict(meta))
         return "KV-direct recall active with no silent fallback"
+
+    def plant_real_world_color_session(
+        self,
+        *,
+        fact_idx: int,
+        fact: dict[str, str],
+    ) -> dict[str, Any]:
+        chat = self.load_main_chat()
+        assert self.role_cls is not None
+        chat.memory_mode = "off"
+        chat.start_new_session()
+        session_id = chat.session.session_id
+        self.direct_turn(chat, self.role_cls.USER, fact["text"])
+        self.direct_turn(
+            chat,
+            self.role_cls.USER,
+            (
+                f"Neutral project note {secrets.token_hex(8)}. "
+                "This follow-up is ordinary session padding and does not add "
+                "any project decision."
+            ),
+        )
+        chat._mark_dirty()
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            chat.save_current_session(rebuild_retriever=True),
+            "save_current_session returned False for real-world color session",
+            fact_idx=fact_idx,
+            session_id=session_id,
+            fact_key=fact["fact_key"],
+        )
+        record = {
+            "fact_idx": int(fact_idx),
+            "session_id": session_id,
+            "fact_key": fact["fact_key"],
+            "match_phrase": fact["match_phrase"],
+            "text": fact["text"],
+        }
+        self.log.event("real_world_multi_fact.session_saved", **record)
+        return record
+
+    def real_world_multi_fact_recall(self) -> str:
+        chat = self.load_main_chat()
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            chat.retriever is not None,
+            "retriever missing",
+        )
+        self.real_world_records = [
+            self.plant_real_world_color_session(fact_idx=idx, fact=dict(fact))
+            for idx, fact in enumerate(REAL_WORLD_COLOR_MEMORIES)
+        ]
+
+        from chuk_lazarus.session_retrieval import asi_route_candidates, assign_tiers
+        from chuk_lazarus.session_retrieval.enumeration import load_store
+
+        query = (
+            "Tell me everything we discussed about the website's color scheme "
+            "across all our sessions."
+        )
+        candidates = asi_route_candidates(
+            chat.retriever.handles,
+            query,
+            chat.retriever.tokenizer,
+            candidate_pool=24,
+        )
+        records_by_phrase = {
+            str(record["match_phrase"]).lower(): record
+            for record in self.real_world_records
+        }
+        candidate_records: list[dict[str, Any]] = []
+        for rank, candidate in enumerate(candidates):
+            store = load_store(candidate.handle)
+            window_text = store.get_window_text(int(candidate.window_id), chat.tokenizer)
+            matched = None
+            for phrase, record in records_by_phrase.items():
+                if phrase in window_text.lower():
+                    matched = record
+                    break
+            if matched is not None:
+                candidate_records.append(
+                    {
+                        **matched,
+                        "rank": rank,
+                        "candidate_session_id": candidate.handle.session_id,
+                        "window_id": int(candidate.window_id),
+                    }
+                )
+        seen_fact_keys = {str(record["fact_key"]) for record in candidate_records}
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            len(seen_fact_keys) >= 10,
+            "ASI candidate_pool did not cover at least 10 of 12 natural memories",
+            seen=sorted(seen_fact_keys),
+            expected=sorted(record["fact_key"] for record in self.real_world_records),
+        )
+
+        assignments = assign_tiers(
+            candidates,
+            K_HOT=4,
+            K_WARM=4,
+            candidate_pool=12,
+        )
+        records_by_session_window = {
+            (record["candidate_session_id"], int(record["window_id"])): record
+            for record in candidate_records
+        }
+        tier_records: dict[str, list[dict[str, Any]]] = {
+            "hot": [],
+            "warm": [],
+            "cold": [],
+        }
+        for assignment in assignments:
+            key = (
+                assignment.candidate.handle.session_id,
+                int(assignment.candidate.window_id),
+            )
+            record = records_by_session_window.get(key)
+            if record is not None:
+                tier_records[assignment.tier.value].append(record)
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            all(len(tier_records[tier]) == 4 for tier in ("hot", "warm", "cold")),
+            "top 12 tier split was not 4/4/4 for natural color memories",
+            tier_records=tier_records,
+        )
+
+        previous_env = {
+            key: os.environ.get(key)
+            for key in (
+                "LAZARUS_KV_CANDIDATE_POOL",
+                "LAZARUS_KV_K_HOT",
+                "LAZARUS_KV_K_WARM",
+                "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+                "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
+                "LAZARUS_KV_HOT_BONUS",
+            )
+        }
+        previous_max_new_tokens = int(chat.max_new_tokens)
+        try:
+            os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+            os.environ["LAZARUS_KV_K_HOT"] = "4"
+            os.environ["LAZARUS_KV_K_WARM"] = "4"
+            os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
+            os.environ["LAZARUS_KV_SEMANTIC_PREFIX_TOKENS"] = "4096"
+            os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
+            chat.max_new_tokens = max(previous_max_new_tokens, 220)
+            chat.memory_mode = "kv_direct"
+            chat.start_new_session()
+            meta = chat.kv_query_turn(query)
+        finally:
+            chat.max_new_tokens = previous_max_new_tokens
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assert_kv_meta("REAL_WORLD_MULTI_FACT_RECALL", meta)
+        answer = str(getattr(meta, "generated_answer", "") or "")
+        hot_hits = [
+            record for record in tier_records["hot"]
+            if real_world_fact_mentioned(str(record["fact_key"]), answer)
+        ]
+        warm_hits = [
+            record for record in tier_records["warm"]
+            if real_world_fact_mentioned(str(record["fact_key"]), answer)
+        ]
+        selected_fact_keys = {
+            str(record["fact_key"])
+            for tier in ("hot", "warm")
+            for record in tier_records[tier]
+        }
+        cold_only_records = [
+            record for record in tier_records["cold"]
+            if not real_world_fact_entailed_by_selected(
+                str(record["fact_key"]),
+                selected_fact_keys,
+            )
+        ]
+        cold_hits = [
+            record for record in cold_only_records
+            if real_world_fact_mentioned(str(record["fact_key"]), answer)
+        ]
+        conflict_preserved = real_world_conflict_preserved(answer)
+        final_decision_present = real_world_final_decision_present(answer)
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            len(hot_hits) == 4,
+            "generated answer missed one or more HOT natural memories",
+            hot_expected=tier_records["hot"],
+            hot_hits=hot_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            len(warm_hits) >= 3,
+            "generated answer recalled too few WARM natural memories",
+            warm_expected=tier_records["warm"],
+            warm_hits=warm_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            len(cold_hits) == 0,
+            "generated answer mentioned COLD-only natural memories",
+            cold_expected=tier_records["cold"],
+            cold_only_expected=cold_only_records,
+            cold_hits=cold_hits,
+            answer=answer,
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            conflict_preserved,
+            "generated answer did not preserve a color revision",
+            answer=answer,
+            tier_records=tier_records,
+        )
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            final_decision_present,
+            "generated answer did not identify a final/current decision",
+            answer=answer,
+            tier_records=tier_records,
+        )
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            bool(getattr(meta, "mask_penalty_applied", False)),
+            "axis-6 did not report mask_penalty_applied=True",
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "REAL_WORLD_MULTI_FACT_RECALL",
+            getattr(meta, "selected_tier", None) == "hot",
+            "axis-6 did not report selected_tier=hot",
+            meta=self.meta_to_dict(meta),
+        )
+        self.log.event(
+            "real_world_multi_fact.meta",
+            answer=answer,
+            hot_hits=len(hot_hits),
+            warm_hits=len(warm_hits),
+            cold_hits=len(cold_hits),
+            conflict_preserved=conflict_preserved,
+            final_decision_present=final_decision_present,
+            tier_records=tier_records,
+            meta=self.meta_to_dict(meta),
+        )
+        return (
+            "natural multi-fact recall HOT=4/4 WARM="
+            f"{len(warm_hits)}/4 COLD={len(cold_hits)}/4 "
+            f"conflict_preserved={conflict_preserved} "
+            f"final_decision_present={final_decision_present} "
+            f"selected_tier={getattr(meta, 'selected_tier', None)}"
+        )
 
     def plant_multi_fact_session(
         self,

@@ -414,6 +414,42 @@ def test_multi_fact_tier_mask_12_fact_hot_warm_cold_softmax_proportions():
     )
 
 
+def test_natural_multi_token_tier_mask_mutes_cold_ranges():
+    """Natural memories occupy variable token ranges; COLD ranges stay muted."""
+    attn_logits = torch.zeros((1, 2, 3, 24), dtype=torch.float32)
+    inputs = AttentionTierMaskInputs(
+        per_window_token_ranges={
+            10: (0, 3),
+            11: (3, 5),
+            20: (5, 9),
+            21: (9, 10),
+            30: (10, 18),
+            31: (18, 24),
+        },
+        tier_assignments={
+            10: TierLabel.HOT,
+            11: TierLabel.HOT,
+            20: TierLabel.WARM,
+            21: TierLabel.WARM,
+            30: TierLabel.COLD,
+            31: TierLabel.COLD,
+        },
+        warm_config=WarmPenaltyConfig(penalty_value=4.0, hot_bonus_value=0.0),
+    )
+
+    masked = apply_tier_attention_mask(attn_logits, inputs)
+    post_softmax = torch.softmax(masked, dim=-1)
+
+    hot_mass = post_softmax[..., 0:5].sum(dim=-1)
+    warm_mass = post_softmax[..., 5:10].sum(dim=-1)
+    cold_mass = post_softmax[..., 10:24].sum(dim=-1)
+
+    assert torch.isneginf(masked[..., 10:24]).all()
+    assert torch.all(hot_mass > warm_mass)
+    assert torch.all(warm_mass > 0)
+    assert torch.all(cold_mass == 0)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime test requires a CUDA GPU")
 class TestKvDirectMaterializationValidation:
     """Focused runtime-side validation checks that fail before patch execution."""

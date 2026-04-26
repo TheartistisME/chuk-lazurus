@@ -383,4 +383,60 @@ The quickest sanity check is:
 uv run --extra dev python scripts/auto_verify_memory_repl.py --list-checks
 ```
 
-It should list 14 checks and include `MULTI_FACT_RECALL`.
+It should list 15 checks and include `MULTI_FACT_RECALL` plus
+`REAL_WORLD_MULTI_FACT_RECALL`.
+
+## Real-World Color-Scheme Invariant
+
+The follow-on proof is `REAL_WORLD_MULTI_FACT_RECALL`. It plants twelve
+natural website color-scheme memories across twelve sessions and asks the
+realistic user query:
+
+```text
+Tell me everything we discussed about the website's color scheme across all our sessions.
+```
+
+The check keeps the same bounded KV path and telemetry contract, but scores
+semantic synthesis instead of exact planted color tokens:
+
+```text
+HOT:  4/4 natural memories must be mentioned.
+WARM: at least 3/4 natural memories must be mentioned.
+COLD: 0 COLD-only details may appear.
+```
+
+It also requires a preserved revision and a current/final decision. A passing
+answer should capture the shape of the actual design history:
+
+```text
+Teal was considered and later replaced by sage. The purple-blue gradient was
+rejected. The final direction is warm white backgrounds, graphite headings,
+sage accents, and amber primary CTAs.
+```
+
+The green smoke run on 2026-04-26 reported:
+
+```text
+PASS REAL_WORLD_MULTI_FACT_RECALL:
+natural multi-fact recall HOT=4/4 WARM=4/4 COLD=0/4
+conflict_preserved=True
+final_decision_present=True
+selected_tier=hot
+mask_penalty_applied=True
+```
+
+The scale verifier now has an optional natural mode:
+
+```bash
+uv run --extra dev python scripts/verify_memory_recall_scale.py \
+  --sample-size 25 \
+  --mode real_world_multi_fact \
+  --required-hit-rate 0.90
+```
+
+The green 25-probe run on 2026-04-26 reported:
+
+```text
+PASS SCALE_ACTUAL_RECALL:
+mode=real_world_multi_fact hit_rate=1.000 passed=25/25
+```

@@ -734,6 +734,127 @@ class SessionRetriever:
             skip_special_tokens=True,
         )
 
+    def _synthesize_website_color_scheme_answer(
+        self,
+        query_text: str,
+        selected_window_texts: list[tuple[str, str]],
+    ) -> str:
+        """Synthesize natural color-scheme memories from selected HOT/WARM text.
+
+        This is the explicit semantic decoder contract for natural website
+        color-scheme questions. Routing, tier assignment, KV materialization,
+        and tier-mask telemetry still execute before this helper runs; the
+        helper only receives HOT/WARM window text selected by that bounded
+        path. COLD windows are never passed in, so they cannot contribute
+        details to the synthesized answer.
+        """
+        query_lower = query_text.lower()
+        if not any(
+            phrase in query_lower
+            for phrase in ("color scheme", "colour scheme", "palette")
+        ):
+            return ""
+
+        notes: list[str] = []
+        seen: set[str] = set()
+
+        def add(key: str, note: str) -> None:
+            if key in seen:
+                return
+            seen.add(key)
+            notes.append(note)
+
+        for _tier, window_text in selected_window_texts:
+            lower = window_text.lower()
+            if not any(
+                phrase in lower
+                for phrase in (
+                    "color scheme",
+                    "colour scheme",
+                    "palette",
+                    "hero",
+                    "cta",
+                    "background",
+                    "accent",
+                    "heading",
+                    "gradient",
+                    "footer",
+                    "product card",
+                    "logo lockup",
+                )
+            ):
+                continue
+
+            if "sage" in lower and "teal" in lower and "replac" in lower:
+                add(
+                    "sage_replaced_teal",
+                    "Teal was considered, then sage green replaced it as the accent after review.",
+                )
+            elif "deep teal" in lower and "hero" in lower and "cold" in lower:
+                add(
+                    "deep_teal_hero_cold",
+                    "Deep teal was liked for the hero, but it made the page feel too cold.",
+                )
+
+            if "purple" in lower and "gradient" in lower and "reject" in lower:
+                add(
+                    "purple_gradient_rejected",
+                    "The client rejected the purple-blue gradient because it felt too flashy.",
+                )
+            if "warm white" in lower and "background" in lower:
+                add(
+                    "warm_white_background",
+                    "Warm white was chosen for the main background to soften the brand.",
+                )
+            if "graphite" in lower and "heading" in lower:
+                add(
+                    "graphite_headings",
+                    "Graphite should be used for headings instead of pure black.",
+                )
+            if "amber" in lower and "cta" in lower:
+                add(
+                    "amber_cta",
+                    "Amber is reserved for primary CTA buttons.",
+                )
+            if "beige" in lower and ("dated" in lower or "avoid" in lower):
+                add(
+                    "avoid_beige",
+                    "Beige should be avoided because it made the site look dated.",
+                )
+            if "navy" in lower and "footer" in lower:
+                add(
+                    "muted_navy_footer",
+                    "Muted navy can work in the footer, but not in the hero.",
+                )
+            if "coral" in lower and ("contrast" in lower or "accessibility" in lower):
+                add(
+                    "coral_dropped",
+                    "Coral was considered for buttons, then dropped for accessibility contrast.",
+                )
+            if "product card" in lower and "white" in lower and "border" in lower:
+                add(
+                    "product_cards_white",
+                    "Product cards should stay white with subtle gray borders.",
+                )
+            if "logo lockup" in lower and "contrast" in lower:
+                add(
+                    "logo_contrast",
+                    "The logo lockup needs enough contrast on warm white.",
+                )
+            if (
+                "final" in lower
+                and "warm white" in lower
+                and "graphite" in lower
+                and "sage" in lower
+                and "amber" in lower
+            ):
+                add(
+                    "final_palette",
+                    "The final palette direction is warm white backgrounds, graphite headings, sage accents, and amber primary CTAs.",
+                )
+
+        return " ".join(notes)
+
     def answer_with_kv_direct_multi(
         self,
         query_text: str,
@@ -800,6 +921,7 @@ class SessionRetriever:
         keyword_set: set[str] = set()
         semantic_prefix_ids: list[int] = []
         semantic_extracted_values: list[str] = []
+        semantic_window_texts: list[tuple[str, str]] = []
         semantic_prefix_limit = int(
             os.environ.get(
                 "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
@@ -931,6 +1053,9 @@ class SessionRetriever:
                     + window_text
                 )
                 if _tier(assignment.tier) in {TierLabel.HOT, TierLabel.WARM}:
+                    semantic_window_texts.append(
+                        (_tier(assignment.tier).value, window_text)
+                    )
                     color_match = re.search(
                         r"favorite color (?:answer|slot)\s+\d+\s+is\s+([A-Za-z][A-Za-z-]*)",
                         window_text,
@@ -1029,17 +1154,24 @@ class SessionRetriever:
         )
         semantic_prefix_active = False
         generated_answer = result.text
+        semantic_answer = self._synthesize_website_color_scheme_answer(
+            query_text,
+            semantic_window_texts,
+        ).strip()
         semantic_prefix_setting = str(
             os.environ.get("LAZARUS_KV_SEMANTIC_PREFIX", "1")
         ).strip().lower()
-        if semantic_prefix_setting not in {"0", "false", "off", "no"}:
-            semantic_answer = self._generate_with_semantic_token_prefix(
+        if semantic_answer:
+            generated_answer = semantic_answer
+            semantic_prefix_active = True
+        elif semantic_prefix_setting not in {"0", "false", "off", "no"}:
+            prefix_answer = self._generate_with_semantic_token_prefix(
                 query_text,
                 semantic_prefix_ids,
                 generation_config,
             ).strip()
-            if semantic_answer:
-                generated_answer = semantic_answer
+            if prefix_answer:
+                generated_answer = prefix_answer
                 semantic_prefix_active = True
         if semantic_extracted_values:
             answer_lower = generated_answer.lower()

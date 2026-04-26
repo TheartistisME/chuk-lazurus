@@ -77,6 +77,195 @@ class MultiFactRecallResult:
     elapsed_s: float
 
 
+@dataclass
+class RealWorldMultiFactRecallResult:
+    probe_idx: int
+    mode: str | None
+    no_silent_fallback: bool
+    selected_tier: str | None
+    mask_penalty_applied: bool
+    candidate_coverage: int
+    hot_fact_keys: list[str]
+    warm_fact_keys: list[str]
+    cold_fact_keys: list[str]
+    hot_hits: list[str]
+    warm_hits: list[str]
+    cold_hits: list[str]
+    conflict_preserved: bool
+    final_decision_present: bool
+    generated_answer: str
+    elapsed_s: float
+
+
+REAL_WORLD_COLOR_MEMORIES: tuple[dict[str, str], ...] = (
+    {
+        "fact_key": "deep_teal_hero_cold",
+        "match_phrase": "deep teal for the hero",
+        "text": (
+            "Across our website color scheme sessions, we liked deep teal "
+            "for the hero, but worried it made the page feel cold."
+        ),
+    },
+    {
+        "fact_key": "purple_gradient_rejected",
+        "match_phrase": "purple-to-blue gradient",
+        "text": (
+            "Across our website color scheme sessions, the client rejected "
+            "the purple-to-blue gradient because it felt too flashy."
+        ),
+    },
+    {
+        "fact_key": "warm_white_background",
+        "match_phrase": "warm white for the main background",
+        "text": (
+            "Across our website color scheme sessions, we chose warm white "
+            "for the main background to soften the brand."
+        ),
+    },
+    {
+        "fact_key": "graphite_headings",
+        "match_phrase": "graphite should be used for headings",
+        "text": (
+            "Across our website color scheme sessions, graphite should be "
+            "used for headings instead of pure black."
+        ),
+    },
+    {
+        "fact_key": "amber_cta",
+        "match_phrase": "amber is approved only",
+        "text": (
+            "Across our website color scheme sessions, amber is approved "
+            "only for primary CTA buttons."
+        ),
+    },
+    {
+        "fact_key": "sage_replaced_teal",
+        "match_phrase": "sage green replaced teal",
+        "text": (
+            "Across our website color scheme sessions, after review, sage "
+            "green replaced teal as the accent color."
+        ),
+    },
+    {
+        "fact_key": "avoid_beige",
+        "match_phrase": "avoid beige",
+        "text": (
+            "Across our website color scheme sessions, avoid beige because "
+            "it made the site look dated."
+        ),
+    },
+    {
+        "fact_key": "muted_navy_footer",
+        "match_phrase": "muted navy",
+        "text": (
+            "Across our website color scheme sessions, the footer can use a "
+            "muted navy, but that navy should not move into the hero."
+        ),
+    },
+    {
+        "fact_key": "coral_dropped",
+        "match_phrase": "coral was considered",
+        "text": (
+            "Across our website color scheme sessions, coral was considered "
+            "for buttons, then dropped for accessibility contrast."
+        ),
+    },
+    {
+        "fact_key": "product_cards_white",
+        "match_phrase": "product cards should stay white",
+        "text": (
+            "Across our website color scheme sessions, product cards should "
+            "stay white with subtle gray borders."
+        ),
+    },
+    {
+        "fact_key": "logo_contrast",
+        "match_phrase": "logo lockup needs enough contrast",
+        "text": (
+            "Across our website color scheme sessions, the logo lockup needs "
+            "enough contrast on warm white."
+        ),
+    },
+    {
+        "fact_key": "final_palette",
+        "match_phrase": "final palette direction",
+        "text": (
+            "Final palette direction across our website color scheme sessions: "
+            "warm white background, graphite headings, sage accents replacing "
+            "teal, and amber primary CTA only."
+        ),
+    },
+)
+
+
+def real_world_fact_mentioned(fact_key: str, answer: str) -> bool:
+    lower = answer.lower()
+    if fact_key == "deep_teal_hero_cold":
+        return "teal" in lower and "hero" in lower and "cold" in lower
+    if fact_key == "purple_gradient_rejected":
+        return "purple" in lower and "gradient" in lower and "reject" in lower
+    if fact_key == "warm_white_background":
+        return "warm white" in lower and "background" in lower
+    if fact_key == "graphite_headings":
+        return "graphite" in lower and "heading" in lower
+    if fact_key == "amber_cta":
+        return "amber" in lower and "cta" in lower
+    if fact_key == "sage_replaced_teal":
+        return "sage" in lower and "teal" in lower and "replac" in lower
+    if fact_key == "avoid_beige":
+        return "beige" in lower and ("avoid" in lower or "dated" in lower)
+    if fact_key == "muted_navy_footer":
+        return "navy" in lower and "footer" in lower and "hero" in lower
+    if fact_key == "coral_dropped":
+        return "coral" in lower and ("contrast" in lower or "accessibility" in lower)
+    if fact_key == "product_cards_white":
+        return "product card" in lower and "white" in lower and "border" in lower
+    if fact_key == "logo_contrast":
+        return "logo" in lower and "contrast" in lower and "warm white" in lower
+    if fact_key == "final_palette":
+        return (
+            "final" in lower
+            and "warm white" in lower
+            and "graphite" in lower
+            and "sage" in lower
+            and "amber" in lower
+        )
+    raise KeyError(f"unknown real-world fact key: {fact_key}")
+
+
+def real_world_conflict_preserved(answer: str) -> bool:
+    lower = answer.lower()
+    return "teal" in lower and "sage" in lower and "replac" in lower
+
+
+def real_world_final_decision_present(answer: str) -> bool:
+    lower = answer.lower()
+    return (
+        ("final" in lower or "direction" in lower)
+        and "warm white" in lower
+        and "graphite" in lower
+        and "sage" in lower
+        and "amber" in lower
+    )
+
+
+def real_world_fact_entailed_by_selected(
+    fact_key: str,
+    selected_fact_keys: set[str],
+) -> bool:
+    """Return True when a fact is already covered by a HOT/WARM memory."""
+    if fact_key in selected_fact_keys:
+        return True
+    if "final_palette" in selected_fact_keys and fact_key in {
+        "warm_white_background",
+        "graphite_headings",
+        "amber_cta",
+        "sage_replaced_teal",
+    }:
+        return True
+    return False
+
+
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -369,6 +558,164 @@ def run_multi_fact_probe(
     )
 
 
+def plant_real_world_multi_fact_group(
+    chat: Any,
+    role: Any,
+    *,
+    probe_idx: int,
+) -> list[dict[str, Any]]:
+    del probe_idx
+    facts: list[dict[str, Any]] = []
+    for fact_idx, fact in enumerate(REAL_WORLD_COLOR_MEMORIES):
+        chat.memory_mode = "off"
+        chat.start_new_session()
+        session_id = chat.session.session_id
+        direct_turn(chat, role, fact["text"])
+        direct_turn(
+            chat,
+            role,
+            (
+                f"Neutral project note {secrets.token_hex(8)}. "
+                "This follow-up is ordinary session padding and does not add "
+                "any project decision."
+            ),
+        )
+        chat._mark_dirty()
+        if not chat.save_current_session(rebuild_retriever=True):
+            raise RuntimeError(
+                "save_current_session returned False while planting "
+                f"real_world_multi_fact probe fact {fact_idx}"
+            )
+        facts.append(
+            {
+                "fact_idx": fact_idx,
+                "session_id": session_id,
+                "fact_key": fact["fact_key"],
+                "match_phrase": fact["match_phrase"],
+                "text": fact["text"],
+            }
+        )
+    return facts
+
+
+def run_real_world_multi_fact_probe(
+    chat: Any,
+    role: Any,
+    *,
+    probe_idx: int,
+) -> RealWorldMultiFactRecallResult:
+    facts = plant_real_world_multi_fact_group(
+        chat,
+        role,
+        probe_idx=probe_idx,
+    )
+    query = (
+        "Tell me everything we discussed about the website's color scheme "
+        "across all our sessions."
+    )
+
+    from chuk_lazarus.session_retrieval import asi_route_candidates, assign_tiers
+    from chuk_lazarus.session_retrieval.enumeration import load_store
+
+    candidates = asi_route_candidates(
+        chat.retriever.handles,
+        query,
+        chat.retriever.tokenizer,
+        candidate_pool=24,
+    )
+    records_by_phrase = {
+        str(record["match_phrase"]).lower(): record for record in facts
+    }
+    candidate_records: list[dict[str, Any]] = []
+    for rank, candidate in enumerate(candidates):
+        store = load_store(candidate.handle)
+        window_text = store.get_window_text(int(candidate.window_id), chat.tokenizer)
+        matched = None
+        for phrase, record in records_by_phrase.items():
+            if phrase in window_text.lower():
+                matched = record
+                break
+        if matched is not None:
+            candidate_records.append(
+                {
+                    **matched,
+                    "rank": rank,
+                    "candidate_session_id": candidate.handle.session_id,
+                    "window_id": int(candidate.window_id),
+                }
+            )
+    candidate_coverage = len({str(record["fact_key"]) for record in candidate_records})
+
+    assignments = assign_tiers(
+        candidates,
+        K_HOT=4,
+        K_WARM=4,
+        candidate_pool=12,
+    )
+    records_by_session_window = {
+        (record["candidate_session_id"], int(record["window_id"])): record
+        for record in candidate_records
+    }
+    tier_records: dict[str, list[dict[str, Any]]] = {
+        "hot": [],
+        "warm": [],
+        "cold": [],
+    }
+    for assignment in assignments:
+        key = (
+            assignment.candidate.handle.session_id,
+            int(assignment.candidate.window_id),
+        )
+        record = records_by_session_window.get(key)
+        if record is not None:
+            tier_records[assignment.tier.value].append(record)
+
+    chat.memory_mode = "kv_direct"
+    chat.start_new_session()
+    started = time.time()
+    meta = chat.kv_query_turn(query)
+    elapsed = time.time() - started
+    answer = str(getattr(meta, "generated_answer", "") or "")
+    hot_fact_keys = [str(record["fact_key"]) for record in tier_records["hot"]]
+    warm_fact_keys = [str(record["fact_key"]) for record in tier_records["warm"]]
+    cold_fact_keys = [str(record["fact_key"]) for record in tier_records["cold"]]
+    hot_hits = [
+        fact_key for fact_key in hot_fact_keys
+        if real_world_fact_mentioned(fact_key, answer)
+    ]
+    warm_hits = [
+        fact_key for fact_key in warm_fact_keys
+        if real_world_fact_mentioned(fact_key, answer)
+    ]
+    selected_fact_keys = set(hot_fact_keys) | set(warm_fact_keys)
+    cold_only_fact_keys = [
+        fact_key for fact_key in cold_fact_keys
+        if not real_world_fact_entailed_by_selected(fact_key, selected_fact_keys)
+    ]
+    cold_hits = [
+        fact_key for fact_key in cold_only_fact_keys
+        if real_world_fact_mentioned(fact_key, answer)
+    ]
+    return RealWorldMultiFactRecallResult(
+        probe_idx=probe_idx,
+        mode=getattr(meta, "mode", None),
+        no_silent_fallback=bool(getattr(meta, "no_silent_fallback", False)),
+        selected_tier=getattr(meta, "selected_tier", None),
+        mask_penalty_applied=bool(getattr(meta, "mask_penalty_applied", False)),
+        candidate_coverage=candidate_coverage,
+        hot_fact_keys=hot_fact_keys,
+        warm_fact_keys=warm_fact_keys,
+        cold_fact_keys=cold_fact_keys,
+        hot_hits=hot_hits,
+        warm_hits=warm_hits,
+        cold_hits=cold_hits,
+        conflict_preserved=real_world_conflict_preserved(answer),
+        final_decision_present=real_world_final_decision_present(answer),
+        generated_answer=answer,
+        elapsed_s=elapsed,
+    )
+
+
 def result_passed(result: RecallResult, *, mode: str) -> bool:
     if result.mode != mode:
         return False
@@ -392,6 +739,30 @@ def multi_fact_result_passed(result: MultiFactRecallResult) -> bool:
     return len(result.missing_colors) == 0
 
 
+def real_world_multi_fact_result_passed(result: RealWorldMultiFactRecallResult) -> bool:
+    if result.mode != "kv_direct":
+        return False
+    if not result.no_silent_fallback:
+        return False
+    if result.selected_tier != "hot":
+        return False
+    if not result.mask_penalty_applied:
+        return False
+    if result.candidate_coverage < 10:
+        return False
+    if len(result.hot_fact_keys) != 4 or len(result.warm_fact_keys) != 4:
+        return False
+    if len(result.cold_fact_keys) != 4:
+        return False
+    return (
+        len(result.hot_hits) == 4
+        and len(result.warm_hits) >= 3
+        and len(result.cold_hits) == 0
+        and result.conflict_preserved
+        and result.final_decision_present
+    )
+
+
 def write_report(report_path: Path, results: list[Any], summary: dict[str, Any]) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -408,7 +779,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-non-pass", action="store_true")
     parser.add_argument("--min-sessions", type=int, default=100)
     parser.add_argument("--sample-size", type=int, default=100, help="0 means all parsed probes.")
-    parser.add_argument("--mode", choices=("kv_direct", "topical", "multi_fact"), default="kv_direct")
+    parser.add_argument(
+        "--mode",
+        choices=("kv_direct", "topical", "multi_fact", "real_world_multi_fact"),
+        default="kv_direct",
+    )
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--max-new-tokens", type=int, default=48)
@@ -548,6 +923,130 @@ def run_multi_fact_mode(args: argparse.Namespace, run_dir: Path, store_root: Pat
     return 0
 
 
+def run_real_world_multi_fact_mode(
+    args: argparse.Namespace,
+    run_dir: Path,
+    store_root: Path,
+) -> int:
+    harness_store_root = store_root
+    store_root = localize_path(str(run_dir / "scale-real-world-multi-fact-store"))
+    if store_root.exists():
+        shutil.rmtree(store_root)
+    imc = load_interactive_memory_chat()
+    force_deterministic_streaming()
+    chat = imc.MemoryChat(
+        store_root=store_root,
+        model_path=args.model_path,
+        max_new_tokens=max(int(args.max_new_tokens), 220),
+        memory_mode="kv_direct",
+        device=args.device,
+    )
+    chat.load_model()
+    chat.maybe_load_retriever()
+
+    from chuk_lazarus.inference.chat import Role
+
+    probe_count = max(1, int(args.sample_size))
+    previous_env = {
+        key: os.environ.get(key)
+        for key in (
+            "LAZARUS_KV_CANDIDATE_POOL",
+            "LAZARUS_KV_K_HOT",
+            "LAZARUS_KV_K_WARM",
+            "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+            "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
+            "LAZARUS_KV_HOT_BONUS",
+        )
+    }
+    results: list[RealWorldMultiFactRecallResult] = []
+    passed = 0
+    try:
+        os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+        os.environ["LAZARUS_KV_K_HOT"] = "4"
+        os.environ["LAZARUS_KV_K_WARM"] = "4"
+        os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
+        os.environ["LAZARUS_KV_SEMANTIC_PREFIX_TOKENS"] = "4096"
+        os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
+        for probe_idx in range(1, probe_count + 1):
+            reset_multi_fact_probe_store(chat)
+            try:
+                if args.quiet_model_output:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        result = run_real_world_multi_fact_probe(
+                            chat,
+                            Role.USER,
+                            probe_idx=probe_idx,
+                        )
+                else:
+                    result = run_real_world_multi_fact_probe(
+                        chat,
+                        Role.USER,
+                        probe_idx=probe_idx,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"FAIL SCALE_ACTUAL_RECALL probe={probe_idx}/{probe_count} "
+                    f"mode=real_world_multi_fact: {exc!r}"
+                )
+                print(traceback.format_exc())
+                return 1
+            results.append(result)
+            ok = real_world_multi_fact_result_passed(result)
+            passed += int(ok)
+            verdict = "PASS" if ok else "FAIL"
+            print(
+                f"{verdict} SCALE_ACTUAL_RECALL probe={probe_idx}/{probe_count} "
+                "mode=real_world_multi_fact "
+                f"HOT={len(result.hot_hits)}/4 "
+                f"WARM={len(result.warm_hits)}/4 "
+                f"COLD={len(result.cold_hits)}/4 "
+                f"elapsed_s={result.elapsed_s:.2f}",
+                flush=True,
+            )
+            if not ok:
+                print(
+                    json.dumps(asdict(result), indent=2, sort_keys=True)[:3200],
+                    flush=True,
+                )
+    finally:
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    hit_rate = passed / max(1, len(results))
+    final_summary = {
+        "run_dir": str(run_dir),
+        "store_root": str(store_root),
+        "harness_store_root": str(harness_store_root),
+        "mode": args.mode,
+        "sample_size": len(results),
+        "passed": passed,
+        "hit_rate": hit_rate,
+        "required_hit_rate": args.required_hit_rate,
+    }
+    report_path = args.report_json or (
+        run_dir / "scale-actual-recall-real_world_multi_fact.json"
+    )
+    write_report(report_path, results, final_summary)
+    if hit_rate < args.required_hit_rate:
+        print(
+            "FAIL SCALE_ACTUAL_RECALL: mode=real_world_multi_fact "
+            f"hit_rate={hit_rate:.3f} required={args.required_hit_rate:.3f} "
+            f"report={report_path}",
+            flush=True,
+        )
+        return 1
+    print(
+        "PASS SCALE_ACTUAL_RECALL: mode=real_world_multi_fact "
+        f"hit_rate={hit_rate:.3f} passed={passed}/{len(results)} "
+        f"report={report_path}",
+        flush=True,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     run_dir, harness_summary = load_run_summary(args)
@@ -562,6 +1061,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         return run_multi_fact_mode(args, run_dir, store_root)
+    if args.mode == "real_world_multi_fact":
+        if args.dry_run:
+            print(
+                f"DRY_RUN SCALE_ACTUAL_RECALL: run_dir={run_dir} "
+                f"store_root={store_root} mode=real_world_multi_fact "
+                f"probes={args.sample_size}",
+                flush=True,
+            )
+            return 0
+        return run_real_world_multi_fact_mode(args, run_dir, store_root)
     probes = select_probes(parse_scale_probes(events_path), args.sample_size)
     if not probes:
         raise RuntimeError(f"No scale routing probes found in {events_path}")
