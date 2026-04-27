@@ -413,6 +413,12 @@ class TurnMetadata:
     multi_session_count: int = 0
     semantic_prefix_active: bool = False
     semantic_prefix_tokens: int = 0
+    no_memory_detected: bool = False
+    fallback_is_explicit_if_used: bool = False
+    candidate_recall_at_4: int | None = None
+    candidate_recall_at_8: int | None = None
+    candidate_recall_at_12: int | None = None
+    candidate_recall_at_64: int | None = None
 
     def pretty_print(self) -> None:
         if self.mode == "plain":
@@ -457,6 +463,25 @@ class TurnMetadata:
         print(f"    multi_session_count  : {self.multi_session_count}{_sent}")
         print(f"    semantic_prefix      : {self.semantic_prefix_active}{_sent}")
         print(f"    semantic_prefix_tok  : {self.semantic_prefix_tokens}{_sent}")
+        print(f"    no_memory_detected   : {self.no_memory_detected}{_sent}")
+        print(f"    fallback_explicit    : {self.fallback_is_explicit_if_used}")
+        if any(
+            value is not None
+            for value in (
+                self.candidate_recall_at_4,
+                self.candidate_recall_at_8,
+                self.candidate_recall_at_12,
+                self.candidate_recall_at_64,
+            )
+        ):
+            print(
+                "    candidate_recall@K : "
+                f"4={self.candidate_recall_at_4} "
+                f"8={self.candidate_recall_at_8} "
+                f"12={self.candidate_recall_at_12} "
+                f"64={self.candidate_recall_at_64}",
+                flush=True,
+            )
         print(f"  timing (s)      : retrieve={self.retrieve_time:.2f}  generate={self.generate_time:.2f}  total={self.total_time:.2f}")
         print(f"  tokens          : prompt={self.prompt_tokens}  generated={self.generated_tokens}")
         print("=" * HEADER_W)
@@ -1534,6 +1559,14 @@ class MemoryChat:
         meta.strict_assertions = {k: bool(v) for k, v in kv_strict.items()}
         meta.generated_answer = result.generated_answer
         meta.retrieve_time = t_retrieve
+        answer_lower = str(result.generated_answer or "").lower()
+        meta.no_memory_detected = (
+            ("do not have" in answer_lower or "don't have" in answer_lower or "no stored" in answer_lower)
+            and "stored decision" in answer_lower
+        )
+        meta.fallback_is_explicit_if_used = bool(
+            meta.no_memory_detected or meta.no_silent_fallback
+        )
 
         # axis-6 observability fields — REAL values from result.
         meta.kv_direct_active = bool(kv_strict.get("kv_direct_active", False))
@@ -1579,6 +1612,9 @@ class MemoryChat:
             meta.window_id is not None
             and int(meta.window_id) != -1
             and meta.kv_direct_active
+        )
+        meta.fallback_is_explicit_if_used = bool(
+            meta.no_memory_detected or meta.no_silent_fallback
         )
 
         # Token counts for the reply.

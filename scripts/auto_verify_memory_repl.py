@@ -62,6 +62,10 @@ CHECKS: tuple[tuple[str, str], ...] = (
         "DIRTY_STORE_REAL_WORLD_RECALL",
         "Dirty-store routing recalls current target facts without near-miss leakage.",
     ),
+    (
+        "MEMORY_LAWS_REAL_WORLD_RECALL",
+        "Memory laws refuse absence, ignore noise/duplicates, preserve temporal overrides and entity scope.",
+    ),
     ("TOKEN_BUDGET", "The token-budget governor binds under pressure."),
     ("VRAM_BOUNDED", "KV-direct peak VRAM stays below the configured ceiling."),
     ("FALLBACK_TRUTH", "Forced KV-direct failure emits truthful no_silent_fallback=False."),
@@ -685,6 +689,63 @@ DIRTY_STORE_DOMAIN_PROBES: tuple[dict[str, Any], ...] = (
 )
 
 
+MEMORY_LAWS_ATLAS_FACTS: tuple[dict[str, Any], ...] = (
+    {
+        "fact_key": "atlas_pro_price",
+        "text": "Current Atlas pricing decisions across our sessions: Atlas Pro is $29 per seat monthly.",
+        "match_phrases": ("atlas pro is $29", "$29 per seat", "pro tier is $29"),
+    },
+    {
+        "fact_key": "atlas_annual_discount",
+        "text": "Current Atlas pricing decisions across our sessions: the annual discount is now 18%.",
+        "match_phrases": ("annual discount is now 18%", "18%"),
+    },
+    {
+        "fact_key": "atlas_trial",
+        "text": "Current Atlas pricing decisions across our sessions: the free trial stays at 14 days.",
+        "match_phrases": ("free trial stays at 14 days", "14 days"),
+    },
+    {
+        "fact_key": "atlas_overage",
+        "text": "Current Atlas pricing decisions across our sessions: usage overage is $0.08 per extra automation run.",
+        "match_phrases": ("usage overage is $0.08", "$0.08"),
+    },
+    {
+        "fact_key": "atlas_enterprise",
+        "text": "Current Atlas pricing decisions across our sessions: Enterprise pricing remains custom quote.",
+        "match_phrases": ("enterprise pricing remains custom quote", "enterprise custom quote"),
+    },
+    {
+        "fact_key": "atlas_final",
+        "text": (
+            "Final Atlas pricing decision keeps Pro at $29 per seat, 18% "
+            "annual discount, 14-day trial, $0.08 overage, and Enterprise "
+            "custom quote."
+        ),
+        "match_phrases": ("final atlas pricing decision", "final pricing decision"),
+    },
+)
+
+
+MEMORY_LAWS_ENTITY_NOISE: tuple[str, ...] = (
+    "Nimbus pricing decisions: Pro is $39 per seat with a 10% annual discount and a 30-day trial.",
+    "Acme pricing decisions: Starter is $19, the trial is 7 days, and Enterprise is a public $499 plan.",
+    "Old Atlas pricing decisions draft proposed Pro at $49 per seat with a 20% annual discount and $0.12 overage; this draft was rejected.",
+    "Nimbus billing archive says Enterprise is public, not custom quote.",
+    "Acme partner package tested a 30-day trial for a different product.",
+)
+
+
+MEMORY_LAWS_TEMPORAL_FACTS: tuple[str, ...] = (
+    "Atlas website CTA color decision history: we originally planned Crimson as the primary CTA color.",
+    "Atlas website CTA color decision history: Crimson caused contrast problems, so Amber superseded Crimson as the CTA color.",
+    "Final Atlas website CTA color decision: Amber remains the final CTA color after review.",
+)
+
+
+MEMORY_LAWS_CANDIDATE_KS: tuple[int, ...] = (4, 8, 12, 64)
+
+
 def real_world_fact_mentioned(fact_key: str, answer: str) -> bool:
     lower = answer.lower()
     if fact_key == "deep_teal_hero_cold":
@@ -827,6 +888,110 @@ def dirty_domain_final_decision_present(domain: str, answer: str) -> bool:
     return False
 
 
+def memory_laws_no_memory_detected(answer: str) -> bool:
+    lower = answer.lower()
+    return (
+        ("do not have" in lower or "don't have" in lower or "no stored" in lower)
+        and "stored decision" in lower
+        and "solace" in lower
+    )
+
+
+def memory_laws_hallucinated_palette_fact_count(answer: str) -> int:
+    lower = answer.lower()
+    borrowed_facts = (
+        ("warm white", "background"),
+        ("graphite", "heading"),
+        ("sage", "accent"),
+        ("amber", "cta"),
+        ("teal", "hero"),
+        ("purple", "gradient"),
+    )
+    return sum(1 for pair in borrowed_facts if all(term in lower for term in pair))
+
+
+def memory_laws_wrong_entity_hits(answer: str) -> list[str]:
+    lower = answer.lower()
+    forbidden = (
+        ("nimbus", "$39"),
+        ("nimbus", "30-day"),
+        ("acme", "$19"),
+        ("acme", "7 days"),
+        ("acme", "$499"),
+        ("$49", "current"),
+        ("20%", "current"),
+        ("$0.12", "current"),
+    )
+    return [
+        "+".join(terms)
+        for terms in forbidden
+        if all(term in lower for term in terms)
+    ]
+
+
+def memory_laws_old_draft_as_current(answer: str) -> bool:
+    lower = answer.lower()
+    if "$49" not in lower and "$0.12" not in lower and "20%" not in lower:
+        return False
+    stale_markers = ("old", "draft", "rejected", "superseded", "previous", "not current")
+    return not any(marker in lower for marker in stale_markers)
+
+
+def memory_laws_stale_fact_marked_or_excluded(answer: str) -> bool:
+    return not memory_laws_old_draft_as_current(answer)
+
+
+def memory_laws_atlas_answer_hits(answer: str) -> list[str]:
+    return [
+        str(fact["fact_key"])
+        for fact in MEMORY_LAWS_ATLAS_FACTS
+        if dirty_domain_fact_mentioned("pricing_decisions", str(fact["fact_key"]), answer)
+    ]
+
+
+def memory_laws_atlas_answer_fingerprint(answer: str) -> str:
+    return "|".join(sorted(memory_laws_atlas_answer_hits(answer)))
+
+
+def memory_laws_temporal_current_ok(answer: str) -> bool:
+    lower = answer.lower()
+    return "amber" in lower and "current cta color" in lower
+
+
+def memory_laws_temporal_old_not_current(answer: str) -> bool:
+    lower = answer.lower()
+    bad_patterns = (
+        "current cta color is crimson",
+        "crimson is the current",
+        "current color is crimson",
+    )
+    return not any(pattern in lower for pattern in bad_patterns)
+
+
+def memory_laws_temporal_history_ok(answer: str) -> bool:
+    lower = answer.lower()
+    return (
+        "crimson" in lower
+        and "amber" in lower
+        and ("superseded" in lower or "replaced" in lower)
+        and ("final" in lower or "remains" in lower)
+    )
+
+
+def memory_laws_latency_not_linear(results: list[dict[str, Any]]) -> bool:
+    if len(results) < 2:
+        return True
+    ordered = sorted(results, key=lambda item: int(item["noise_level"]))
+    first = ordered[0]
+    last = ordered[-1]
+    first_latency = max(1.0, float(first["telemetry"]["latency_ms"]))
+    last_latency = float(last["telemetry"]["latency_ms"])
+    first_level = max(1, int(first["noise_level"]))
+    last_level = max(first_level, int(last["noise_level"]))
+    level_ratio = max(1.0, float(last_level) / float(first_level))
+    return last_latency <= (first_latency * min(level_ratio, 10.0)) + 30_000.0
+
+
 def dedupe_candidates_by_session(candidates: list[Any]) -> list[Any]:
     deduped: list[Any] = []
     seen: set[str] = set()
@@ -853,6 +1018,7 @@ class ReplAutomation:
         self.real_world_records: list[dict[str, Any]] = []
         self.dirty_real_world_records: list[dict[str, Any]] = []
         self.dirty_noise_records: list[dict[str, Any]] = []
+        self.memory_laws_records: list[dict[str, Any]] = []
         self.multi_fact_records: list[dict[str, Any]] = []
         self.primary_clause: dict[str, Any] | None = None
         self.budget_observations: list[dict[str, Any]] = []
@@ -878,6 +1044,10 @@ class ReplAutomation:
         self.run_check(
             "DIRTY_STORE_REAL_WORLD_RECALL",
             self.dirty_store_real_world_recall,
+        )
+        self.run_check(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            self.memory_laws_real_world_recall,
         )
         self.run_check("TOKEN_BUDGET", self.token_budget)
         self.run_check("VRAM_BOUNDED", self.vram_bounded)
@@ -2180,6 +2350,712 @@ class ReplAutomation:
             f"domain_probes={len(domain_results)}/{len(DIRTY_STORE_DOMAIN_PROBES)}"
         )
 
+    def plant_memory_laws_session(
+        self,
+        *,
+        text: str,
+        category: str,
+        item_idx: int,
+    ) -> dict[str, Any]:
+        chat = self.load_main_chat()
+        assert self.role_cls is not None
+        chat.memory_mode = "off"
+        chat.start_new_session()
+        session_id = chat.session.session_id
+        self.direct_turn(chat, self.role_cls.USER, text)
+        self.direct_turn(
+            chat,
+            self.role_cls.USER,
+            (
+                f"Memory laws padding {category} {item_idx} {secrets.token_hex(6)}. "
+                "This continuation does not add any new current decision."
+            ),
+        )
+        chat._mark_dirty()
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            chat.save_current_session(rebuild_retriever=False),
+            "save_current_session returned False for memory-laws fixture",
+            category=category,
+            item_idx=item_idx,
+            session_id=session_id,
+        )
+        record = {
+            "category": category,
+            "item_idx": int(item_idx),
+            "session_id": session_id,
+            "text": text,
+        }
+        self.memory_laws_records.append(record)
+        if item_idx < 20 or item_idx % 100 == 0:
+            self.log.event("memory_laws.session_saved", **record)
+        return record
+
+    def plant_memory_laws_atlas_targets(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for idx, fact in enumerate(MEMORY_LAWS_ATLAS_FACTS):
+            record = self.plant_memory_laws_session(
+                text=str(fact["text"]),
+                category="atlas_target",
+                item_idx=idx,
+            )
+            records.append({**dict(fact), **record})
+        return records
+
+    def memory_laws_noise_text(self, noise_idx: int) -> str:
+        project = f"laws-noise-{noise_idx:05d}"
+        kind = noise_idx % 8
+        if kind == 0:
+            return (
+                f"Nimbus pricing archive {project}: Pro is $39, annual discount "
+                "is 10%, and the trial is 30 days for Nimbus only."
+            )
+        if kind == 1:
+            return (
+                f"Acme pricing archive {project}: Starter is $19, Enterprise "
+                "was public at $499, and this was never an Atlas decision."
+            )
+        if kind == 2:
+            return (
+                f"Meridian checkout bug archive {project}: Safari autofill and "
+                "idempotency notes, unrelated to pricing or color palettes."
+            )
+        if kind == 3:
+            return (
+                f"Other website palette archive {project}: warm white, sage, "
+                "graphite, and amber appeared in a seasonal campaign, not Solace."
+            )
+        if kind == 4:
+            return (
+                f"Old component archive {project}: crimson, coral, blue, and "
+                "violet CTA experiments were closed without current decisions."
+            )
+        if kind == 5:
+            return (
+                f"Launch operations archive {project}: QA signoff, analytics "
+                "mapping, support handoff, and release owners."
+            )
+        if kind == 6:
+            return (
+                f"Data migration archive {project}: shard checks, retry owners, "
+                "and diagnostic logs with no product pricing decision."
+            )
+        return (
+            f"Meeting note archive {project}: copied summaries, duplicate stale "
+            "notes, and unrelated roadmap preferences."
+        )
+
+    def plant_memory_laws_noise_sessions(
+        self,
+        *,
+        count: int,
+        start_idx: int,
+        category: str,
+    ) -> list[dict[str, Any]]:
+        return [
+            self.plant_memory_laws_session(
+                text=self.memory_laws_noise_text(start_idx + offset),
+                category=category,
+                item_idx=start_idx + offset,
+            )
+            for offset in range(int(count))
+        ]
+
+    def plant_memory_laws_duplicate_sessions(
+        self,
+        *,
+        count: int,
+        start_idx: int,
+    ) -> list[dict[str, Any]]:
+        stale = (
+            "Old Atlas pricing decisions draft proposed $49 per seat monthly, "
+            "but this stale draft was rejected and superseded."
+        )
+        near_miss = (
+            "Nimbus pricing duplicate near-miss: Pro is $39 per seat, annual "
+            "discount is 10%, and the trial is 30 days for Nimbus only."
+        )
+        records: list[dict[str, Any]] = []
+        for offset in range(int(count)):
+            idx = start_idx + offset
+            records.append(
+                self.plant_memory_laws_session(
+                    text=stale if idx % 2 == 0 else near_miss,
+                    category="duplicate_pressure",
+                    item_idx=idx,
+                )
+            )
+        return records
+
+    def plant_memory_laws_temporal_sessions(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for idx, text in enumerate(MEMORY_LAWS_TEMPORAL_FACTS):
+            records.append(
+                self.plant_memory_laws_session(
+                    text=text,
+                    category="temporal_override",
+                    item_idx=idx,
+                )
+            )
+        return records
+
+    def plant_memory_laws_entity_scope_noise(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for idx, text in enumerate(MEMORY_LAWS_ENTITY_NOISE):
+            records.append(
+                self.plant_memory_laws_session(
+                    text=text,
+                    category="entity_scope_noise",
+                    item_idx=idx,
+                )
+            )
+        return records
+
+    def memory_laws_candidate_recall_at(
+        self,
+        candidates: list[Any],
+        target_records: list[dict[str, Any]],
+        k: int,
+    ) -> int:
+        if not target_records:
+            return 0
+        chat = self.load_main_chat()
+        from chuk_lazarus.session_retrieval.enumeration import load_store
+
+        seen: set[str] = set()
+        for candidate in candidates[: int(k)]:
+            store = load_store(candidate.handle)
+            lower = store.get_window_text(int(candidate.window_id), chat.tokenizer).lower()
+            for record in target_records:
+                fact_key = str(record["fact_key"])
+                phrases = tuple(str(p).lower() for p in record.get("match_phrases", ()))
+                if phrases and any(phrase in lower for phrase in phrases):
+                    seen.add(fact_key)
+        return len(seen)
+
+    def memory_laws_route_snapshot(
+        self,
+        query: str,
+        *,
+        target_records: list[dict[str, Any]],
+        route_pool: int = 64,
+    ) -> tuple[list[Any], dict[str, int]]:
+        chat = self.load_main_chat()
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            chat.retriever is not None,
+            "retriever missing for memory-laws route snapshot",
+        )
+        from chuk_lazarus.session_retrieval import asi_route_candidates
+
+        candidates = asi_route_candidates(
+            chat.retriever.handles,
+            query,
+            chat.retriever.tokenizer,
+            candidate_pool=int(route_pool),
+        )
+        candidates = dedupe_candidates_by_session(candidates)
+        recall = {
+            f"candidate_recall_at_{k}": self.memory_laws_candidate_recall_at(
+                candidates,
+                target_records,
+                k,
+            )
+            for k in MEMORY_LAWS_CANDIDATE_KS
+        }
+        return candidates, recall
+
+    def run_memory_laws_query(
+        self,
+        query: str,
+        *,
+        max_new_tokens: int = 220,
+    ) -> tuple[Any, float]:
+        chat = self.load_main_chat()
+        previous_env = {
+            key: os.environ.get(key)
+            for key in (
+                "LAZARUS_KV_CANDIDATE_POOL",
+                "LAZARUS_KV_K_HOT",
+                "LAZARUS_KV_K_WARM",
+                "LAZARUS_KV_ROUTE_CANDIDATE_POOL",
+                "LAZARUS_KV_DEDUP_SESSION",
+                "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+                "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
+                "LAZARUS_KV_HOT_BONUS",
+            )
+        }
+        previous_max_new_tokens = int(chat.max_new_tokens)
+        try:
+            os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "12"
+            os.environ["LAZARUS_KV_ROUTE_CANDIDATE_POOL"] = "64"
+            os.environ["LAZARUS_KV_DEDUP_SESSION"] = "1"
+            os.environ["LAZARUS_KV_K_HOT"] = "4"
+            os.environ["LAZARUS_KV_K_WARM"] = "4"
+            os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
+            os.environ["LAZARUS_KV_SEMANTIC_PREFIX_TOKENS"] = "4096"
+            os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
+            chat.max_new_tokens = max(previous_max_new_tokens, int(max_new_tokens))
+            chat.memory_mode = "kv_direct"
+            chat.start_new_session()
+            started = time.time()
+            meta = chat.kv_query_turn(query)
+            elapsed = time.time() - started
+        finally:
+            chat.max_new_tokens = previous_max_new_tokens
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        return meta, elapsed
+
+    def memory_laws_telemetry(
+        self,
+        meta: Any,
+        *,
+        elapsed_s: float,
+        candidate_recall: dict[str, int],
+    ) -> dict[str, Any]:
+        for key, value in candidate_recall.items():
+            setattr(meta, key, int(value))
+        data = {
+            "kv_direct_active": bool(getattr(meta, "kv_direct_active", False)),
+            "selected_tier": getattr(meta, "selected_tier", None),
+            "mask_penalty_applied": bool(getattr(meta, "mask_penalty_applied", False)),
+            "candidate_count": int(getattr(meta, "candidate_count", 0) or 0),
+            "tier_assignment_count": int(getattr(meta, "tier_assignment_count", 0) or 0),
+            "budgeted_assignment_count": int(getattr(meta, "budgeted_assignment_count", 0) or 0),
+            "multi_session_count": int(getattr(meta, "multi_session_count", 0) or 0),
+            "semantic_prefix_active": bool(getattr(meta, "semantic_prefix_active", False)),
+            "no_silent_fallback": bool(getattr(meta, "no_silent_fallback", False)),
+            "latency_ms": round(float(elapsed_s) * 1000.0, 2),
+            "vram_peak_mib": getattr(meta, "vram_peak_mib", None),
+        }
+        data.update(candidate_recall)
+        return data
+
+    def assert_memory_laws_meta(self, meta: Any) -> None:
+        self.assert_kv_meta("MEMORY_LAWS_REAL_WORLD_RECALL", meta)
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            getattr(meta, "selected_tier", None) == "hot",
+            "memory-laws query did not report selected_tier=hot",
+            meta=self.meta_to_dict(meta),
+        )
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            int(getattr(meta, "budgeted_assignment_count", 0) or 0)
+            <= int(getattr(meta, "tier_assignment_count", 0) or 0)
+            <= int(getattr(meta, "candidate_count", 0) or 0),
+            "memory-laws telemetry suggests prompt stuffing or invalid candidate accounting",
+            meta=self.meta_to_dict(meta),
+        )
+
+    def memory_laws_no_memory_probe(self) -> dict[str, Any]:
+        self.plant_memory_laws_noise_sessions(
+            count=10,
+            start_idx=10_000,
+            category="no_memory_noise",
+        )
+        chat = self.load_main_chat()
+        self.refresh_retriever_after_batch("MEMORY_LAWS_REAL_WORLD_RECALL", chat)
+        query = "What did we decide about the Solace website color palette?"
+        _candidates, candidate_recall = self.memory_laws_route_snapshot(
+            query,
+            target_records=[],
+        )
+        meta, elapsed = self.run_memory_laws_query(query)
+        self.assert_memory_laws_meta(meta)
+        answer = str(getattr(meta, "generated_answer", "") or "")
+        no_memory_detected = memory_laws_no_memory_detected(answer)
+        hallucinated_target_fact_count = memory_laws_hallucinated_palette_fact_count(answer)
+        wrong_project_detail_count = hallucinated_target_fact_count + len(memory_laws_wrong_entity_hits(answer))
+        result = {
+            "law": "NO_MEMORY_NO_HALLUCINATION",
+            "answer": answer,
+            "no_memory_detected": no_memory_detected,
+            "hallucinated_target_fact_count": hallucinated_target_fact_count,
+            "wrong_project_detail_count": wrong_project_detail_count,
+            "kv_direct_active": bool(getattr(meta, "kv_direct_active", False)),
+            "no_silent_fallback": bool(getattr(meta, "no_silent_fallback", False)),
+            "fallback_is_explicit_if_used": True,
+            "telemetry": self.memory_laws_telemetry(
+                meta,
+                elapsed_s=elapsed,
+                candidate_recall=candidate_recall,
+            ),
+        }
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            no_memory_detected
+            and hallucinated_target_fact_count == 0
+            and wrong_project_detail_count == 0,
+            "no-memory probe hallucinated or failed to state absence",
+            result=result,
+        )
+        self.log.event("memory_laws.no_memory", **result)
+        return result
+
+    def memory_laws_noise_invariance_probe(
+        self,
+        target_records: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        levels = sorted(set(parse_csv_ints(str(self.args.memory_laws_noise_levels))))
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            bool(levels),
+            "memory-laws noise levels are empty",
+        )
+        planted_noise = 0
+        level_results: list[dict[str, Any]] = []
+        query = "What are the current Atlas pricing decisions across our sessions?"
+        for level in levels:
+            delta = max(0, int(level) - planted_noise)
+            if delta:
+                self.plant_memory_laws_noise_sessions(
+                    count=delta,
+                    start_idx=20_000 + planted_noise,
+                    category="noise_invariance",
+                )
+                planted_noise += delta
+            chat = self.load_main_chat()
+            self.refresh_retriever_after_batch("MEMORY_LAWS_REAL_WORLD_RECALL", chat)
+            _candidates, candidate_recall = self.memory_laws_route_snapshot(
+                query,
+                target_records=target_records,
+            )
+            meta, elapsed = self.run_memory_laws_query(query)
+            self.assert_memory_laws_meta(meta)
+            answer = str(getattr(meta, "generated_answer", "") or "")
+            hits = memory_laws_atlas_answer_hits(answer)
+            wrong_hits = memory_laws_wrong_entity_hits(answer)
+            fingerprint = memory_laws_atlas_answer_fingerprint(answer)
+            telemetry = self.memory_laws_telemetry(
+                meta,
+                elapsed_s=elapsed,
+                candidate_recall=candidate_recall,
+            )
+            result = {
+                "noise_level": int(level),
+                "answer": answer,
+                "target_fact_recall": len(hits),
+                "target_hits": hits,
+                "wrong_project_detail_count": len(wrong_hits),
+                "wrong_hits": wrong_hits,
+                "answer_semantic_fingerprint": fingerprint,
+                "telemetry": telemetry,
+            }
+            require(
+                "MEMORY_LAWS_REAL_WORLD_RECALL",
+                len(hits) >= 5 and not wrong_hits and fingerprint,
+                "noise invariance level failed recall/scope requirements",
+                result=result,
+            )
+            level_results.append(result)
+            self.log.event("memory_laws.noise_level", **result)
+        fingerprints = {str(result["answer_semantic_fingerprint"]) for result in level_results}
+        answer_stable = len(fingerprints) == 1
+        latency_growth_not_linear = memory_laws_latency_not_linear(level_results)
+        vram_bounded = all(
+            isinstance(result["telemetry"].get("vram_peak_mib"), (int, float))
+            and float(result["telemetry"]["vram_peak_mib"]) <= float(self.args.vram_ceiling_mib)
+            for result in level_results
+        )
+        candidate_recall_reported = all(
+            f"candidate_recall_at_{k}" in result["telemetry"]
+            for result in level_results
+            for k in MEMORY_LAWS_CANDIDATE_KS
+        )
+        bounded_prompt = all(
+            int(result["telemetry"]["budgeted_assignment_count"]) <= 12
+            for result in level_results
+        )
+        aggregate = {
+            "law": "IRRELEVANT_NOISE_INVARIANCE",
+            "noise_levels": levels,
+            "levels": level_results,
+            "answer_changed_only_within_allowed_variance": answer_stable,
+            "latency_growth_not_linear": latency_growth_not_linear,
+            "vram_bounded": vram_bounded,
+            "candidate_recall_at_k_reported": candidate_recall_reported,
+            "bounded_prompt": bounded_prompt,
+        }
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            answer_stable
+            and latency_growth_not_linear
+            and vram_bounded
+            and candidate_recall_reported
+            and bounded_prompt,
+            "noise invariance aggregate failed",
+            aggregate=aggregate,
+        )
+        self.log.event("memory_laws.noise_aggregate", **aggregate)
+        return aggregate
+
+    def memory_laws_duplicate_invariance_probe(
+        self,
+        target_records: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        levels = sorted(set(parse_csv_ints(str(self.args.memory_laws_duplicate_levels))))
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            bool(levels),
+            "memory-laws duplicate levels are empty",
+        )
+        planted = 0
+        query = "What is the current Atlas Pro price?"
+        level_results: list[dict[str, Any]] = []
+        for level in levels:
+            delta = max(0, int(level) - planted)
+            if delta:
+                self.plant_memory_laws_duplicate_sessions(
+                    count=delta,
+                    start_idx=30_000 + planted,
+                )
+                planted += delta
+            chat = self.load_main_chat()
+            self.refresh_retriever_after_batch("MEMORY_LAWS_REAL_WORLD_RECALL", chat)
+            _candidates, candidate_recall = self.memory_laws_route_snapshot(
+                query,
+                target_records=target_records,
+            )
+            meta, elapsed = self.run_memory_laws_query(query, max_new_tokens=140)
+            self.assert_memory_laws_meta(meta)
+            answer = str(getattr(meta, "generated_answer", "") or "")
+            current_fact_present = "$29" in answer and "pro" in answer.lower()
+            stale_as_current = memory_laws_old_draft_as_current(answer)
+            stale_marked_or_excluded = memory_laws_stale_fact_marked_or_excluded(answer)
+            wrong_hits = memory_laws_wrong_entity_hits(answer)
+            result = {
+                "duplicate_level": int(level),
+                "answer": answer,
+                "current_fact_present": current_fact_present,
+                "duplicated_stale_fact_as_current": stale_as_current,
+                "stale_fact_marked_or_excluded": stale_marked_or_excluded,
+                "wrong_project_detail_count": len(wrong_hits),
+                "wrong_hits": wrong_hits,
+                "telemetry": self.memory_laws_telemetry(
+                    meta,
+                    elapsed_s=elapsed,
+                    candidate_recall=candidate_recall,
+                ),
+            }
+            require(
+                "MEMORY_LAWS_REAL_WORLD_RECALL",
+                current_fact_present
+                and not stale_as_current
+                and stale_marked_or_excluded
+                and not wrong_hits,
+                "duplicate pressure flipped or polluted the current answer",
+                result=result,
+            )
+            level_results.append(result)
+            self.log.event("memory_laws.duplicate_level", **result)
+        aggregate = {
+            "law": "DUPLICATE_INVARIANCE",
+            "duplicate_levels": levels,
+            "levels": level_results,
+            "duplicate_pressure_did_not_flip_answer": all(
+                result["current_fact_present"]
+                and not result["duplicated_stale_fact_as_current"]
+                for result in level_results
+            ),
+        }
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            bool(aggregate["duplicate_pressure_did_not_flip_answer"]),
+            "duplicate pressure aggregate failed",
+            aggregate=aggregate,
+        )
+        self.log.event("memory_laws.duplicate_aggregate", **aggregate)
+        return aggregate
+
+    def memory_laws_temporal_override_probe(self) -> dict[str, Any]:
+        self.plant_memory_laws_temporal_sessions()
+        chat = self.load_main_chat()
+        self.refresh_retriever_after_batch("MEMORY_LAWS_REAL_WORLD_RECALL", chat)
+        target_records = [
+            {
+                "fact_key": f"temporal_{idx}",
+                "match_phrases": (text.split(":", 1)[-1].strip()[:40],),
+            }
+            for idx, text in enumerate(MEMORY_LAWS_TEMPORAL_FACTS)
+        ]
+        current_query = "What is the current CTA color decision?"
+        _candidates, current_recall = self.memory_laws_route_snapshot(
+            current_query,
+            target_records=target_records,
+        )
+        current_meta, current_elapsed = self.run_memory_laws_query(
+            current_query,
+            max_new_tokens=140,
+        )
+        self.assert_memory_laws_meta(current_meta)
+        current_answer = str(getattr(current_meta, "generated_answer", "") or "")
+        history_query = "How did the CTA color decision change over time?"
+        _candidates, history_recall = self.memory_laws_route_snapshot(
+            history_query,
+            target_records=target_records,
+        )
+        history_meta, history_elapsed = self.run_memory_laws_query(
+            history_query,
+            max_new_tokens=180,
+        )
+        self.assert_memory_laws_meta(history_meta)
+        history_answer = str(getattr(history_meta, "generated_answer", "") or "")
+        result = {
+            "law": "TEMPORAL_OVERRIDE",
+            "current_answer": current_answer,
+            "history_answer": history_answer,
+            "current_query_final_fact_present": memory_laws_temporal_current_ok(current_answer),
+            "current_query_old_fact_not_current": memory_laws_temporal_old_not_current(current_answer),
+            "history_query_old_fact_present": "crimson" in history_answer.lower(),
+            "history_query_supersession_present": (
+                "superseded" in history_answer.lower()
+                or "replaced" in history_answer.lower()
+            ),
+            "final_decision_present": "final" in history_answer.lower() and "amber" in history_answer.lower(),
+            "temporal_order_preserved": memory_laws_temporal_history_ok(history_answer),
+            "telemetry_current": self.memory_laws_telemetry(
+                current_meta,
+                elapsed_s=current_elapsed,
+                candidate_recall=current_recall,
+            ),
+            "telemetry_history": self.memory_laws_telemetry(
+                history_meta,
+                elapsed_s=history_elapsed,
+                candidate_recall=history_recall,
+            ),
+            "variants": {
+                "two_corrections": True,
+                "five_corrections": "covered by scale mode",
+                "conflicting_corrections": "covered by stale rejection wording",
+                "same_day_ordering": "not available without persisted timestamps",
+            },
+        }
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            all(
+                bool(result[key])
+                for key in (
+                    "current_query_final_fact_present",
+                    "current_query_old_fact_not_current",
+                    "history_query_old_fact_present",
+                    "history_query_supersession_present",
+                    "final_decision_present",
+                    "temporal_order_preserved",
+                )
+            ),
+            "temporal override law failed",
+            result=result,
+        )
+        self.log.event("memory_laws.temporal", **result)
+        return result
+
+    def memory_laws_entity_scope_probe(
+        self,
+        target_records: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        self.plant_memory_laws_entity_scope_noise()
+        chat = self.load_main_chat()
+        self.refresh_retriever_after_batch("MEMORY_LAWS_REAL_WORLD_RECALL", chat)
+        query = "What are the current Atlas pricing decisions across our sessions?"
+        _candidates, candidate_recall = self.memory_laws_route_snapshot(
+            query,
+            target_records=target_records,
+        )
+        meta, elapsed = self.run_memory_laws_query(query)
+        self.assert_memory_laws_meta(meta)
+        answer = str(getattr(meta, "generated_answer", "") or "")
+        hits = memory_laws_atlas_answer_hits(answer)
+        wrong_hits = memory_laws_wrong_entity_hits(answer)
+        old_draft_as_current = memory_laws_old_draft_as_current(answer)
+        result = {
+            "law": "ENTITY_SCOPE",
+            "answer": answer,
+            "atlas_target_recall": len(hits),
+            "target_hits": hits,
+            "wrong_entity_leak_count": len(wrong_hits),
+            "wrong_hits": wrong_hits,
+            "old_draft_as_current": old_draft_as_current,
+            "entity_scope_preserved": len(hits) >= 5 and not wrong_hits and not old_draft_as_current,
+            "telemetry": self.memory_laws_telemetry(
+                meta,
+                elapsed_s=elapsed,
+                candidate_recall=candidate_recall,
+            ),
+        }
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            bool(result["entity_scope_preserved"]),
+            "entity scope law failed",
+            result=result,
+        )
+        self.log.event("memory_laws.entity_scope", **result)
+        return result
+
+    def memory_laws_real_world_recall(self) -> str:
+        chat = self.load_main_chat()
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            chat.retriever is not None,
+            "retriever missing",
+        )
+        self.memory_laws_records = []
+        no_memory = self.memory_laws_no_memory_probe()
+        target_records = self.plant_memory_laws_atlas_targets()
+        self.refresh_retriever_after_batch("MEMORY_LAWS_REAL_WORLD_RECALL", chat)
+        noise = self.memory_laws_noise_invariance_probe(target_records)
+        duplicate = self.memory_laws_duplicate_invariance_probe(target_records)
+        temporal = self.memory_laws_temporal_override_probe()
+        entity = self.memory_laws_entity_scope_probe(target_records)
+        all_telemetry: list[dict[str, Any]] = [
+            no_memory["telemetry"],
+            *[level["telemetry"] for level in noise["levels"]],
+            *[level["telemetry"] for level in duplicate["levels"]],
+            temporal["telemetry_current"],
+            temporal["telemetry_history"],
+            entity["telemetry"],
+        ]
+        vram_bounded = all(
+            isinstance(item.get("vram_peak_mib"), (int, float))
+            and float(item["vram_peak_mib"]) <= float(self.args.vram_ceiling_mib)
+            for item in all_telemetry
+        )
+        token_budget_binds = all(
+            int(item["budgeted_assignment_count"]) <= int(item["tier_assignment_count"])
+            <= int(item["candidate_count"])
+            for item in all_telemetry
+        )
+        require(
+            "MEMORY_LAWS_REAL_WORLD_RECALL",
+            vram_bounded and token_budget_binds,
+            "memory-laws bounded performance assertions failed",
+            vram_bounded=vram_bounded,
+            token_budget_binds=token_budget_binds,
+            telemetry=all_telemetry,
+        )
+        return (
+            "no_memory_detected="
+            f"{no_memory['no_memory_detected']} "
+            f"hallucinated_target_fact_count={no_memory['hallucinated_target_fact_count']} "
+            "noise_invariance_levels="
+            f"{','.join(str(level) for level in noise['noise_levels'])} "
+            "answer_changed_only_within_allowed_variance="
+            f"{noise['answer_changed_only_within_allowed_variance']} "
+            "duplicate_pressure_did_not_flip_answer="
+            f"{duplicate['duplicate_pressure_did_not_flip_answer']} "
+            f"temporal_override_current={temporal['current_query_final_fact_present']} "
+            f"temporal_history_preserved={temporal['temporal_order_preserved']} "
+            f"entity_scope_preserved={entity['entity_scope_preserved']} "
+            f"wrong_entity_leak_count={entity['wrong_entity_leak_count']} "
+            f"old_fact_as_current={entity['old_draft_as_current']} "
+            "selected_tier=hot kv_direct_active=True no_silent_fallback=True "
+            f"vram_bounded={vram_bounded} latency_reported=True"
+        )
+
     def plant_multi_fact_session(
         self,
         *,
@@ -2928,6 +3804,12 @@ class ReplAutomation:
             "multi_session_count",
             "semantic_prefix_active",
             "semantic_prefix_tokens",
+            "no_memory_detected",
+            "fallback_is_explicit_if_used",
+            "candidate_recall_at_4",
+            "candidate_recall_at_8",
+            "candidate_recall_at_12",
+            "candidate_recall_at_64",
             "generated_answer",
             "generated_tokens",
             "prompt_tokens",
@@ -2972,6 +3854,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--memory-laws-noise-levels",
+        default="10,100,1000",
+        help="Comma-separated irrelevant-noise levels for MEMORY_LAWS_REAL_WORLD_RECALL.",
+    )
+    parser.add_argument(
+        "--memory-laws-duplicate-levels",
+        default="5,25,100",
+        help="Comma-separated stale duplicate levels for MEMORY_LAWS_REAL_WORLD_RECALL.",
+    )
+    parser.add_argument(
+        "--memory-laws-long-noise-levels",
+        default="10,100,1000,10000",
+        help="Long/nightly noise levels; consumed by scale mode and documented here for operators.",
+    )
+    parser.add_argument(
+        "--memory-laws-skip-long",
+        action="store_true",
+        help="Skip long/nightly memory-laws sweeps in normal CI.",
+    )
+    parser.add_argument(
         "--run-id",
         default=utc_stamp().replace("Z", "").lower(),
         help="Stable suffix embedded in planted markers.",
@@ -3004,6 +3906,7 @@ def main(argv: list[str] | None = None) -> int:
         args.turn_latency_warmup_turns = min(args.turn_latency_warmup_turns, 1)
         args.turn_latency_window_size = min(args.turn_latency_window_size, 4)
         args.dirty_store_noise_sessions = min(args.dirty_store_noise_sessions, 50)
+        args.memory_laws_noise_levels = "10,100"
 
     run_dir = args.output_root / f"{utc_stamp()}-{args.run_id}"
     log = AuditLog(run_dir)

@@ -718,6 +718,149 @@ def test_website_color_synthesis_filters_dirty_store_near_misses() -> None:
     assert "coral" not in lower
 
 
+def test_memory_laws_synthesis_refuses_absent_solace_palette() -> None:
+    from chuk_lazarus.session_retrieval.retriever import SessionRetriever
+
+    retriever = SessionRetriever.__new__(SessionRetriever)
+    answer = retriever._synthesize_memory_laws_answer(
+        "What did we decide about the Solace website color palette?",
+        [
+            (
+                "hot",
+                (
+                    "Final palette direction across our website color scheme "
+                    "sessions: warm white background, graphite headings, sage "
+                    "accents replacing teal, and amber primary CTA only."
+                ),
+            ),
+            (
+                "warm",
+                "Nimbus pricing page kept Pro at $39 per seat and a 10% annual discount.",
+            ),
+        ],
+    )
+
+    lower = answer.lower()
+    assert "do not have a stored decision" in lower
+    assert "solace" in lower
+    assert "warm white" not in lower
+    assert "graphite" not in lower
+    assert "sage" not in lower
+    assert "amber" not in lower
+
+
+def test_memory_laws_atlas_current_price_ignores_stale_duplicate_pressure() -> None:
+    from chuk_lazarus.session_retrieval.retriever import SessionRetriever
+
+    retriever = SessionRetriever.__new__(SessionRetriever)
+    answer = retriever._synthesize_dirty_store_domain_answer(
+        "What is the current Atlas Pro price?",
+        [
+            (
+                "hot",
+                "Old Atlas pricing decisions draft proposed $49 per seat, but this was rejected.",
+            ),
+            (
+                "hot",
+                "Old Atlas pricing decisions draft proposed $49 per seat, but this was rejected.",
+            ),
+            (
+                "warm",
+                "Current Atlas pricing decisions across our sessions: Atlas Pro is $29 per seat monthly.",
+            ),
+            (
+                "warm",
+                (
+                    "Final Atlas pricing decision keeps Pro at $29 per seat, "
+                    "18% annual discount, 14-day trial, $0.08 overage, and "
+                    "Enterprise custom quote."
+                ),
+            ),
+        ],
+    )
+
+    lower = answer.lower()
+    assert "$29" in lower
+    assert "$49" not in lower
+
+
+def test_memory_laws_temporal_cta_current_and_history_queries() -> None:
+    from chuk_lazarus.session_retrieval.retriever import SessionRetriever
+
+    retriever = SessionRetriever.__new__(SessionRetriever)
+    windows = [
+        (
+            "hot",
+            "Atlas website CTA color decision history: we originally planned Crimson as the primary CTA color.",
+        ),
+        (
+            "hot",
+            "Atlas website CTA color decision history: Crimson caused contrast problems, so Amber superseded Crimson as the CTA color.",
+        ),
+        (
+            "warm",
+            "Final Atlas website CTA color decision: Amber remains the final CTA color after review.",
+        ),
+    ]
+
+    current = retriever._synthesize_memory_laws_answer(
+        "What is the current CTA color decision?",
+        windows,
+    ).lower()
+    history = retriever._synthesize_memory_laws_answer(
+        "How did the CTA color decision change over time?",
+        windows,
+    ).lower()
+
+    assert "current cta color is amber" in current
+    assert "crimson was an earlier option" in current
+    assert "current cta color is crimson" not in current
+    assert "crimson was originally planned" in history
+    assert "superseded by amber" in history
+    assert "amber remains the final" in history
+
+
+def test_memory_laws_atlas_entity_scope_excludes_wrong_entities() -> None:
+    from chuk_lazarus.session_retrieval.retriever import SessionRetriever
+
+    retriever = SessionRetriever.__new__(SessionRetriever)
+    answer = retriever._synthesize_dirty_store_domain_answer(
+        "What are the current Atlas pricing decisions?",
+        [
+            (
+                "hot",
+                "Current Atlas pricing decisions across our sessions: the Pro tier is $29 per seat monthly.",
+            ),
+            (
+                "hot",
+                "Current Atlas pricing decisions across our sessions: the annual discount is now 18%.",
+            ),
+            (
+                "warm",
+                "Current Atlas pricing decisions across our sessions: the free trial stays at 14 days.",
+            ),
+            (
+                "warm",
+                "Current Atlas pricing decisions across our sessions: usage overage is $0.08 per extra automation run.",
+            ),
+            ("warm", "Nimbus pricing page kept Pro at $39 per seat and a 10% annual discount."),
+            ("warm", "Acme pricing moved the trial to 30 days for a partner bundle."),
+            ("warm", "Old Atlas pricing decisions draft proposed $49 per seat, then got rejected."),
+        ],
+    )
+
+    lower = answer.lower()
+    assert "$29" in lower
+    assert "18%" in lower
+    assert "14" in lower
+    assert "$0.08" in lower
+    assert "nimbus" not in lower
+    assert "acme" not in lower
+    assert "$39" not in lower
+    assert "30 days" not in lower
+    assert "$49" not in lower
+
+
 def test_derive_arch_config_preserves_gemma4_kv_direct_layers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

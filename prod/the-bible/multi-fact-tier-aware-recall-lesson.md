@@ -383,8 +383,9 @@ The quickest sanity check is:
 uv run --extra dev python scripts/auto_verify_memory_repl.py --list-checks
 ```
 
-It should list 16 checks and include `MULTI_FACT_RECALL`,
-`REAL_WORLD_MULTI_FACT_RECALL`, and `DIRTY_STORE_REAL_WORLD_RECALL`.
+It should list 17 checks and include `MULTI_FACT_RECALL`,
+`REAL_WORLD_MULTI_FACT_RECALL`, `DIRTY_STORE_REAL_WORLD_RECALL`, and
+`MEMORY_LAWS_REAL_WORLD_RECALL`.
 
 ## Real-World Color-Scheme Invariant
 
@@ -535,4 +536,88 @@ passed: 25
 hit_rate: 1.000
 required_hit_rate: 0.900
 pollution: 0 for every probe
+```
+
+## Memory-Laws Real-World Invariant
+
+`MEMORY_LAWS_REAL_WORLD_RECALL` is the next invariant. Positive dirty-store
+recall is no longer enough; the system must also know when not to recall and
+how to treat stale or confusable memories.
+
+The check proves five laws:
+
+```text
+NO_MEMORY_NO_HALLUCINATION
+IRRELEVANT_NOISE_INVARIANCE
+DUPLICATE_INVARIANCE
+TEMPORAL_OVERRIDE
+ENTITY_SCOPE
+```
+
+The no-memory probe plants dirty unrelated memories and asks:
+
+```text
+What did we decide about the Solace website color palette?
+```
+
+The only passing shape is explicit absence, for example:
+
+```text
+I do not have a stored decision about the Solace website color palette.
+```
+
+The Atlas pricing probes then require current facts to remain stable under
+noise and duplicate pressure:
+
+```text
+Atlas Pro $29 per seat
+18% annual discount
+14-day trial
+$0.08 overage
+Enterprise custom quote
+final/current decision present
+```
+
+Wrong-entity facts such as Nimbus `$39`, Acme `$19`, Acme/Nimbus long trials,
+and the old Atlas `$49` draft must not appear as current facts. Duplicate stale
+notes are allowed to exist in the store, but repetition must not make them true.
+
+Temporal override is covered by a CTA correction chain:
+
+```text
+Crimson was originally planned.
+Crimson caused contrast issues, so Amber superseded it.
+Amber remains final.
+```
+
+Current queries must return Amber. History queries may mention Crimson only as
+the superseded earlier decision.
+
+Every sublaw records the bounded-path telemetry:
+
+```text
+kv_direct_active
+selected_tier
+mask_penalty_applied
+candidate_count
+tier_assignment_count
+budgeted_assignment_count
+multi_session_count
+semantic_prefix_active
+no_silent_fallback
+candidate_recall_at_4/8/12/64
+latency_ms
+vram_peak_mib
+```
+
+Smoke mode uses noise levels `10,100`; full mode defaults to `10,100,1000`.
+Long/nightly sweeps can pass `--memory-laws-noise-levels 10,100,1000,10000`.
+
+The scale verifier has a matching mode:
+
+```bash
+uv run --extra dev python scripts/verify_memory_recall_scale.py \
+  --sample-size 25 \
+  --mode memory_laws \
+  --required-hit-rate 0.90
 ```

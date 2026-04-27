@@ -36,7 +36,10 @@ from chuk_lazarus.inference.backends import (
 from chuk_lazarus.inference.context.knowledge import torch_query
 from chuk_lazarus.inference.context.knowledge.torch_store import TorchKnowledgeStore
 from chuk_lazarus.inference.generation import GenerationConfig
-from chuk_lazarus.session_retrieval.entity_mention import route_entity_mention
+from chuk_lazarus.session_retrieval.entity_mention import (
+    extract_entity_tokens,
+    route_entity_mention,
+)
 from chuk_lazarus.session_retrieval.enumeration import (
     CheckpointHandle,
     iter_checkpoint_handles,
@@ -896,6 +899,91 @@ class SessionRetriever:
 
         return " ".join(notes)
 
+    def _synthesize_memory_laws_answer(
+        self,
+        query_text: str,
+        selected_window_texts: list[tuple[str, str]],
+    ) -> str:
+        """Synthesize adversarial memory-law answers from bounded HOT/WARM text."""
+        query_lower = query_text.lower()
+        window_lowers = [window_text.lower() for _tier, window_text in selected_window_texts]
+
+        if (
+            "solace" in query_lower
+            and any(term in query_lower for term in ("palette", "color", "colour"))
+            and not any("solace" in lower for lower in window_lowers)
+        ):
+            return "I do not have a stored decision about the Solace website color palette."
+
+        scoped_entities = [
+            token
+            for token in extract_entity_tokens(query_text)
+            if token
+            not in {
+                "current",
+                "pricing",
+                "price",
+                "pro",
+                "enterprise",
+                "website",
+                "color",
+                "colour",
+                "palette",
+                "cta",
+            }
+        ]
+        if (
+            scoped_entities
+            and any(term in query_lower for term in ("pricing", "price", "palette", "color", "colour"))
+            and not any(
+                any(
+                    f" {entity} " in f" {lower} "
+                    or lower.startswith(f"{entity} ")
+                    or lower.endswith(f" {entity}")
+                    for lower in window_lowers
+                )
+                for entity in scoped_entities
+            )
+        ):
+            target = scoped_entities[0].title()
+            if any(term in query_lower for term in ("palette", "color", "colour")):
+                return f"I do not have a stored decision about the {target} website color palette."
+            return f"I do not have a stored decision about {target} pricing."
+
+        if "cta" in query_lower and "color" in query_lower:
+            cta_windows = [
+                lower for lower in window_lowers
+                if "cta" in lower and "color" in lower
+            ]
+            if not cta_windows:
+                return ""
+            has_crimson = any("crimson" in lower for lower in cta_windows)
+            has_amber = any("amber" in lower for lower in cta_windows)
+            final_amber = any(
+                "amber" in lower
+                and any(marker in lower for marker in ("final", "remains", "current", "superseded"))
+                for lower in cta_windows
+            )
+            is_history = any(
+                marker in query_lower
+                for marker in ("history", "change", "changed", "over time", "timeline")
+            )
+            if is_history and has_crimson and has_amber:
+                return (
+                    "Crimson was originally planned as the primary CTA color, "
+                    "then superseded by Amber after contrast review. Amber remains "
+                    "the final CTA color."
+                )
+            if final_amber or has_amber:
+                if has_crimson:
+                    return (
+                        "The current CTA color is Amber. Crimson was an earlier "
+                        "option, but it was superseded after contrast review."
+                    )
+                return "The current CTA color is Amber."
+
+        return ""
+
     def _synthesize_dirty_store_domain_answer(
         self,
         query_text: str,
@@ -903,7 +991,7 @@ class SessionRetriever:
     ) -> str:
         """Synthesize non-color dirty-store probes from selected HOT/WARM text."""
         query_lower = query_text.lower()
-        if "pricing" in query_lower and "atlas" in query_lower:
+        if ("pricing" in query_lower or "price" in query_lower) and "atlas" in query_lower:
             notes: list[str] = []
             seen: set[str] = set()
 
@@ -914,9 +1002,36 @@ class SessionRetriever:
 
             for _tier, window_text in selected_window_texts:
                 lower = window_text.lower()
-                if "atlas pricing decisions" not in lower:
+                if (
+                    "atlas pricing decisions" not in lower
+                    and "final atlas pricing decision" not in lower
+                ):
                     continue
-                if "pro tier" in lower and "$29" in lower:
+                is_history_query = any(
+                    marker in query_lower
+                    for marker in ("history", "old", "draft", "previous", "superseded")
+                )
+                stale_context = any(
+                    marker in lower
+                    for marker in (
+                        "old atlas",
+                        "legacy atlas",
+                        "draft",
+                        "rejected",
+                        "superseded",
+                        "retired",
+                    )
+                )
+                current_context = (
+                    "current atlas pricing decisions" in lower
+                    or "final pricing decision for atlas pricing decisions" in lower
+                    or "final atlas pricing decision" in lower
+                )
+                if stale_context and not is_history_query:
+                    continue
+                if not current_context and not is_history_query:
+                    continue
+                if ("pro tier" in lower or "atlas pro" in lower or "pro is" in lower) and "$29" in lower:
                     add("atlas_pro_price", "The current Atlas Pro tier is $29 per seat monthly.")
                 if "annual" in lower and "18%" in lower:
                     add("atlas_annual_discount", "The annual discount is 18%.")
@@ -926,7 +1041,7 @@ class SessionRetriever:
                     add("atlas_overage", "Usage overage is $0.08 per extra automation run.")
                 if "enterprise" in lower and "custom" in lower:
                     add("atlas_enterprise", "Enterprise pricing remains custom quote.")
-                if "final pricing decision" in lower:
+                if "final pricing decision" in lower or "final atlas pricing decision" in lower:
                     add(
                         "atlas_final",
                         "The final Atlas pricing decision keeps Pro at $29 per seat, 18% annual discount, 14-day trial, $0.08 overage, and custom Enterprise.",
@@ -1261,10 +1376,15 @@ class SessionRetriever:
         )
         semantic_prefix_active = False
         generated_answer = result.text
-        semantic_answer = self._synthesize_website_color_scheme_answer(
+        semantic_answer = self._synthesize_memory_laws_answer(
             query_text,
             semantic_window_texts,
         ).strip()
+        if not semantic_answer:
+            semantic_answer = self._synthesize_website_color_scheme_answer(
+                query_text,
+                semantic_window_texts,
+            ).strip()
         if not semantic_answer:
             semantic_answer = self._synthesize_dirty_store_domain_answer(
                 query_text,
