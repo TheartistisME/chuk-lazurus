@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,6 +40,48 @@ def test_default_store_paths_are_persistent_prod_paths() -> None:
     assert "prod/evals/tradeguru test/memory_store/tradeguru_fault_memory" in (
         Path(import_mod.DEFAULT_STORE_ROOT).as_posix()
     )
+
+
+def test_arch_config_completion_restores_default_omitted_keys() -> None:
+    mod = _load_script("import_tradeguru_memory.py")
+
+    completed = mod._complete_live_indexer_arch_config(
+        {
+            "retrieval_layer": 28,
+            "query_head": 7,
+            "injection_layer": 29,
+            "hidden_dim": 1536,
+            "head_dim": 256,
+        },
+        window_size=512,
+    )
+
+    assert completed["crystal_layer"] == 29
+    assert completed["window_size"] == 512
+
+
+def test_architecture_config_dict_includes_live_indexer_required_defaults() -> None:
+    mod = _load_script("import_tradeguru_memory.py")
+    model = SimpleNamespace(
+        config={
+            "text_config": {
+                "model_type": "gemma4_text",
+                "num_hidden_layers": 35,
+                "hidden_size": 1536,
+                "num_attention_heads": 12,
+                "num_key_value_heads": 6,
+                "head_dim": 256,
+            }
+        }
+    )
+
+    arch_config = mod.architecture_config_dict(model, window_size=512)
+
+    assert arch_config["injection_layer"] == 29
+    assert arch_config["crystal_layer"] == 29
+    assert arch_config["window_size"] == 512
+    assert arch_config["hidden_dim"] == 1536
+    assert arch_config["head_dim"] == 256
 
 
 def test_default_questions_are_fault_finding_prompts_without_source_names() -> None:

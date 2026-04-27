@@ -409,6 +409,25 @@ def _text_config(model_config: Any) -> Any:
     return nested if nested is not None else model_config
 
 
+def _complete_live_indexer_arch_config(
+    arch_config: dict[str, Any],
+    *,
+    window_size: int | None = None,
+) -> dict[str, Any]:
+    """Fill keys that ArchitectureConfig.to_dict may omit when default-valued."""
+    completed = dict(arch_config)
+    completed["crystal_layer"] = int(
+        completed.get("crystal_layer", completed["injection_layer"])
+    )
+    if window_size is not None:
+        completed["window_size"] = int(window_size)
+    else:
+        completed["window_size"] = int(
+            completed.get("window_size", DEFAULT_WINDOW_SIZE)
+        )
+    return completed
+
+
 def architecture_config_dict(model: Any, *, window_size: int) -> dict[str, Any]:
     from chuk_lazarus.inference.context.knowledge.config import ArchitectureConfig
 
@@ -446,7 +465,11 @@ def architecture_config_dict(model: Any, *, window_size: int) -> dict[str, Any]:
         crystal_layer=base.crystal_layer,
         window_size=int(window_size),
     )
-    return config.to_dict()
+    payload = config.to_dict()
+    payload["hidden_dim"] = int(hidden_dim)
+    payload["head_dim"] = int(head_dim)
+    payload["k_dim"] = int(head_dim)
+    return _complete_live_indexer_arch_config(payload, window_size=window_size)
 
 
 def load_model_and_tokenizer(args: argparse.Namespace) -> tuple[Any, Any, str]:
@@ -515,6 +538,10 @@ def import_document(
     from chuk_lazarus.inference.context.knowledge.route import extract_window_keywords
     from chuk_lazarus.session_store.live_indexer import LiveIndexer
 
+    arch_config = _complete_live_indexer_arch_config(
+        arch_config,
+        window_size=window_size,
+    )
     session_id = session_id_for_document(doc)
     session_dir = store_root / session_id
     torch_store_dir = session_dir / "torch_store"
@@ -701,9 +728,10 @@ def main(argv: list[str] | None = None) -> int:
     prepare_store_root(store_root, force=args.force, append=args.append)
     model, tokenizer, actual_device = load_model_and_tokenizer(args)
     arch_config = architecture_config_dict(model, window_size=int(args.window_size))
+    crystal_layer = int(arch_config.get("crystal_layer", arch_config["injection_layer"]))
     print(
         "[import] model="
-        f"{args.model} device={actual_device} crystal_layer={arch_config['crystal_layer']} "
+        f"{args.model} device={actual_device} crystal_layer={crystal_layer} "
         f"window_size={args.window_size} overlap={args.overlap_tokens}"
     )
 
