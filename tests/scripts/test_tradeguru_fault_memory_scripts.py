@@ -169,3 +169,48 @@ def test_category_mapping_matches_tradeguru_folders(tmp_path: Path) -> None:
     assert doc.category == "electrical_howto_markdown"
     assert doc.folder == "electricalhowto - 2"
     assert doc.doc_title == "RCD Fault Finding"
+
+
+def test_scan_excludes_generated_logs_by_default(tmp_path: Path) -> None:
+    mod = _load_script("import_tradeguru_memory.py")
+
+    source = tmp_path / "electricalhowto - 2"
+    doc_path = source / "lighting" / "Replace LED Down Light.md"
+    log_path = source / "logs" / "abc" / "chat.json"
+    doc_path.parent.mkdir(parents=True)
+    log_path.parent.mkdir(parents=True)
+    doc_path.write_text("# Replace LED Down Light\nBody", encoding="utf-8")
+    log_path.write_text('{"title":"Agent Chat","body":"not corpus"}', encoding="utf-8")
+
+    args = SimpleNamespace(
+        source=[source.as_posix()],
+        extensions=None,
+        limit_docs=None,
+        include_generated=False,
+        excluded_dirs=None,
+    )
+
+    docs = mod.scan_documents(args)
+
+    assert [doc.relative_path for doc in docs] == ["lighting/Replace LED Down Light.md"]
+
+
+def test_scan_can_include_generated_when_explicit(tmp_path: Path) -> None:
+    mod = _load_script("import_tradeguru_memory.py")
+
+    source = tmp_path / "electricalhowto - 2"
+    log_path = source / "logs" / "abc" / "chat.json"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text('{"title":"Agent Chat","body":"explicitly included"}', encoding="utf-8")
+
+    args = SimpleNamespace(
+        source=[source.as_posix()],
+        extensions=[".json"],
+        limit_docs=None,
+        include_generated=True,
+        excluded_dirs=None,
+    )
+
+    docs = mod.scan_documents(args)
+
+    assert [doc.relative_path for doc in docs] == ["logs/abc/chat.json"]

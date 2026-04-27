@@ -10,6 +10,8 @@ prod/evals/tradeguru test/memory_store/tradeguru_fault_memory
 
 Do not build this store in `/tmp`. Do not delete it during cleanup. The runner uses append mode by default, so an interrupted import can be resumed and complete document sessions are skipped.
 
+Generated folders such as `logs/`, caches, virtual environments, and build output are excluded by default. This keeps large run logs like `logs/*/chat.json` out of the knowledge store and avoids long single-document `LiveIndexer` drain timeouts. Only opt into generated files intentionally with `--include-generated` on `scripts/import_tradeguru_memory.py`.
+
 ## What This Runs
 
 The eval compares the same Gemma 4 runtime and same fault-finding questions across:

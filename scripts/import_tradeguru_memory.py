@@ -38,6 +38,19 @@ DEFAULT_STORE_ROOT = str(
 DEFAULT_EXTENSIONS = (".txt", ".md", ".json")
 DEFAULT_WINDOW_SIZE = 512
 DEFAULT_OVERLAP_TOKENS = 64
+DEFAULT_EXCLUDED_DIRS = (
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "logs",
+    "node_modules",
+    "venv",
+)
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _WINDOWS_DRIVE_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
@@ -105,6 +118,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="extensions",
         help="Readable extension to import. Repeat to override defaults.",
+    )
+    parser.add_argument(
+        "--exclude-dir",
+        action="append",
+        dest="excluded_dirs",
+        default=None,
+        help=(
+            "Directory name to exclude while scanning. Repeat to add to the "
+            "default generated/log/cache exclusions."
+        ),
+    )
+    parser.add_argument(
+        "--include-generated",
+        action="store_true",
+        help="Disable default generated/log/cache directory exclusions.",
     )
     parser.add_argument(
         "--limit-docs",
@@ -295,17 +323,49 @@ def load_source_document(path: Path, source_root: Path) -> SourceDocument | None
     )
 
 
-def iter_source_paths(sources: list[Path], extensions: set[str]) -> list[tuple[Path, Path]]:
+def _excluded_dir_names(args: argparse.Namespace) -> set[str]:
+    defaults = set() if args.include_generated else {
+        name.lower() for name in DEFAULT_EXCLUDED_DIRS
+    }
+    extras = {str(name).lower() for name in (args.excluded_dirs or ())}
+    return defaults | extras
+
+
+def _is_under_excluded_dir(path: Path, source_root: Path, excluded_dirs: set[str]) -> bool:
+    if not excluded_dirs:
+        return False
+    try:
+        rel_parts = path.relative_to(source_root).parts
+    except ValueError:
+        rel_parts = path.parts
+    # The final part is the filename for files; directory names are the parents.
+    return any(part.lower() in excluded_dirs for part in rel_parts[:-1])
+
+
+def iter_source_paths(
+    sources: list[Path],
+    extensions: set[str],
+    *,
+    excluded_dirs: set[str] | None = None,
+) -> list[tuple[Path, Path]]:
     pairs: list[tuple[Path, Path]] = []
+    excluded_dirs = set(excluded_dirs or ())
     for source in sources:
         if not source.exists():
             raise FileNotFoundError(f"source does not exist: {source}")
         if source.is_file():
-            if source.suffix.lower() in extensions:
+            if (
+                source.suffix.lower() in extensions
+                and not _is_under_excluded_dir(source, source.parent, excluded_dirs)
+            ):
                 pairs.append((source, source.parent))
             continue
         for child in sorted(source.rglob("*")):
-            if child.is_file() and child.suffix.lower() in extensions:
+            if (
+                child.is_file()
+                and child.suffix.lower() in extensions
+                and not _is_under_excluded_dir(child, source, excluded_dirs)
+            ):
                 pairs.append((child, source))
     pairs.sort(key=lambda item: (item[1].as_posix().lower(), item[0].as_posix().lower()))
     return pairs
@@ -692,7 +752,11 @@ def scan_documents(args: argparse.Namespace) -> list[SourceDocument]:
         for ext in (args.extensions or DEFAULT_EXTENSIONS)
     }
     sources = [resolve_host_path(source) for source in args.source]
-    pairs = iter_source_paths(sources, extensions)
+    pairs = iter_source_paths(
+        sources,
+        extensions,
+        excluded_dirs=_excluded_dir_names(args),
+    )
     if args.limit_docs is not None:
         pairs = pairs[: int(args.limit_docs)]
     docs: list[SourceDocument] = []
