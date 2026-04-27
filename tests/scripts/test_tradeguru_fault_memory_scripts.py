@@ -29,6 +29,18 @@ def test_condition_aliases_cover_four_eval_conditions() -> None:
     ]
 
 
+def test_default_store_paths_are_persistent_prod_paths() -> None:
+    import_mod = _load_script("import_tradeguru_memory.py")
+    eval_mod = _load_script("evaluate_tradeguru_fault_memory.py")
+
+    assert "/tmp/" not in import_mod.DEFAULT_STORE_ROOT
+    assert "/tmp/" not in eval_mod.DEFAULT_STORE_ROOT
+    assert "/tmp/" not in eval_mod.DEFAULT_OUTPUT
+    assert "prod/evals/tradeguru test/memory_store/tradeguru_fault_memory" in (
+        Path(import_mod.DEFAULT_STORE_ROOT).as_posix()
+    )
+
+
 def test_default_questions_are_fault_finding_prompts_without_source_names() -> None:
     mod = _load_script("evaluate_tradeguru_fault_memory.py")
 

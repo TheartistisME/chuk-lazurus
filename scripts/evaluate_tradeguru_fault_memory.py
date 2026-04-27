@@ -14,8 +14,12 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_MODEL = "google/gemma-4-E2B-it"
-DEFAULT_STORE_ROOT = "/tmp/lazarus-tradeguru-fault-memory"
-DEFAULT_OUTPUT = "/tmp/lazarus-tradeguru-fault-memory/eval_results.jsonl"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_EVAL_ROOT = _REPO_ROOT / "prod" / "evals" / "tradeguru test"
+DEFAULT_STORE_ROOT = str(
+    _DEFAULT_EVAL_ROOT / "memory_store" / "tradeguru_fault_memory"
+)
+DEFAULT_OUTPUT = str(_DEFAULT_EVAL_ROOT / "results" / "eval_results.jsonl")
 _WINDOWS_DRIVE_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 
 CONDITION_ALIASES = {

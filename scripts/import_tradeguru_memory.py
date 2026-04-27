@@ -26,7 +26,15 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_MODEL = "google/gemma-4-E2B-it"
-DEFAULT_STORE_ROOT = "/tmp/lazarus-tradeguru-fault-memory"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_STORE_ROOT = str(
+    _REPO_ROOT
+    / "prod"
+    / "evals"
+    / "tradeguru test"
+    / "memory_store"
+    / "tradeguru_fault_memory"
+)
 DEFAULT_EXTENSIONS = (".txt", ".md", ".json")
 DEFAULT_WINDOW_SIZE = 512
 DEFAULT_OVERLAP_TOKENS = 64
