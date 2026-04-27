@@ -17,16 +17,17 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
-from chuk_lazarus.inference.backends._torch_residual_bounded import (
+from chuk_lazarus.inference.backends._torch_residual_bounded import (  # noqa: E402
     GatheredResiduals,
     KVDirectMaterialization,
     PathAReplayGuard,
     ResidualBoundedState,
     _BoundaryResidualHook,
-    _Layer0ResidualSeedHook,
     _dtype_byte_size,
+    _Layer0ResidualSeedHook,
     _resolve_attention_projections,
     _resolve_default_layers,
+    _resolve_materialization_projection_layer,
     _text_config,
     estimate_kv_bytes_per_token,
     gather_selected_residuals,
@@ -190,6 +191,23 @@ def test_resolve_attention_projections_derives_head_dim_from_attention_config() 
     assert head_dim == 8
 
 
+def test_resolve_materialization_projection_layer_walks_kv_shared_source() -> None:
+    producer = SimpleNamespace(
+        self_attn=SimpleNamespace(k_proj=object(), v_proj=object())
+    )
+    consumer = SimpleNamespace(
+        self_attn=SimpleNamespace(is_kv_shared_layer=True, kv_shared_layer_index=0)
+    )
+
+    resolved_layer, resolved_idx = _resolve_materialization_projection_layer(
+        [producer, consumer],
+        1,
+    )
+
+    assert resolved_layer is producer
+    assert resolved_idx == 0
+
+
 def test_boundary_residual_hook_captures_last_position() -> None:
     hook = _BoundaryResidualHook()
     # Simulate a forward output: (B=1, S=5, H=8).
@@ -317,6 +335,15 @@ class _DummyDecoderLayer(torch.nn.Module):
 
     def forward(self, hidden_states):
         return hidden_states
+
+
+class _DummySharedKvConsumerAttn(torch.nn.Module):
+    """Attention stub that mirrors Gemma-4 shared-KV consumer metadata."""
+
+    def __init__(self, producer_idx: int):
+        super().__init__()
+        self.is_kv_shared_layer = True
+        self.kv_shared_layer_index = int(producer_idx)
 
 
 class _DummyInner(torch.nn.Module):
@@ -608,6 +635,46 @@ class TestAxis5GatherAndMaterialize:
         runtime, residuals, _ = self._build_runtime_and_residuals(num_windows=2)
         mat = materialize_kv_direct(residuals, runtime, hot_budget_mib=1024)
         assert mat.path_a_replay_count == 0
+
+    def test_materialize_kv_direct_uses_shared_kv_producer_projection(self) -> None:
+        """Gemma-4 KV-consumer layers materialize through their producer W_K/W_V."""
+        hidden = 16
+        n_kv_heads = 2
+        head_dim = 8
+        runtime, residuals, model = self._build_runtime_and_residuals(
+            hidden=hidden,
+            n_kv_heads=n_kv_heads,
+            head_dim=head_dim,
+            num_windows=1,
+            injection_layer=1,
+        )
+        layers = _resolve_default_layers(model)
+        producer_idx = 1
+        target_idx = 2
+        layers[target_idx].self_attn = _DummySharedKvConsumerAttn(producer_idx)
+
+        mat = materialize_kv_direct(residuals, runtime, hot_budget_mib=1024)
+
+        producer_k_proj = layers[producer_idx].self_attn.k_proj
+        producer_v_proj = layers[producer_idx].self_attn.v_proj
+        first_param = next(model.parameters())
+        residual = residuals.per_window_residuals[0].to(
+            device=first_param.device,
+            dtype=first_param.dtype,
+        )
+        stacked = residual.unsqueeze(0).unsqueeze(0)
+        with torch.no_grad():
+            expected_k = producer_k_proj(stacked)
+            expected_v = producer_v_proj(stacked)
+        expected_k = (
+            expected_k.view(1, 1, n_kv_heads, head_dim).transpose(1, 2).contiguous()
+        )
+        expected_v = (
+            expected_v.view(1, 1, n_kv_heads, head_dim).transpose(1, 2).contiguous()
+        )
+
+        torch.testing.assert_close(mat.K, expected_k)
+        torch.testing.assert_close(mat.V, expected_v)
 
     def test_path_a_guard_raises_on_layer_preinjection_forward(self) -> None:
         """Directly verify the guard catches pre-injection layer forwards."""

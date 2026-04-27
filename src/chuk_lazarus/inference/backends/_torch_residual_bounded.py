@@ -371,7 +371,7 @@ class PathAReplayGuard:
         self._handles: list[Any] = []
         self.count: int = 0
 
-    def __enter__(self) -> "PathAReplayGuard":
+    def __enter__(self) -> PathAReplayGuard:
         layers = self._resolve_layers(self._model)
         for idx in range(self._injection_layer):
             layer = layers[idx]
@@ -608,6 +608,67 @@ def _resolve_attention_projections(layer: Any) -> tuple[Any, Any, int, int]:
     return k_proj, v_proj, int(n_kv_heads), int(head_dim)
 
 
+def _resolve_materialization_projection_layer(
+    layers: Any,
+    target_idx: int,
+) -> tuple[Any, int]:
+    """Return the decoder layer whose K/V projections materialize target KV.
+
+    Gemma-4 shared-KV consumer layers omit ``k_proj``/``v_proj`` and point at
+    the producer layer through ``kv_shared_layer_index``. Keep this in sync
+    with the runtime path in ``torch_runtime.generate_with_kv_direct_materialization``.
+    """
+    target_layer = layers[int(target_idx)]
+    target_self_attn = getattr(target_layer, "self_attn", None) or getattr(
+        target_layer, "attention", None
+    )
+    if target_self_attn is None:
+        raise RuntimeError(
+            "materialize_kv_direct: target layer has no .self_attn/.attention "
+            f"module (target_layer={target_idx})."
+        )
+
+    target_is_kv_consumer = bool(
+        getattr(target_self_attn, "is_kv_shared_layer", False)
+    ) or (
+        getattr(target_self_attn, "k_proj", None) is None
+        or getattr(target_self_attn, "v_proj", None) is None
+    )
+    if not target_is_kv_consumer:
+        return target_layer, int(target_idx)
+
+    producer_idx_raw = getattr(target_self_attn, "kv_shared_layer_index", None)
+    if producer_idx_raw is None:
+        raise RuntimeError(
+            f"materialize_kv_direct: target layer {target_idx} is a KV-shared "
+            "consumer but exposes no kv_shared_layer_index."
+        )
+    try:
+        producer_idx = int(producer_idx_raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"materialize_kv_direct: target layer {target_idx} has invalid "
+            f"kv_shared_layer_index={producer_idx_raw!r}."
+        ) from exc
+    if producer_idx < 0 or producer_idx >= len(layers):
+        raise RuntimeError(
+            f"materialize_kv_direct: target layer {target_idx} points to "
+            f"kv_shared_layer_index={producer_idx}, outside model layer range "
+            f"0..{len(layers) - 1}."
+        )
+
+    producer_layer = layers[producer_idx]
+    producer_self_attn = getattr(producer_layer, "self_attn", None) or getattr(
+        producer_layer, "attention", None
+    )
+    if producer_self_attn is None:
+        raise RuntimeError(
+            "materialize_kv_direct: KV-shared producer layer has no "
+            f".self_attn/.attention module (producer_layer={producer_idx})."
+        )
+    return producer_layer, producer_idx
+
+
 def resolve_kv_materialization_provenance(
     model: Any,
     source_layer: int,
@@ -742,8 +803,13 @@ def materialize_kv_direct(
             "materialize_kv_direct: injection_layer+1 out of range for "
             f"model with {len(layers)} layers (injection_layer={injection_layer})."
         )
-    target_layer = layers[injection_layer + 1]
-    k_proj, v_proj, n_kv_heads, head_dim = _resolve_attention_projections(target_layer)
+    target_idx = injection_layer + 1
+    projection_layer, _projection_layer_idx = _resolve_materialization_projection_layer(
+        layers, target_idx
+    )
+    k_proj, v_proj, n_kv_heads, head_dim = _resolve_attention_projections(
+        projection_layer
+    )
     materialized_insertion_family, materialized_lineage_layer_indices = (
         resolve_kv_materialization_provenance(
             model,
