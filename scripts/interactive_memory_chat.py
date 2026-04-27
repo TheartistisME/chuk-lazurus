@@ -120,6 +120,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+from contextlib import contextmanager
 import inspect
 import json
 import os
@@ -131,6 +132,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
+
+from chuk_lazarus.memory_config import (
+    MEMORY_MODES,
+    MemoryRecallConfig,
+    get_memory_profile_names,
+    memory_config_env,
+    resolve_memory_config,
+)
 
 # LiveIndexer replaces the subprocess `invoke_build` call at runtime. The
 # chat loop now indexes streaming windows into the per-session torch_store
@@ -158,6 +167,35 @@ KV_QUERY_USAGE = (
     "--sliding-head-indices 0,7 "
     "<text>"
 )
+HELP_TEXT = """Interactive memory chat commands
+
+Regular chat uses memory_mode=auto by default. If no memories exist, Lazarus
+chats normally while live-indexing the current session. If memories exist, it
+attempts bounded KV-direct recall automatically and reports memory_used=false
+on ordinary no-memory matches.
+
+Commands:
+  /help                         show this help
+  /save-memory                  save/index the current session (alias: /save)
+  /new-chat                     save, then start a fresh session (alias: /new)
+  /ask-memory <question>        debug KV-direct memory query (alias: /kv_query)
+  /search-memory <text>         topical memory probe (alias: /query)
+  /open-memory <id>             exact memory-id probe (alias: /exact)
+  /find-memory-entity <text>    entity memory probe (alias: /entity)
+  /memory-status                print store summary (alias: /stats)
+  /last-memory                  print last turn telemetry (alias: /last)
+  /show-history                 show current session transcript (alias: /history)
+  /memory auto                  enable plug-and-play memory recall
+  /memory off                   disable memory recall
+  /memory profile <name>        switch profile: plug_and_play, proof, smoke,
+                                nightly, diagnostic
+  /memory config                show resolved memory configuration
+  /quit                         save if needed and exit
+
+Power-user /ask-memory options:
+  /ask-memory --insertion-family sliding --sliding-layer-indices 13,15
+              --sliding-head-indices 0,7 <question>
+"""
 
 
 # axis-3 (Addition 2): single dirty-flag file at <store_root>/.dirty.
@@ -173,6 +211,10 @@ DIRTY_FLAG_FILENAME = ".dirty"
 MAX_TOTAL_INJECT_TOKENS = 4096
 
 
+class NoRelevantMemory(RuntimeError):
+    """Ordinary auto-recall miss, not a diagnostics failure."""
+
+
 def ts() -> str:
     return (
         datetime.now(timezone.utc)
@@ -186,11 +228,14 @@ def info(msg: str) -> None:
 
 
 def _env_max_total_inject_tokens() -> int:
-    raw_value = os.environ.get(
-        "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
-        str(MAX_TOTAL_INJECT_TOKENS),
-    )
-    return int(raw_value)
+    try:
+        return int(resolve_memory_config().max_total_inject_tokens)
+    except Exception:
+        raw_value = os.environ.get(
+            "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+            str(MAX_TOTAL_INJECT_TOKENS),
+        )
+        return int(raw_value)
 
 
 def _normalize_generation_engine(raw_value: str | None) -> str:
@@ -413,6 +458,8 @@ class TurnMetadata:
     multi_session_count: int = 0
     semantic_prefix_active: bool = False
     semantic_prefix_tokens: int = 0
+    memory_used: bool = False
+    fallback_reason: str | None = None
     no_memory_detected: bool = False
     fallback_is_explicit_if_used: bool = False
     candidate_recall_at_4: int | None = None
@@ -423,6 +470,26 @@ class TurnMetadata:
     evidence_support_count: int = 0
 
     def pretty_print(self) -> None:
+        if self.mode == "plain":
+            print(
+                "  [plain turn] memory_used=false "
+                f"generated {self.generated_tokens} tok in {self.generate_time:.2f}s",
+                flush=True,
+            )
+            return
+        if self.mode == "none":
+            reason = (
+                f" reason={self.fallback_reason}"
+                if self.fallback_reason
+                else ""
+            )
+            print(
+                "  [memory] memory_used=false "
+                f"generated {self.generated_tokens} tok in {self.generate_time:.2f}s"
+                f"{reason}",
+                flush=True,
+            )
+            return
         if self.mode == "plain":
             print(f"  [plain turn] no retrieval · generated {self.generated_tokens} tok in {self.generate_time:.2f}s", flush=True)
             return
@@ -453,6 +520,7 @@ class TurnMetadata:
         real_kv = bool(self.kv_direct_active) or self.mode == "kv_direct"
         _sent = "" if real_kv else " (sentinel: non-kv path)"
         print(f"  axis-6 observability:")
+        print(f"    memory_used          : {self.memory_used}")
         print(f"    selected_tier        : {self.selected_tier}{_sent}")
         print(f"    mask_penalty_applied : {self.mask_penalty_applied}{_sent}")
         print(f"    kv_direct_active     : {self.kv_direct_active}{_sent}")
@@ -505,6 +573,8 @@ class MemoryChat:
         generation_engine: str = "standard",
         hot_budget_mib: int | None = None,
         session_cache_size: int | None = None,
+        memory_profile: str = "plug_and_play",
+        memory_config: MemoryRecallConfig | None = None,
     ) -> None:
         self.store_root = Path(store_root)
         self.inputs_root = self.store_root / "inputs"
@@ -514,15 +584,31 @@ class MemoryChat:
         self.checkpoints_root.mkdir(parents=True, exist_ok=True)
         self.transcripts_root.mkdir(parents=True, exist_ok=True)
 
+        if memory_config is None:
+            memory_config = resolve_memory_config(
+                profile=memory_profile,
+                overrides={
+                    "mode": memory_mode,
+                    "active_generation_engine": generation_engine,
+                    "hot_budget_mib": hot_budget_mib,
+                },
+            )
+        self.memory_profile = memory_config.profile
+        self.memory_config = memory_config
+
         self.model_path = model_path
         self.max_new_tokens = max_new_tokens
-        self.memory_mode = memory_mode  # "topical" | "entity_mention" | "off"
+        self.memory_mode = memory_config.mode
         self.device = device
         self.generation_engine = _normalize_generation_engine(generation_engine)
         self.hot_budget_mib = (
             int(hot_budget_mib)
             if hot_budget_mib is not None
-            else (150 if self.generation_engine == "residual_bounded_kv_direct" else None)
+            else (
+                int(memory_config.hot_budget_mib)
+                if self.generation_engine == "residual_bounded_kv_direct"
+                else None
+            )
         )
         self.session_cache_size = session_cache_size
         self.vec_inject_provider: Any = None  # lazily loaded on first vec_inject turn
@@ -549,6 +635,31 @@ class MemoryChat:
         self._window_counter: int = 0
 
         self.last_meta: TurnMetadata | None = None
+
+    def _current_memory_config(self, **overrides: Any) -> MemoryRecallConfig:
+        base = getattr(self, "memory_config", None)
+        if base is None:
+            base = resolve_memory_config()
+        merged_overrides = {
+            "mode": getattr(self, "memory_mode", None),
+            **overrides,
+        }
+        return resolve_memory_config(base=base, overrides=merged_overrides)
+
+    @contextmanager
+    def _memory_runtime_env(self, config: MemoryRecallConfig):
+        updates = memory_config_env(config)
+        previous = {key: os.environ.get(key) for key in updates}
+        try:
+            for key, value in updates.items():
+                os.environ[key] = value
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     # ── machinery loaders ──────────────────────────────────────────────────
 
@@ -1195,11 +1306,15 @@ class MemoryChat:
         # uses plain_chat_turn on silent-fallback), so rewind here to
         # avoid double-logging (mirrors vec_inject and except-branch
         # rewinds below).
-        if self.memory_mode == "kv_direct":
+        if self.memory_mode in {"auto", "kv_direct"}:
             self.session.turns.pop()
             if self.history.messages:
                 self.history.messages.pop()
-            return self.kv_query_turn(user_text)
+            return self.memory_recall_turn(
+                user_text,
+                debug_command=False,
+                answer_prefix="gemma",
+            )
 
         # vec_inject routing short-circuits to the dedicated torch stack.
         # _vec_inject_turn delegates to plain_chat_turn (which re-records the
@@ -1292,6 +1407,7 @@ class MemoryChat:
         meta.no_silent_fallback = (
             meta.mode != "none" and meta.window_id is not None
         )
+        meta.memory_used = True
 
         # Append assistant turn to session/history
         assistant_turn = self.session.begin_turn(Role.ASSISTANT, result.generated_answer)
@@ -1328,7 +1444,10 @@ class MemoryChat:
         if not tier_assignments:
             return tier_assignments
         if max_total_inject_tokens is None:
-            max_total_inject_tokens = _env_max_total_inject_tokens()
+            try:
+                max_total_inject_tokens = self._current_memory_config().max_total_inject_tokens
+            except Exception:
+                max_total_inject_tokens = _env_max_total_inject_tokens()
         else:
             max_total_inject_tokens = int(max_total_inject_tokens)
         cfg = getattr(getattr(self, "model", None), "config", None)
@@ -1361,16 +1480,20 @@ class MemoryChat:
 
     # ── axis-5 KV-direct recall turn ───────────────────────────────────────
 
-    def kv_query_turn(
+    def memory_recall_turn(
         self,
         query_text: str,
         *,
         insertion_family: KVInsertionFamily = "full_attention",
         sliding_layer_indices: tuple[int, ...] | None = None,
         sliding_head_indices: tuple[int, ...] | None = None,
+        debug_command: bool = False,
+        answer_prefix: str = "gemma",
     ) -> TurnMetadata:
-        """Run a single axis-5 KV-direct query. Used by ``/kv_query`` and by
-        the REPL integration tests.
+        """Run a single bounded KV-direct memory recall turn.
+
+        ``/kv_query`` remains a debug wrapper around this method, while normal
+        chat in memory_mode=auto calls it directly when saved memories exist.
 
         Returns a :class:`TurnMetadata` populated with the REAL axis-6
         observability fields from ``result.strict_assertions``. On
@@ -1402,13 +1525,14 @@ class MemoryChat:
             f"GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS={sorted(GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS)}"
         )
 
-        candidate_pool = int(os.environ.get("LAZARUS_KV_CANDIDATE_POOL", "16"))
-        route_candidate_pool = int(
-            os.environ.get("LAZARUS_KV_ROUTE_CANDIDATE_POOL", str(candidate_pool))
-        )
-        k_hot = int(os.environ.get("LAZARUS_KV_K_HOT", "4"))
-        k_warm = int(os.environ.get("LAZARUS_KV_K_WARM", "8"))
-        hot_budget_mib = int(os.environ.get("LAZARUS_KV_HOT_BUDGET_MIB", "32"))
+        config = self._current_memory_config()
+        candidate_pool = int(config.candidate_pool)
+        route_candidate_pool = int(config.route_candidate_pool)
+        k_hot = int(config.k_hot)
+        k_warm = int(config.k_warm)
+        hot_budget_mib = int(config.hot_budget_mib)
+        for env_key, env_value in memory_config_env(config).items():
+            os.environ[env_key] = env_value
         # LAZARUS_KV_HOT_BONUS: pre-softmax additive bonus for HOT slots
         # (float, default 0.0 = no bonus; positive values boost HOT attention).
         hot_bonus_value = float(os.environ.get("LAZARUS_KV_HOT_BONUS", "0.0"))
@@ -1431,12 +1555,7 @@ class MemoryChat:
                 self.retriever.tokenizer,
                 candidate_pool=route_candidate_pool,
             )
-            if str(os.environ.get("LAZARUS_KV_DEDUP_SESSION", "0")).strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }:
+            if bool(config.dedupe_sessions):
                 deduped = []
                 seen_sessions: set[str] = set()
                 for candidate in candidates:
@@ -1463,7 +1582,19 @@ class MemoryChat:
                         filtered.append(candidate)
                 candidates = filtered
             if not candidates:
-                raise RuntimeError("asi_route_candidates returned no candidates")
+                raise NoRelevantMemory("asi_route_candidates returned no candidates")
+            top_raw_score = max(
+                float(
+                    getattr(
+                        candidate,
+                        "raw_tfidf_score_pre_normalization",
+                        1.0,
+                    )
+                )
+                for candidate in candidates
+            )
+            if top_raw_score <= 0.0:
+                raise NoRelevantMemory("routing found no relevant memory")
             meta.candidate_count = int(len(candidates))
 
             tier_assignments = assign_tiers(
@@ -1473,7 +1604,7 @@ class MemoryChat:
                 candidate_pool=candidate_pool,
             )
             if not tier_assignments:
-                raise RuntimeError("assign_tiers produced zero assignments")
+                raise NoRelevantMemory("assign_tiers produced zero assignments")
             meta.tier_assignment_count = int(len(tier_assignments))
 
             # axis-4 (Addition 1): apply the token-budget governor BEFORE
@@ -1481,12 +1612,22 @@ class MemoryChat:
             # across multiple sessions; legacy test doubles fall back to the
             # original single-handle path below.
             assignments_for_generation = self._apply_token_budget(
-                list(tier_assignments)
+                list(tier_assignments),
+                max_total_inject_tokens=int(config.max_total_inject_tokens),
             )
             if not assignments_for_generation:
                 raise RuntimeError(
                     "axis-4 token-budget governor truncated all assignments"
                 )
+            if not config.include_cold_in_kv:
+                assignments_for_generation = [
+                    assignment
+                    for assignment in assignments_for_generation
+                    if str(getattr(assignment.tier, "value", assignment.tier))
+                    != "cold"
+                ]
+                if not assignments_for_generation:
+                    raise NoRelevantMemory("only cold memories matched")
             meta.budgeted_assignment_count = int(len(assignments_for_generation))
 
             warm_config = WarmPenaltyConfig(hot_bonus_value=hot_bonus_value)
@@ -1549,7 +1690,16 @@ class MemoryChat:
                     handle=top_handle,
                     **selector_kwargs,
                 )
-        except (ValueError, RuntimeError) as exc:
+        except (NoRelevantMemory, ValueError, RuntimeError) as exc:
+            ordinary_miss = isinstance(exc, NoRelevantMemory)
+            if ordinary_miss and not debug_command:
+                info(f"memory recall found no relevant memory: {exc}")
+                fallback_meta = self.plain_chat_turn(query_text)
+                fallback_meta.memory_used = False
+                fallback_meta.fallback_reason = "no_relevant_memory"
+                fallback_meta.fallback_is_explicit_if_used = True
+                fallback_meta.no_silent_fallback = True
+                return fallback_meta
             # axis-6: SILENT FALLBACK DETECTED — first-class WARN.
             print(
                 f"[WARN] axis-6: SILENT FALLBACK DETECTED — mode=kv_direct "
@@ -1588,6 +1738,7 @@ class MemoryChat:
         )
 
         # axis-6 observability fields — REAL values from result.
+        meta.memory_used = True
         meta.kv_direct_active = bool(kv_strict.get("kv_direct_active", False))
         meta.mask_penalty_applied = bool(kv_strict.get("mask_penalty_applied", False))
         meta.vram_peak_mib = kv_strict.get("vram_peak_mib", None)
@@ -1637,6 +1788,7 @@ class MemoryChat:
             and int(meta.window_id) != -1
             and meta.kv_direct_active
         )
+        meta.memory_used = bool(meta.no_silent_fallback)
         meta.fallback_is_explicit_if_used = bool(
             meta.no_memory_detected or meta.no_silent_fallback
         )
@@ -1656,11 +1808,49 @@ class MemoryChat:
         meta.total_time = time.time() - t_total_start
         meta.generate_time = max(0.0, meta.total_time - meta.retrieve_time)
 
+        if (
+            not debug_command
+            and getattr(self, "session", None) is not None
+            and getattr(self, "history", None) is not None
+        ):
+            from chuk_lazarus.inference.chat import Role
+
+            self.history.add_user(query_text)
+            user_turn = self.session.begin_turn(Role.USER, query_text)
+            self.session.finish_turn(user_turn)
+            self._capture_turn_text_live(user_turn)
+
+            assistant_turn = self.session.begin_turn(
+                Role.ASSISTANT,
+                result.generated_answer,
+            )
+            self.session.finish_turn(assistant_turn)
+            self._capture_turn_text_live(assistant_turn)
+            self.history.add_assistant(result.generated_answer)
+
         # Print debug block, then the answer.
         meta.pretty_print()
-        print(f"kv_direct> {result.generated_answer}\n", flush=True)
+        print(f"{answer_prefix}> {result.generated_answer}\n", flush=True)
         self._mark_dirty()
         return meta
+
+    def kv_query_turn(
+        self,
+        query_text: str,
+        *,
+        insertion_family: KVInsertionFamily = "full_attention",
+        sliding_layer_indices: tuple[int, ...] | None = None,
+        sliding_head_indices: tuple[int, ...] | None = None,
+    ) -> TurnMetadata:
+        """Compatibility/debug wrapper for the historical /kv_query path."""
+        return self.memory_recall_turn(
+            query_text,
+            insertion_family=insertion_family,
+            sliding_layer_indices=sliding_layer_indices,
+            sliding_head_indices=sliding_head_indices,
+            debug_command=True,
+            answer_prefix="kv_direct",
+        )
 
     def _vec_inject_turn(self, user_text: str, chat_context: str) -> TurnMetadata:
         """Route a turn through the torch vec_inject stack end-to-end.
@@ -1766,6 +1956,7 @@ class MemoryChat:
         meta.total_time = time.time() - t_total_start
         meta.generate_time = max(0.0, meta.total_time - meta.retrieve_time)
         meta.no_silent_fallback = True
+        meta.memory_used = True
         return meta
 
     def _format_recent_history_for_routing(self, user_text: str, n_recent: int = 4) -> str:
@@ -2054,6 +2245,7 @@ class MemoryChat:
         if self.retriever is not None:
             print(f"  crystal_layer    : {self.retriever.crystal_layer}")
             print(f"  memory_mode      : {self.memory_mode}")
+            print(f"  memory_profile   : {getattr(self, 'memory_profile', 'plug_and_play')}")
             print(f"  device           : {self.retriever.device}")
         print(f"  current_session  : session_id={self.session.session_id if self.session else '—'}  turns={len(self.session.turns) if self.session else 0}")
         print("=" * HEADER_W)
@@ -2157,32 +2349,32 @@ class MemoryChat:
             return True
 
         if head == "/help":
-            print(__doc__)
+            print(HELP_TEXT)
             return False
 
-        if head == "/save":
+        if head in ("/save", "/save-memory"):
             self.emit_store()
             return False
 
-        if head == "/new":
+        if head in ("/new", "/new-chat"):
             if self.session and self.session.turns:
                 self.save_current_session()
             self.start_new_session()
             info("fresh session started — try asking about prior sessions.")
             return False
 
-        if head == "/stats":
+        if head in ("/stats", "/memory-status"):
             self.print_stats()
             return False
 
-        if head == "/last":
+        if head in ("/last", "/last-memory"):
             if self.last_meta is None:
                 info("no turn yet.")
             else:
                 self.last_meta.pretty_print()
             return False
 
-        if head == "/history":
+        if head in ("/history", "/show-history"):
             section("CURRENT SESSION TRANSCRIPT")
             print(f"  session_id: {self.session.session_id}")
             for t in self.session.turns:
@@ -2192,38 +2384,59 @@ class MemoryChat:
             return False
 
         if head == "/memory":
-            # toggle between topical <-> off (quick toggle). Pass arg for explicit.
-            if arg in ("topical", "entity_mention", "vec_inject", "kv_direct", "off"):
-                self.memory_mode = arg
+            memory_arg = arg.strip()
+            memory_parts = memory_arg.split()
+            if memory_arg == "config":
+                config = self._current_memory_config()
+                section("MEMORY CONFIG")
+                for key, value in config.to_dict().items():
+                    print(f"  {key:26}: {value}")
+                print("=" * HEADER_W)
+            elif memory_parts[:1] == ["profile"] and len(memory_parts) == 2:
+                try:
+                    config = resolve_memory_config(profile=memory_parts[1])
+                except ValueError as exc:
+                    info(str(exc))
+                    return False
+                self.memory_profile = config.profile
+                self.memory_config = config
+                self.memory_mode = config.mode
+                info(
+                    "memory_profile = "
+                    f"{self.memory_profile}; memory_mode = {self.memory_mode}"
+                )
+            elif memory_arg in MEMORY_MODES:
+                self.memory_mode = memory_arg
+                info(f"memory_mode = {self.memory_mode}")
             else:
-                self.memory_mode = "off" if self.memory_mode != "off" else "topical"
-            info(f"memory_mode = {self.memory_mode}")
+                self.memory_mode = "off" if self.memory_mode != "off" else "auto"
+                info(f"memory_mode = {self.memory_mode}")
             return False
 
-        if head == "/query":
+        if head in ("/query", "/search-memory"):
             if not arg:
-                info("usage: /query <text>")
+                info("usage: /search-memory <text>")
                 return False
             self.probe("topical", arg)
             return False
 
-        if head == "/exact":
+        if head in ("/exact", "/open-memory"):
             if not arg:
-                info("usage: /exact <dotted-handle>  (e.g. 11a1c9ad.1.0)")
+                info("usage: /open-memory <dotted-handle>  (e.g. 11a1c9ad.1.0)")
                 return False
             self.probe("exact", arg)
             return False
 
-        if head == "/entity":
+        if head in ("/entity", "/find-memory-entity"):
             if not arg:
-                info("usage: /entity <text>")
+                info("usage: /find-memory-entity <text>")
                 return False
             self.probe("entity_mention", arg)
             return False
 
-        if head == "/kv_query":
+        if head in ("/kv_query", "/ask-memory"):
             if not arg:
-                info(f"usage: {KV_QUERY_USAGE}")
+                info(f"usage: /ask-memory <question>  (advanced: {KV_QUERY_USAGE})")
                 return False
             try:
                 query_text, selector_kwargs = _parse_kv_query_args(arg)
@@ -2242,6 +2455,8 @@ class MemoryChat:
 
 
 def main(argv: list[str] | None = None) -> int:
+    default_profile = os.environ.get("LAZARUS_MEMORY_PROFILE", "plug_and_play")
+    default_memory_config = resolve_memory_config(profile=default_profile)
     parser = argparse.ArgumentParser(
         prog="interactive_memory_chat.py",
         description="Interactive pseudo-infinite-memory chat with routing metadata.",
@@ -2268,28 +2483,68 @@ def main(argv: list[str] | None = None) -> int:
         help="Max new tokens per assistant turn.",
     )
     parser.add_argument(
+        "--memory-profile",
+        choices=get_memory_profile_names(),
+        default=default_memory_config.profile,
+        help="Named memory preset (default: plug_and_play).",
+    )
+    parser.add_argument(
         "--memory-mode",
-        choices=("topical", "entity_mention", "vec_inject", "kv_direct", "off"),
-        default=os.environ.get("LAZARUS_MEMORY_MODE", "topical"),
+        choices=MEMORY_MODES,
+        default=None,
         help="Recall routing mode for post-save turns.",
     )
     parser.add_argument(
         "--generation-engine",
         choices=GENERATION_ENGINES,
-        default=os.environ.get("LAZARUS_GENERATION_ENGINE", "standard"),
+        default=None,
         help=(
             "Torch generation engine for live turns. Use "
             "residual_bounded_kv_direct for video-style bounded active KV."
         ),
     )
     parser.add_argument(
+        "--memory-k-hot",
+        type=int,
+        default=None,
+        help="HOT memory tier count.",
+    )
+    parser.add_argument(
+        "--memory-k-warm",
+        type=int,
+        default=None,
+        help="WARM memory tier count.",
+    )
+    parser.add_argument(
+        "--memory-candidate-pool",
+        type=int,
+        default=None,
+        help="Tiering candidate pool size.",
+    )
+    parser.add_argument(
+        "--memory-route-candidate-pool",
+        type=int,
+        default=None,
+        help="Router candidate pool size.",
+    )
+    parser.add_argument(
+        "--memory-max-inject-tokens",
+        type=int,
+        default=None,
+        help="Token-equivalent memory injection budget.",
+    )
+    parser.add_argument(
+        "--memory-semantic-prefix-tokens",
+        type=int,
+        default=None,
+        help="Semantic prefix token budget.",
+    )
+    parser.add_argument(
+        "--memory-hot-budget-mib",
         "--hot-budget-mib",
         type=int,
-        default=(
-            int(os.environ["LAZARUS_HOT_BUDGET_MIB"])
-            if "LAZARUS_HOT_BUDGET_MIB" in os.environ
-            else None
-        ),
+        dest="hot_budget_mib",
+        default=None,
         help="Hot KV budget for bounded generation engines.",
     )
     parser.add_argument(
@@ -2308,6 +2563,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Torch device (default cuda).",
     )
     args = parser.parse_args(argv)
+    memory_config = resolve_memory_config(
+        profile=args.memory_profile,
+        overrides={
+            "mode": args.memory_mode,
+            "active_generation_engine": args.generation_engine,
+            "hot_budget_mib": args.hot_budget_mib,
+            "k_hot": args.memory_k_hot,
+            "k_warm": args.memory_k_warm,
+            "candidate_pool": args.memory_candidate_pool,
+            "route_candidate_pool": args.memory_route_candidate_pool,
+            "max_total_inject_tokens": args.memory_max_inject_tokens,
+            "semantic_prefix_tokens": args.memory_semantic_prefix_tokens,
+        },
+    )
+    args.memory_mode = memory_config.mode
+    args.generation_engine = memory_config.active_generation_engine
+    args.hot_budget_mib = memory_config.hot_budget_mib
 
     # Also honour LAZARUS_MAX_NEW_TOKENS for the retriever's generation_kwargs.
     os.environ.setdefault("LAZARUS_MAX_NEW_TOKENS", str(args.max_new_tokens))
@@ -2321,6 +2593,8 @@ def main(argv: list[str] | None = None) -> int:
         generation_engine=args.generation_engine,
         hot_budget_mib=args.hot_budget_mib,
         session_cache_size=args.session_cache_size,
+        memory_profile=args.memory_profile,
+        memory_config=memory_config,
     )
 
     try:

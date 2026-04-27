@@ -36,7 +36,8 @@ fi
 
 launch_args=(
     --device cuda
-    --memory-mode topical
+    --memory-profile plug_and_play
+    --memory-mode auto
     --max-new-tokens 180
 )
 
