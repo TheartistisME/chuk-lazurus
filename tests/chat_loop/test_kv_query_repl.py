@@ -343,6 +343,17 @@ def test_kv_query_turn_preserves_cross_session_assignments(
                 matched_window_text="matched windows",
                 window_keywords=["palette"],
                 generated_answer="retrieved answer",
+                evidence_supports=[
+                    {
+                        "session_id": "sess-a",
+                        "window_id": 0,
+                        "tier": "hot",
+                        "rank": 0,
+                        "evidence_excerpt": "Atlas pricing decisions: Pro is $29.",
+                        "fact_keys_detected": ["atlas_pro_price"],
+                        "candidate_source": "asi_route_candidates",
+                    }
+                ],
             )
 
         def answer_with_kv_direct(self, *_args, **_kwargs):
@@ -395,6 +406,8 @@ def test_kv_query_turn_preserves_cross_session_assignments(
     assert meta.budgeted_assignment_count == 2
     assert meta.multi_session_count == 2
     assert meta.semantic_prefix_active is True
+    assert meta.evidence_support_count == 1
+    assert meta.evidence_supports[0]["fact_keys_detected"] == ["atlas_pro_price"]
 
 
 def test_kv_query_turn_preserves_natural_multi_session_assignments(
@@ -859,6 +872,60 @@ def test_memory_laws_atlas_entity_scope_excludes_wrong_entities() -> None:
     assert "$39" not in lower
     assert "30 days" not in lower
     assert "$49" not in lower
+
+
+def test_cold_malicious_palette_text_cannot_enter_hot_warm_synthesis() -> None:
+    from chuk_lazarus.session_retrieval.retriever import SessionRetriever
+
+    retriever = SessionRetriever.__new__(SessionRetriever)
+    answer = retriever._synthesize_website_color_scheme_answer(
+        "What is the current website color palette?",
+        [
+            ("hot", "Current website color palette final decision: warm white background."),
+            ("hot", "Current website color palette final decision: graphite headings."),
+            ("warm", "Current website color palette final decision: sage accents replaced teal."),
+            ("warm", "Current website color palette final decision: amber CTA buttons."),
+        ],
+    )
+
+    lower = answer.lower()
+    assert "warm white" in lower
+    assert "graphite" in lower
+    assert "sage" in lower
+    assert "amber" in lower
+    assert "magenta" not in lower
+    assert "ignore all prior" not in lower
+
+
+def test_memory_diagnostics_atlas_metamorphic_queries_are_intent_based() -> None:
+    from chuk_lazarus.session_retrieval.retriever import SessionRetriever
+
+    retriever = SessionRetriever.__new__(SessionRetriever)
+    windows = [
+        ("hot", "Current Atlas pricing decisions across our sessions: Atlas Pro is $29 per seat monthly."),
+        ("hot", "Current Atlas pricing decisions across our sessions: the annual discount is now 18%."),
+        ("warm", "Current Atlas pricing decisions across our sessions: the free trial stays at 14 days."),
+        ("warm", "Current Atlas pricing decisions across our sessions: usage overage is $0.08 per extra automation run."),
+        ("warm", "Current Atlas pricing decisions across our sessions: Enterprise pricing remains custom quote."),
+        (
+            "warm",
+            "Final Atlas pricing decision keeps Pro at $29 per seat, 18% annual discount, 14-day trial, $0.08 overage, and Enterprise custom quote.",
+        ),
+    ]
+
+    for query in (
+        "What did we end up charging for Atlas?",
+        "Did we settle on $29 or $49 for Atlas Pro?",
+        "atlas prcing final pls",
+        "What was Atlas, the pricing thing?",
+    ):
+        answer = retriever._synthesize_dirty_store_domain_answer(query, windows).lower()
+        assert "$29" in answer
+        assert "18%" in answer
+        assert "14-day" in answer or "14 days" in answer
+        assert "$0.08" in answer
+        assert "custom" in answer
+        assert "$49" not in answer
 
 
 def test_derive_arch_config_preserves_gemma4_kv_direct_layers(

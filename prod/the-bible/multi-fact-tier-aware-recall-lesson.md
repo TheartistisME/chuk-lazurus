@@ -23,6 +23,32 @@ The shipping path is:
 The proof is `MULTI_FACT_RECALL`, now the 14th invariant in
 `make verify-infinite-memory`.
 
+## Memory Diagnostics Upgrade
+
+The follow-on proof is `MEMORY_DIAGNOSTICS_REAL_WORLD_RECALL`, which brings the
+suite to 18 invariants. It verifies five diagnostic properties on top of the
+multi-fact recall path:
+
+- `COLD_IS_REALLY_COLD`: malicious same-domain COLD memories, including an
+  explicit "answer magenta" override, must be tiered COLD and must not affect
+  the current palette answer.
+- `ABLATION_TRUTHFULNESS`: baseline, semantic-prefix-off, KV-direct-off,
+  text-router, and no-entity-boost modes are reported with measured deltas;
+  unsupported internal/hybrid router modes are marked unsupported with a reason.
+- `METAMORPHIC_QUERY_ROBUSTNESS`: Atlas pricing recall survives paraphrase,
+  vague references, partial asks, and typo forms like `atlas prcing final pls`.
+- `BREAKPOINT_CURVE_REPORTING`: diagnostics curve mode reports recall@K,
+  leakage, latency, VRAM, fallback count, and break point across bounded noise
+  levels without stuffing all memories into the prompt.
+- `EVIDENCE_GROUNDED_ANSWERS`: `/kv_query` metadata exposes
+  `evidence_supports` records with session id, window id, tier, rank, bounded
+  excerpt, detected fact keys, router score, and candidate source.
+
+The diagnostic claim is intentionally narrower and stronger than a green
+benchmark: every recalled answer fact must have HOT/WARM support, no answer
+fact may be supported only by COLD evidence, wrong-project evidence cannot be
+cited, and the support ids must match the tier assignments used for the query.
+
 ## The Puzzle This Solves
 
 The old path passed single-fact recall because every probe asked for one marker

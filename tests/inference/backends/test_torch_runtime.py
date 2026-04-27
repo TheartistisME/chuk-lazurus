@@ -498,6 +498,35 @@ def test_dirty_store_variable_length_tier_mask_keeps_cold_muted():
     assert torch.all(cold_mass == 0)
 
 
+def test_malicious_cold_instruction_attention_mask_zeroes_override_slice():
+    """Even very strong malicious COLD logits must receive zero attention mass."""
+    attn_logits = torch.zeros((1, 1, 1, 12), dtype=torch.float32)
+    attn_logits[..., 8:12] = 1000.0
+    inputs = AttentionTierMaskInputs(
+        per_window_token_ranges={
+            1: (0, 4),
+            2: (4, 8),
+            99: (8, 12),
+        },
+        tier_assignments={
+            1: TierLabel.HOT,
+            2: TierLabel.WARM,
+            99: TierLabel.COLD,
+        },
+        warm_config=WarmPenaltyConfig(penalty_value=4.0, hot_bonus_value=0.0),
+    )
+
+    masked = apply_tier_attention_mask(attn_logits, inputs)
+    post_softmax = torch.softmax(masked, dim=-1)
+
+    assert torch.isneginf(masked[..., 8:12]).all()
+    assert torch.all(post_softmax[..., 8:12] == 0)
+    torch.testing.assert_close(
+        post_softmax[..., 0:8].sum(dim=-1),
+        torch.ones_like(post_softmax[..., 0:8].sum(dim=-1)),
+    )
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA runtime test requires a CUDA GPU")
 class TestKvDirectMaterializationValidation:
     """Focused runtime-side validation checks that fail before patch execution."""

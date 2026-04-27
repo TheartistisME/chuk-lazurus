@@ -419,6 +419,8 @@ class TurnMetadata:
     candidate_recall_at_8: int | None = None
     candidate_recall_at_12: int | None = None
     candidate_recall_at_64: int | None = None
+    evidence_supports: list[dict[str, object]] = field(default_factory=list)
+    evidence_support_count: int = 0
 
     def pretty_print(self) -> None:
         if self.mode == "plain":
@@ -463,6 +465,7 @@ class TurnMetadata:
         print(f"    multi_session_count  : {self.multi_session_count}{_sent}")
         print(f"    semantic_prefix      : {self.semantic_prefix_active}{_sent}")
         print(f"    semantic_prefix_tok  : {self.semantic_prefix_tokens}{_sent}")
+        print(f"    evidence_supports    : {self.evidence_support_count}{_sent}")
         print(f"    no_memory_detected   : {self.no_memory_detected}{_sent}")
         print(f"    fallback_explicit    : {self.fallback_is_explicit_if_used}")
         if any(
@@ -1443,6 +1446,22 @@ class MemoryChat:
                     seen_sessions.add(session_id)
                     deduped.append(candidate)
                 candidates = deduped
+            required_substring = str(
+                os.environ.get("LAZARUS_KV_REQUIRED_SUBSTRING", "") or ""
+            ).strip().lower()
+            if required_substring:
+                from chuk_lazarus.session_retrieval.enumeration import load_store
+
+                filtered = []
+                for candidate in candidates:
+                    store = load_store(candidate.handle)
+                    window_text = store.get_window_text(
+                        int(candidate.window_id),
+                        self.retriever.tokenizer,
+                    ).lower()
+                    if required_substring in window_text:
+                        filtered.append(candidate)
+                candidates = filtered
             if not candidates:
                 raise RuntimeError("asi_route_candidates returned no candidates")
             meta.candidate_count = int(len(candidates))
@@ -1587,6 +1606,11 @@ class MemoryChat:
         )
         meta.semantic_prefix_tokens = int(
             kv_strict.get("semantic_prefix_tokens", 0)
+        )
+        evidence_supports = list(getattr(result, "evidence_supports", []) or [])
+        meta.evidence_supports = evidence_supports
+        meta.evidence_support_count = int(
+            kv_strict.get("evidence_support_count", len(evidence_supports))
         )
         # selected_tier: report the highest-priority tier that contributed to
         # this generation. Multi-fact queries can include HOT and WARM slots in

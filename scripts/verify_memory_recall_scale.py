@@ -141,6 +141,24 @@ class MemoryLawsRecallResult:
     entity_answer: str
 
 
+@dataclass
+class MemoryDiagnosticsCurveResult:
+    noise: int
+    target_recall_at_4: int
+    target_recall_at_8: int
+    target_recall_at_12: int
+    target_recall_at_64: int
+    wrong_entity_leak_count: int
+    near_miss_leak_count: int
+    latency_ms: float
+    vram_peak_mib: float | int | None
+    candidate_count: int
+    tier_assignment_count: int
+    fallback_count: int
+    answer_fingerprint: str
+    generated_answer: str
+
+
 REAL_WORLD_COLOR_MEMORIES: tuple[dict[str, str], ...] = (
     {
         "fact_key": "deep_teal_hero_cold",
@@ -881,13 +899,14 @@ def plant_multi_fact_group(
     return group_key, facts
 
 
-def reset_multi_fact_probe_store(chat: Any) -> None:
+def reset_multi_fact_probe_store(chat: Any, *, preserve_retriever: bool = False) -> None:
     """Clear the verifier's disposable store between independent probes."""
     if getattr(chat, "indexer", None) is not None:
         with contextlib.suppress(Exception):
             chat.indexer.stop()
     chat.indexer = None
-    chat.retriever = None
+    if not preserve_retriever:
+        chat.retriever = None
     chat.session = None
     chat.history = None
     chat.vec_inject_provider = None
@@ -1159,7 +1178,13 @@ def run_real_world_multi_fact_probe(
     )
 
 
-def plant_memory_laws_session(chat: Any, role: Any, text: str) -> str:
+def plant_memory_laws_session(
+    chat: Any,
+    role: Any,
+    text: str,
+    *,
+    rebuild_retriever: bool = True,
+) -> str:
     chat.memory_mode = "off"
     chat.start_new_session()
     session_id = chat.session.session_id
@@ -1173,9 +1198,21 @@ def plant_memory_laws_session(chat: Any, role: Any, text: str) -> str:
         ),
     )
     chat._mark_dirty()
-    if not chat.save_current_session(rebuild_retriever=True):
+    if not chat.save_current_session(rebuild_retriever=rebuild_retriever):
         raise RuntimeError("save_current_session returned False while planting memory-laws fixture")
     return session_id
+
+
+def refresh_memory_laws_retriever(chat: Any) -> None:
+    """Refresh once after a memory-laws planting batch."""
+    if chat.retriever is None:
+        chat.maybe_load_retriever()
+        if chat.retriever is None:
+            raise RuntimeError("memory-laws fixture planted no retrievable sessions")
+        return
+    added = chat.retriever.refresh_handles(chat.checkpoints_root)
+    if added <= 0:
+        raise RuntimeError("memory-laws retriever refresh did not add planted sessions")
 
 
 def memory_laws_candidate_recall_at(
@@ -1243,10 +1280,20 @@ def run_memory_laws_probe(
     duplicate_level: int,
 ) -> MemoryLawsRecallResult:
     for noise_idx in range(int(noise_level)):
-        plant_memory_laws_session(chat, role, memory_laws_noise_text(noise_idx))
+        plant_memory_laws_session(
+            chat,
+            role,
+            memory_laws_noise_text(noise_idx),
+            rebuild_retriever=False,
+        )
     target_records = []
     for fact in MEMORY_LAWS_ATLAS_FACTS:
-        plant_memory_laws_session(chat, role, str(fact["text"]))
+        plant_memory_laws_session(
+            chat,
+            role,
+            str(fact["text"]),
+            rebuild_retriever=False,
+        )
         target_records.append(dict(fact))
     stale = (
         "Old Atlas pricing decisions draft proposed $49 per seat monthly, "
@@ -1257,11 +1304,18 @@ def run_memory_laws_probe(
         "discount is 10%, and the trial is 30 days for Nimbus only."
     )
     for dup_idx in range(int(duplicate_level)):
-        plant_memory_laws_session(chat, role, stale if dup_idx % 2 == 0 else near_miss)
+        plant_memory_laws_session(
+            chat,
+            role,
+            stale if dup_idx % 2 == 0 else near_miss,
+            rebuild_retriever=False,
+        )
     for text in MEMORY_LAWS_TEMPORAL_FACTS:
-        plant_memory_laws_session(chat, role, text)
+        plant_memory_laws_session(chat, role, text, rebuild_retriever=False)
     for text in MEMORY_LAWS_ENTITY_NOISE:
-        plant_memory_laws_session(chat, role, text)
+        plant_memory_laws_session(chat, role, text, rebuild_retriever=False)
+
+    refresh_memory_laws_retriever(chat)
 
     no_memory_meta, no_memory_elapsed = run_memory_laws_query(
         chat,
@@ -1469,6 +1523,7 @@ def build_parser() -> argparse.ArgumentParser:
             "real_world_multi_fact",
             "dirty_real_world_multi_fact",
             "memory_laws",
+            "memory_diagnostics_curve",
         ),
         default="kv_direct",
     )
@@ -1498,6 +1553,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--memory-laws-skip-long",
         action="store_true",
         help="Compatibility flag for CI wrappers that skip long memory-laws sweeps.",
+    )
+    parser.add_argument(
+        "--memory-diagnostics-noise-levels",
+        default="10,100,1000",
+        help="Comma-separated noise levels for --mode memory_diagnostics_curve.",
+    )
+    parser.add_argument(
+        "--memory-diagnostics-long-noise-levels",
+        default="10,100,1000,10000",
+        help="Optional long/nightly diagnostics levels; pass them via --memory-diagnostics-noise-levels.",
     )
     return parser
 
@@ -1822,7 +1887,7 @@ def run_memory_laws_mode(
         os.environ["LAZARUS_KV_SEMANTIC_PREFIX_TOKENS"] = "4096"
         os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
         for probe_idx in range(1, probe_count + 1):
-            reset_multi_fact_probe_store(chat)
+            reset_multi_fact_probe_store(chat, preserve_retriever=True)
             noise_level = noise_levels[(probe_idx - 1) % len(noise_levels)]
             duplicate_level = duplicate_levels[(probe_idx - 1) % len(duplicate_levels)]
             try:
@@ -1903,8 +1968,172 @@ def run_memory_laws_mode(
     return 0
 
 
+def run_memory_diagnostics_curve_mode(
+    args: argparse.Namespace,
+    run_dir: Path,
+    store_root: Path,
+) -> int:
+    harness_store_root = store_root
+    store_root = localize_path(str(run_dir / "scale-memory-diagnostics-curve-store"))
+    if store_root.exists():
+        shutil.rmtree(store_root)
+    imc = load_interactive_memory_chat()
+    force_deterministic_streaming()
+    chat = imc.MemoryChat(
+        store_root=store_root,
+        model_path=args.model_path,
+        max_new_tokens=max(int(args.max_new_tokens), 220),
+        memory_mode="kv_direct",
+        device=args.device,
+    )
+    chat.load_model()
+    chat.maybe_load_retriever()
+
+    from chuk_lazarus.inference.chat import Role
+
+    noise_levels = parse_csv_ints(args.memory_diagnostics_noise_levels)
+    if not noise_levels:
+        noise_levels = [10, 100]
+    previous_env = {
+        key: os.environ.get(key)
+        for key in (
+            "LAZARUS_KV_CANDIDATE_POOL",
+            "LAZARUS_KV_K_HOT",
+            "LAZARUS_KV_K_WARM",
+            "LAZARUS_KV_ROUTE_CANDIDATE_POOL",
+            "LAZARUS_KV_DEDUP_SESSION",
+            "LAZARUS_MAX_TOTAL_INJECT_TOKENS",
+            "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS",
+            "LAZARUS_KV_HOT_BONUS",
+        )
+    }
+    results: list[MemoryDiagnosticsCurveResult] = []
+    passed = 0
+    breakpoint_noise: int | None = None
+    try:
+        os.environ["LAZARUS_KV_CANDIDATE_POOL"] = "16"
+        os.environ["LAZARUS_KV_ROUTE_CANDIDATE_POOL"] = "64"
+        os.environ["LAZARUS_KV_DEDUP_SESSION"] = "1"
+        os.environ["LAZARUS_KV_K_HOT"] = "4"
+        os.environ["LAZARUS_KV_K_WARM"] = "4"
+        os.environ["LAZARUS_MAX_TOTAL_INJECT_TOKENS"] = "65536"
+        os.environ["LAZARUS_KV_SEMANTIC_PREFIX_TOKENS"] = "4096"
+        os.environ["LAZARUS_KV_HOT_BONUS"] = "0.0"
+        for noise_level in noise_levels:
+            reset_multi_fact_probe_store(chat)
+            for noise_idx in range(int(noise_level)):
+                plant_memory_laws_session(
+                    chat,
+                    Role.USER,
+                    memory_laws_noise_text(noise_idx),
+                    rebuild_retriever=False,
+                )
+            target_records: list[dict[str, Any]] = []
+            for fact in MEMORY_LAWS_ATLAS_FACTS:
+                plant_memory_laws_session(
+                    chat,
+                    Role.USER,
+                    str(fact["text"]),
+                    rebuild_retriever=False,
+                )
+                target_records.append(dict(fact))
+            refresh_memory_laws_retriever(chat)
+            query = "What are the current Atlas pricing decisions across our sessions?"
+            candidate_recall = memory_laws_route_recall(chat, query, target_records)
+            meta, elapsed = run_memory_laws_query(chat, query)
+            answer = str(getattr(meta, "generated_answer", "") or "")
+            wrong_hits = memory_laws_wrong_entity_hits(answer)
+            result = MemoryDiagnosticsCurveResult(
+                noise=int(noise_level),
+                target_recall_at_4=int(candidate_recall["candidate_recall_at_4"]),
+                target_recall_at_8=int(candidate_recall["candidate_recall_at_8"]),
+                target_recall_at_12=int(candidate_recall["candidate_recall_at_12"]),
+                target_recall_at_64=int(candidate_recall["candidate_recall_at_64"]),
+                wrong_entity_leak_count=len(wrong_hits),
+                near_miss_leak_count=len(wrong_hits),
+                latency_ms=round(float(elapsed) * 1000.0, 2),
+                vram_peak_mib=getattr(meta, "vram_peak_mib", None),
+                candidate_count=int(getattr(meta, "candidate_count", 0) or 0),
+                tier_assignment_count=int(getattr(meta, "tier_assignment_count", 0) or 0),
+                fallback_count=0 if bool(getattr(meta, "no_silent_fallback", False)) else 1,
+                answer_fingerprint=memory_laws_atlas_fingerprint(answer),
+                generated_answer=answer,
+            )
+            ok = (
+                result.target_recall_at_12 > 0
+                and result.target_recall_at_64 >= result.target_recall_at_12
+                and result.wrong_entity_leak_count == 0
+                and isinstance(result.vram_peak_mib, (int, float))
+            )
+            if not ok and breakpoint_noise is None:
+                breakpoint_noise = int(noise_level)
+            passed += int(ok)
+            results.append(result)
+            verdict = "PASS" if ok else "FAIL"
+            print(
+                f"{verdict} MEMORY_DIAGNOSTICS_CURVE "
+                f"noise={result.noise} recall@12={result.target_recall_at_12}/6 "
+                f"latency={result.latency_ms:.0f}ms leaks={result.wrong_entity_leak_count}",
+                flush=True,
+            )
+            if not ok:
+                print(json.dumps(asdict(result), indent=2, sort_keys=True)[:4000], flush=True)
+    finally:
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    hit_rate = passed / max(1, len(results))
+    final_summary = {
+        "run_dir": str(run_dir),
+        "store_root": str(store_root),
+        "harness_store_root": str(harness_store_root),
+        "mode": args.mode,
+        "sample_size": len(results),
+        "passed": passed,
+        "hit_rate": hit_rate,
+        "required_hit_rate": args.required_hit_rate,
+        "noise_levels": noise_levels,
+        "breakpoint_noise": breakpoint_noise,
+        "breakpoint_not_reached_under_full_levels": breakpoint_noise is None,
+        "curve_report_written": True,
+    }
+    report_path = args.report_json or (run_dir / "scale-actual-recall-memory_diagnostics_curve.json")
+    write_report(report_path, results, final_summary)
+    if hit_rate < args.required_hit_rate:
+        print(
+            f"FAIL SCALE_ACTUAL_RECALL: mode=memory_diagnostics_curve "
+            f"hit_rate={hit_rate:.3f} required={args.required_hit_rate:.3f} "
+            f"report={report_path}",
+            flush=True,
+        )
+        return 1
+    print(
+        f"PASS SCALE_ACTUAL_RECALL: mode=memory_diagnostics_curve "
+        f"hit_rate={hit_rate:.3f} passed={passed}/{len(results)} "
+        f"report={report_path}",
+        flush=True,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.mode == "memory_diagnostics_curve" and args.run_dir is None:
+        run_dir = Path(args.output_root) / f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-memory-diagnostics-curve"
+        store_root = run_dir / "store"
+        if args.dry_run:
+            print(
+                f"DRY_RUN SCALE_ACTUAL_RECALL: run_dir={run_dir} "
+                f"store_root={store_root} mode=memory_diagnostics_curve "
+                f"noise_levels={args.memory_diagnostics_noise_levels}",
+                flush=True,
+            )
+            return 0
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_memory_diagnostics_curve_mode(args, run_dir, store_root)
     run_dir, harness_summary = load_run_summary(args)
     events_path = localize_path(str(harness_summary.get("events_jsonl") or run_dir / "events.jsonl"))
     store_root = localize_path(str(harness_summary.get("store_root") or run_dir / "store"))
@@ -1944,6 +2173,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         return run_memory_laws_mode(args, run_dir, store_root)
+    if args.mode == "memory_diagnostics_curve":
+        if args.dry_run:
+            print(
+                f"DRY_RUN SCALE_ACTUAL_RECALL: run_dir={run_dir} "
+                f"store_root={store_root} mode=memory_diagnostics_curve "
+                f"noise_levels={args.memory_diagnostics_noise_levels}",
+                flush=True,
+            )
+            return 0
+        return run_memory_diagnostics_curve_mode(args, run_dir, store_root)
     probes = select_probes(parse_scale_probes(events_path), args.sample_size)
     if not probes:
         raise RuntimeError(f"No scale routing probes found in {events_path}")
