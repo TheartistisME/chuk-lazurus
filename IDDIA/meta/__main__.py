@@ -12,6 +12,7 @@ from .grader import DEFAULT_EXPECTED_CONCEPTS, grade_file
 from .signoff import append_changelog, append_signoff, helper_context
 from .spawner import default_vee_agent, default_vee_repo, spawn_improvement_agent
 from .state import DEFAULT_META_ROOT
+from .supervisor import supervise_spawn
 
 
 def _write_stdout_utf8(text: str) -> None:
@@ -50,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     spawn.add_argument("--tmux-session", default=None)
     spawn.add_argument("--tmux-window", default=None)
     spawn.add_argument("--worker-name", default=None)
+
+    supervise = subparsers.add_parser("supervise", help="Supervise a spawn request")
+    supervise.add_argument("request", type=Path)
+    supervise.add_argument("--wait-seconds", type=float, default=0)
 
     helper = subparsers.add_parser("helper-context", help="Print helper context for agents")
     helper.set_defaults(command="helper-context")
@@ -144,6 +149,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"spawn_status={result.status}")
         print(f"spawn_request={result.request_path}")
         return 0
+
+    if args.command == "supervise":
+        result = supervise_spawn(
+            args.request,
+            state_root=state_root,
+            wait_seconds=args.wait_seconds,
+        )
+        print(f"supervise_status={result.status}")
+        print(f"spawn_run={result.status_path}")
+        if result.transcript_path:
+            print(f"transcript={result.transcript_path}")
+        if result.signoff_path:
+            print(f"signoff={result.signoff_path}")
+        return 0 if result.status in {"completed", "running"} else 2
 
     if args.command == "helper-context":
         _write_stdout_utf8(helper_context(state_root=state_root))

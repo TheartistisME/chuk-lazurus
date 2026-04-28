@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .state import DEFAULT_META_ROOT, safe_slug, utc_now, utc_stamp, write_json
+from .supervisor import extract_pane_ids, run_metadata, write_spawn_run_status
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -24,6 +25,8 @@ class SpawnResult:
     stdout: str = ""
     stderr: str = ""
     returncode: int | None = None
+    run_status_path: Path | None = None
+    transcript_path: Path | None = None
 
 
 def windows_path_to_wsl(path: Path) -> str:
@@ -157,6 +160,23 @@ def build_wsl_script(
     return "\n".join(lines)
 
 
+def parse_spawned_panes(output: str) -> list[dict[str, str]]:
+    panes: list[dict[str, str]] = []
+    for line in output.splitlines():
+        parts = line.strip().split(maxsplit=3)
+        if len(parts) < 2 or not parts[1].startswith("%"):
+            continue
+        panes.append(
+            {
+                "tmux_pane_target": parts[0],
+                "pane_id": parts[1],
+                "current_command": parts[2] if len(parts) > 2 else "",
+                "pane_title": parts[3] if len(parts) > 3 else "",
+            }
+        )
+    return panes
+
+
 def pending_request(
     *,
     state_root: Path,
@@ -172,13 +192,27 @@ def pending_request(
     request["pending_reason"] = reason
     request["prompt_path"] = str(prompt_path)
     request_path = state_root / "spawn_requests" / f"{request_id}.json"
+    request["request_path"] = str(request_path)
     write_json(request_path, request)
+    run_status_path = write_spawn_run_status(
+        state_root=state_root,
+        request=request,
+        status="pending",
+        status_reason=reason,
+        extra={
+            "spawn_stdout": request.get("stdout", ""),
+            "spawn_stderr": request.get("stderr", ""),
+            "spawn_returncode": request.get("returncode"),
+        },
+    )
     return SpawnResult(
         status="pending",
         request_path=request_path,
         prompt_path=prompt_path,
         command=[],
         stderr=reason,
+        run_status_path=run_status_path,
+        transcript_path=Path(request["transcript_path"]),
     )
 
 
@@ -226,6 +260,7 @@ def spawn_improvement_agent(
         "vee_repo": str(vee_repo),
         "repo_root": str(repo_root),
     }
+    request.update(run_metadata(state_root, request_id))
     if force_pending:
         return pending_request(
             state_root=state_root,
@@ -292,6 +327,8 @@ def spawn_improvement_agent(
     request["stdout"] = result.stdout
     request["stderr"] = result.stderr
     request["returncode"] = result.returncode
+    request["spawned_panes"] = parse_spawned_panes(result.stdout)
+    request["pane_ids"] = extract_pane_ids(result.stdout)
     if result.returncode != 0:
         return pending_request(
             state_root=state_root,
@@ -303,7 +340,20 @@ def spawn_improvement_agent(
 
     request["status"] = "spawned"
     request_path = state_root / "spawn_requests" / f"{request_id}.json"
+    request["request_path"] = str(request_path)
     write_json(request_path, request)
+    run_status_path = write_spawn_run_status(
+        state_root=state_root,
+        request=request,
+        status="spawned",
+        status_reason="vee spawn command completed",
+        extra={
+            "spawn_stdout": result.stdout,
+            "spawn_stderr": result.stderr,
+            "spawn_returncode": result.returncode,
+            "spawned_panes": request["spawned_panes"],
+        },
+    )
     return SpawnResult(
         status="spawned",
         request_path=request_path,
@@ -312,4 +362,6 @@ def spawn_improvement_agent(
         stdout=result.stdout,
         stderr=result.stderr,
         returncode=result.returncode,
+        run_status_path=run_status_path,
+        transcript_path=Path(request["transcript_path"]),
     )

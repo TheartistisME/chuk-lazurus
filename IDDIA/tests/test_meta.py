@@ -170,6 +170,52 @@ def test_meta_grader_does_not_count_query_only_concepts_when_hits_exist(tmp_path
     assert "replay" in concept_criterion["details"]["missing"]
 
 
+def test_critical_concept_miss_caps_otherwise_good_grade(tmp_path):
+    package = sample_package()
+    package["hits"][0]["chapter_title"] = "Chapter 4: Encoding and Evolution"
+    package["hits"][0]["section_title"] = "Schema Evolution"
+    package["hits"][0]["concept_tags"] = ["schema"]
+    package["hits"][0]["matched_tags"] = ["schema"]
+    package["hits"][0]["matched_terms"] = ["schema"]
+
+    grade = grade_payload(
+        package,
+        state_root=tmp_path,
+        expected_concepts=("schema", "replay", "manifest", "consistency"),
+        preferred_chapters=("Encoding and Evolution",),
+    )
+
+    concept_criterion = next(
+        item for item in grade.payload["criteria"] if item["id"] == "expected_concept_coverage"
+    )
+    assert concept_criterion["score"] == 0.25
+    assert grade.payload["raw_overall_score"] > 4.0
+    assert grade.payload["overall_score"] == 3.4
+    assert grade.payload["label"] == "mixed"
+    assert grade.payload["score_gates"][0]["id"] == "critical_expected_concept_coverage"
+    assert "Score capped" in grade.payload["recommendation"]
+
+
+def test_partial_concept_miss_caps_grade_below_good(tmp_path):
+    package = sample_package()
+    package["hits"][0]["chapter_title"] = "Chapter 4: Encoding and Evolution"
+    package["hits"][0]["section_title"] = "Schema Evolution"
+    package["hits"][0]["concept_tags"] = ["schema", "manifest", "replay"]
+    package["hits"][0]["matched_tags"] = ["schema", "manifest", "replay"]
+    package["hits"][0]["matched_terms"] = ["schema", "manifest", "replay"]
+
+    grade = grade_payload(
+        package,
+        state_root=tmp_path,
+        expected_concepts=("schema", "replay", "manifest", "consistency"),
+        preferred_chapters=("Encoding and Evolution",),
+    )
+
+    assert grade.payload["raw_overall_score"] > 4.0
+    assert grade.payload["overall_score"] == 3.9
+    assert any(gate["id"] == "expected_concept_coverage" for gate in grade.payload["score_gates"])
+
+
 def test_activation_policy_every_n_and_threshold(tmp_path):
     grade = {"grade_id": "grade-1", "overall_score": 4.7}
     policy = ActivationPolicy(mode="every_n", every_n=3)

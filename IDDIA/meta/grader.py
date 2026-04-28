@@ -161,6 +161,71 @@ def label_score(score: float) -> str:
     return "weak"
 
 
+def _criterion_by_id(criteria: list[dict[str, Any]], criterion_id: str) -> dict[str, Any] | None:
+    return next((item for item in criteria if item.get("id") == criterion_id), None)
+
+
+def score_gates(
+    criteria: list[dict[str, Any]],
+    *,
+    has_hits: bool,
+    has_preferred_chapters: bool,
+) -> list[dict[str, Any]]:
+    """Caps that keep critical failures from averaging into false confidence."""
+    gates: list[dict[str, Any]] = []
+    concept = _criterion_by_id(criteria, "expected_concept_coverage")
+    if concept:
+        concept_score = float(concept.get("score", 0.0))
+        if concept_score < 0.5:
+            gates.append(
+                {
+                    "id": "critical_expected_concept_coverage",
+                    "cap": 3.4,
+                    "reason": "expected concept coverage is below 50%",
+                    "criterion_score": round(concept_score, 3),
+                }
+            )
+        elif concept_score < 0.8:
+            gates.append(
+                {
+                    "id": "expected_concept_coverage",
+                    "cap": 3.9,
+                    "reason": "expected concept coverage is below the pass threshold",
+                    "criterion_score": round(concept_score, 3),
+                }
+            )
+
+    preferred = _criterion_by_id(criteria, "preferred_chapter_coverage")
+    if has_hits and has_preferred_chapters and preferred and float(preferred.get("score", 0.0)) == 0:
+        gates.append(
+            {
+                "id": "preferred_chapter_miss",
+                "cap": 4.0,
+                "reason": "no retrieved hit comes from a preferred chapter",
+                "criterion_score": 0.0,
+            }
+        )
+
+    top_hit = _criterion_by_id(criteria, "top_hit_relevance")
+    if has_hits and top_hit and float(top_hit.get("score", 0.0)) < 0.8:
+        gates.append(
+            {
+                "id": "top_hit_relevance",
+                "cap": 4.1,
+                "reason": "top hit does not carry the expected signal",
+                "criterion_score": round(float(top_hit.get("score", 0.0)), 3),
+            }
+        )
+
+    return gates
+
+
+def apply_score_gates(raw_overall: float, gates: list[dict[str, Any]]) -> float:
+    if not gates:
+        return raw_overall
+    return round(min(raw_overall, *(float(gate["cap"]) for gate in gates)), 2)
+
+
 def criterion(
     criterion_id: str,
     label: str,
@@ -443,6 +508,14 @@ def recommendation(criteria: list[dict[str, Any]]) -> str:
     return f"Improve the weakest grading areas first: {labels}."
 
 
+def gated_recommendation(criteria: list[dict[str, Any]], gates: list[dict[str, Any]]) -> str:
+    base = recommendation(criteria)
+    if not gates:
+        return base
+    gate_reasons = "; ".join(str(gate["reason"]) for gate in gates[:3])
+    return f"{base} Score capped because {gate_reasons}."
+
+
 def grade_payload(
     payload: dict[str, Any],
     *,
@@ -460,7 +533,13 @@ def grade_payload(
     criteria.extend(configured_criteria(payload, criteria_config))
     total_weight = sum(float(item["weight"]) for item in criteria) or 1.0
     weighted = sum(float(item["score"]) * float(item["weight"]) for item in criteria)
-    overall = round((weighted / total_weight) * 5.0, 2)
+    raw_overall = round((weighted / total_weight) * 5.0, 2)
+    gates = score_gates(
+        criteria,
+        has_hits=bool(payload_hits(payload)),
+        has_preferred_chapters=bool(preferred_chapters),
+    )
+    overall = apply_score_gates(raw_overall, gates)
     grade_id_source = str(input_path or payload.get("id") or payload.get("task") or "tool-output")
     grade_id = f"{utc_stamp()}-{safe_slug(Path(grade_id_source).stem, 'grade')}"
     record = {
@@ -469,10 +548,12 @@ def grade_payload(
         "graded_at": utc_now(),
         "input_path": str(input_path) if input_path else None,
         "input_sha256": sha256_path(input_path) if input_path and input_path.exists() else None,
+        "raw_overall_score": raw_overall,
         "overall_score": overall,
         "label": label_score(overall),
         "criteria": criteria,
-        "recommendation": recommendation(criteria),
+        "score_gates": gates,
+        "recommendation": gated_recommendation(criteria, gates),
         "safe_input_summary": safe_payload(payload),
     }
     output_path = state_root / "grades" / f"{grade_id}.json"
