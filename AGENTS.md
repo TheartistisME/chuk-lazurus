@@ -12,6 +12,17 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Filedex / Tinydex Cadence
+
+All agents must use tinydex/filedex as a tiny file-memory ritual:
+
+1. Before reading or editing any file you plan to touch, run `tinydex scan <files...>` from the repo root. If using the WSL full path, run `/mnt/c/Users/jehma/Desktop/TinyTool/bin/tinydex scan <files...>`.
+2. Before work, fetch relevant cards: `dependencies`, `tests`, and `risks`.
+3. While working, set useful discoveries with `tinydex set <file> <category> "..." --agent <name>`.
+4. At handoff, update `status`, `tests`, `next_steps`, and optionally `agent_notes`.
+5. This applies to subagents too; coordinators must tell delegated agents to use this cadence.
+6. Keep entries short and agent-readable.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
@@ -37,4 +48,3 @@ bd sync               # Sync with git
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-
