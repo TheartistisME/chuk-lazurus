@@ -704,6 +704,14 @@ class MemoryChat:
         self.history.add_system(prompt)
         self._agent_tool_prompt_added = True
 
+    def _inject_agent_tool_retriever_prompt(self) -> None:
+        prompt = self._agent_tool_system_prompt()
+        if prompt is None or self.retriever is None:
+            return
+        current_prompt = getattr(self.retriever, "system_prompt", "")
+        if isinstance(current_prompt, str) and prompt not in current_prompt:
+            self.retriever.system_prompt = current_prompt + "\n\n" + prompt
+
     @contextmanager
     def _memory_runtime_env(self, config: MemoryRecallConfig):
         updates = memory_config_env(config)
@@ -2211,6 +2219,7 @@ class MemoryChat:
                 self.agent_tools_enabled = True
                 self._ensure_agent_tool_runner()
                 self._inject_agent_tool_system_prompt()
+                self._inject_agent_tool_retriever_prompt()
                 info("coding-agent tools enabled for future turns")
             elif tools_arg == "off":
                 self.agent_tools_enabled = False
