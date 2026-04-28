@@ -21,7 +21,12 @@ from IDDIA import (
     open_zvec_read_only_with_retry,
     search_context,
 )
-from IDDIA.core import SearchHit, build_chunks, render_context_package_markdown
+from IDDIA.core import (
+    SearchHit,
+    build_chunks,
+    extract_section_labels,
+    render_context_package_markdown,
+)
 from IDDIA.install_slash_commands import install_commands
 
 
@@ -166,6 +171,15 @@ def test_build_chunks_adds_best_effort_chapter_and_section_labels(tmp_path):
     assert "event-log" in record["concept_tags"]
 
 
+def test_section_label_heuristic_ignores_numbered_sentence_fragments():
+    labels = extract_section_labels(
+        "3 of the application state), then a straightforward single-threaded log consumer needs\n"
+        "no concurrency control for writes."
+    )
+
+    assert labels == {}
+
+
 def test_zvec_open_uses_read_only_option_and_retries_lock(tmp_path):
     calls: list[object] = []
 
@@ -278,6 +292,96 @@ def test_search_reranks_with_lexical_and_tag_boosts(monkeypatch, tmp_path):
     assert hits[0].query_boost > 0
     assert "event-log" in hits[0].matched_tags
     assert "replay" in hits[0].matched_terms
+
+
+def test_search_uses_lexical_fallback_beyond_zvec_candidates(monkeypatch, tmp_path):
+    artifact_root = write_chunks(
+        tmp_path,
+        [
+            {
+                "id": "generic",
+                "page": 40,
+                "source_path": "page_0040.md",
+                "principle_tags": [],
+                "stage_tags": [],
+                "text": "A general system can be reliable.",
+            },
+            {
+                "id": "event-sourcing",
+                "page": 465,
+                "source_path": "page_0465.md",
+                "principle_tags": ["source-of-truth", "durability"],
+                "stage_tags": [],
+                "concept_tags": ["event-log", "replay", "snapshot"],
+                "chapter_title": "Chapter 11: Stream Processing",
+                "text": (
+                    "Event sourcing records every change as an append-only log, "
+                    "then uses snapshots to recover and replay derived state."
+                ),
+            },
+        ],
+    )
+    install_fake_zvec(monkeypatch, [{"id": "generic", "score": 0.3}])
+
+    hits = search_context(
+        artifact_root=artifact_root,
+        task="Verify experiment lineage by replaying failed rounds from an event log",
+        stage="verify",
+        next_steps="Use snapshots for recovery and explain parent selection",
+        top_k=1,
+    )
+
+    assert hits[0].chunk_id == "event-sourcing"
+    assert "affinity:lineage-log" in hits[0].matched_tags
+
+
+def test_schema_migration_affinity_prefers_encoding_chapter(monkeypatch, tmp_path):
+    artifact_root = write_chunks(
+        tmp_path,
+        [
+            {
+                "id": "transaction-version",
+                "page": 255,
+                "source_path": "page_0255.md",
+                "principle_tags": ["consistency", "durability", "schema-evolution"],
+                "stage_tags": [],
+                "concept_tags": ["schema", "provenance-lineage"],
+                "chapter_title": "Chapter 7: Transactions",
+                "text": "A transaction record has an immutable version and durable state.",
+            },
+            {
+                "id": "encoding-schema",
+                "page": 142,
+                "source_path": "page_0142.md",
+                "principle_tags": ["schema-evolution"],
+                "stage_tags": [],
+                "concept_tags": ["schema"],
+                "chapter_title": "Chapter 4: Encoding and Evolution",
+                "text": (
+                    "Schema migration needs backward compatibility, forward "
+                    "compatibility, encoding versions, and old readers."
+                ),
+            },
+        ],
+    )
+    install_fake_zvec(
+        monkeypatch,
+        [
+            {"id": "transaction-version", "score": 0.34},
+            {"id": "encoding-schema", "score": 0.27},
+        ],
+    )
+
+    hits = search_context(
+        artifact_root=artifact_root,
+        task="Migrate extracted JSON triples from one schema version to another",
+        stage="plan",
+        next_steps="Design compatibility checks and migration manifests",
+        top_k=2,
+    )
+
+    assert hits[0].chunk_id == "encoding-schema"
+    assert "affinity:encoding-evolution" in hits[0].matched_tags
 
 
 def test_search_handles_old_chunks_without_new_metadata(monkeypatch, tmp_path):

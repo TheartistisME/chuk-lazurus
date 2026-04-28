@@ -54,11 +54,18 @@ asks zvec for a wider bounded candidate pool, then reranks locally with a hybrid
 score:
 
 - deterministic hash-vector similarity from zvec;
-- lexical overlap with the task, stage lens, and next steps;
+- lexical overlap, weighted toward the agent task and next steps over the
+  generic stage lens;
+- lexical fallback candidates from the chunk log, so a highly specific hit can
+  still surface when the vector candidate set misses it;
 - query-aware boosts for DDIA concepts such as event logs, snapshots,
   materialized views, manifests, schema evolution, atomicity, replay,
   checkpoints, deterministic rebuilds, batch processing, partitioning,
   consistency, durability, and source-of-truth records;
+- narrow chapter affinities for common agent questions: schema migration maps
+  toward Encoding and Evolution, crash recovery toward replication/stream
+  recovery, deterministic replay toward batch/stream processing, and tenant
+  isolation toward transaction isolation;
 - penalties for low-value context such as tables of contents, front matter,
   chapter openers, index pages, and bibliography/reference-like chunks.
 

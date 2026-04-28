@@ -60,6 +60,8 @@ STOPWORDS = frozenset(
         "can",
         "check",
         "could",
+        "each",
+        "enough",
         "for",
         "from",
         "had",
@@ -70,18 +72,22 @@ STOPWORDS = frozenset(
         "into",
         "is",
         "it",
+        "its",
         "made",
         "make",
+        "needs",
         "new",
         "of",
         "old",
         "on",
+        "one",
         "or",
         "our",
         "should",
         "that",
         "the",
         "their",
+        "them",
         "this",
         "through",
         "to",
@@ -94,6 +100,13 @@ STOPWORDS = frozenset(
         "would",
         "will",
         "what",
+        "when",
+        "where",
+        "which",
+        "why",
+        "was",
+        "were",
+        "while",
         "agent",
         "building",
         "context",
@@ -178,8 +191,18 @@ CONCEPT_KEYWORDS = {
         "serializable",
         "serializability",
         "isolation",
+        "tenant isolation",
+        "contamination",
     ),
-    "deterministic": ("deterministic", "determinism", "repeatable", "reproducible"),
+    "deterministic": (
+        "deterministic",
+        "determinism",
+        "repeatable",
+        "reproducible",
+        "fingerprint",
+        "drift",
+        "same input",
+    ),
     "durability": ("durability", "durable", "fsync", "recovery", "recoverable"),
     "event-log": (
         "event log",
@@ -200,8 +223,50 @@ CONCEPT_KEYWORDS = {
         "cache",
     ),
     "partition": ("partition", "partitioning", "shard", "sharding", "split"),
+    "provenance-lineage": (
+        "provenance",
+        "lineage",
+        "audit",
+        "causality",
+        "causal",
+        "explain",
+        "explainability",
+        "parent",
+        "selection",
+        "selected",
+        "policy",
+        "history",
+        "random seed",
+        "seed",
+    ),
     "replay": ("replay", "replaying", "rebuild", "recompute", "backfill"),
-    "schema": ("schema", "schema evolution", "migration", "encoding", "compatibility"),
+    "failure-recovery": (
+        "crash",
+        "crashes",
+        "restart",
+        "restarts",
+        "outage",
+        "node outage",
+        "partial failure",
+        "failed",
+        "failure",
+        "stale",
+        "cleanup",
+    ),
+    "schema": (
+        "schema",
+        "schema evolution",
+        "migration",
+        "encoding",
+        "compatibility",
+        "backward compatibility",
+        "forward compatibility",
+        "avro",
+        "protocol buffers",
+        "thrift",
+        "json",
+        "xml",
+    ),
     "snapshot": ("snapshot", "snapshotting", "point-in-time", "copy-on-write"),
     "source-of-truth": (
         "source of truth",
@@ -531,7 +596,9 @@ def extract_section_labels(text: str) -> dict[str, str]:
                     break
             labels["chapter_title"] = title
             continue
-        if re.match(r"^\d+(\.\d+){0,3}\s+\S", compact) and not re.match(r"^\d+\s*$", compact):
+        if re.match(r"^\d+(\.\d+){0,3}\s+[A-Z][A-Za-z]", compact) and not re.match(
+            r"^\d+\s*$", compact
+        ):
             labels.setdefault("section_title", compact)
             continue
         if is_markdown_heading and not lower.startswith(("figure", "table")):
@@ -948,21 +1015,44 @@ def build_context_query(task: str, stage: str, next_steps: str) -> str:
     )
 
 
+def infer_principle_tags_from_query(text: str) -> tuple[str, ...]:
+    lower = text.lower()
+    return tuple(
+        sorted(
+            tag
+            for tag, keywords in PRINCIPLE_KEYWORDS.items()
+            if any(_contains_phrase(lower, keyword) for keyword in keywords)
+        )
+    )
+
+
 def build_query_profile(task: str, stage: str, next_steps: str) -> dict[str, Any]:
     stage = normalize_stage(stage)
-    profile_text = " ".join([task, next_steps, stage, *STAGE_LENSES[stage]])
-    query_terms = unique_in_order(tokenize_lexical_terms(profile_text))
-    concept_tags = set(infer_concept_tags(profile_text))
-    principle_tags = {
-        tag
-        for tag, keywords in PRINCIPLE_KEYWORDS.items()
-        if any(_contains_phrase(profile_text.lower(), keyword) for keyword in keywords)
-    }
+    user_text = " ".join([task, next_steps])
+    stage_text = " ".join([stage, *STAGE_LENSES[stage]])
+    user_terms = unique_in_order(tokenize_lexical_terms(user_text))
+    stage_terms = tuple(
+        term
+        for term in unique_in_order(tokenize_lexical_terms(stage_text))
+        if term not in user_terms
+    )
+    user_concept_tags = tuple(sorted(set(infer_concept_tags(user_text))))
+    stage_concept_tags = tuple(sorted(set(infer_concept_tags(stage_text))))
+    user_principle_tags = infer_principle_tags_from_query(user_text)
+    stage_principle_tags = infer_principle_tags_from_query(stage_text)
     return {
-        "text": profile_text,
-        "terms": query_terms,
-        "concept_tags": tuple(sorted(concept_tags)),
-        "principle_tags": tuple(sorted(principle_tags)),
+        "text": " ".join([user_text, stage_text]),
+        "user_text": user_text,
+        "stage_text": stage_text,
+        "terms": (*user_terms, *stage_terms),
+        "user_terms": user_terms,
+        "stage_terms": stage_terms,
+        "concept_tags": tuple(sorted(set(user_concept_tags) | set(stage_concept_tags))),
+        "principle_tags": tuple(sorted(set(user_principle_tags) | set(stage_principle_tags))),
+        "user_concept_tags": user_concept_tags,
+        "stage_concept_tags": stage_concept_tags,
+        "user_principle_tags": user_principle_tags,
+        "stage_principle_tags": stage_principle_tags,
     }
 
 
@@ -982,13 +1072,153 @@ def lexical_match_score(query_terms: Iterable[str], text: str) -> tuple[float, t
     return min(score, 0.28), tuple(matched[:14])
 
 
+def weighted_lexical_match_score(
+    query_profile: dict[str, Any], text: str
+) -> tuple[float, tuple[str, ...]]:
+    text_lower = text.lower()
+    text_terms = set(tokenize_lexical_terms(text))
+    matched: list[str] = []
+    score = 0.0
+
+    def add_matches(terms: Iterable[str], *, phrase_weight: float, token_weight: float) -> None:
+        nonlocal score
+        for term in terms:
+            if term in matched:
+                continue
+            if " " in term:
+                if _contains_phrase(text_lower, term):
+                    matched.append(term)
+                    score += phrase_weight
+            elif term in text_terms:
+                matched.append(term)
+                score += token_weight
+
+    add_matches(query_profile["user_terms"], phrase_weight=0.055, token_weight=0.020)
+    add_matches(query_profile["stage_terms"], phrase_weight=0.014, token_weight=0.005)
+    return min(score, 0.42), tuple(matched[:16])
+
+
 def query_tag_boost(
     query_profile: dict[str, Any],
     record_tags: Iterable[str],
 ) -> tuple[float, tuple[str, ...]]:
-    query_tags = set(query_profile["concept_tags"]) | set(query_profile["principle_tags"])
-    matched = tuple(sorted(query_tags & set(record_tags)))
-    return min(0.035 * len(matched), 0.18), matched
+    record_tag_set = set(record_tags)
+    user_tags = set(query_profile["user_concept_tags"]) | set(query_profile["user_principle_tags"])
+    stage_tags = set(query_profile["stage_concept_tags"]) | set(
+        query_profile["stage_principle_tags"]
+    )
+    matched_user = tuple(sorted(user_tags & record_tag_set))
+    matched_stage = tuple(sorted((stage_tags & record_tag_set) - set(matched_user)))
+    boost = min(0.055 * len(matched_user), 0.28) + min(0.015 * len(matched_stage), 0.06)
+    return boost, (*matched_user, *matched_stage)
+
+
+def query_affinity_boost(
+    query_profile: dict[str, Any],
+    *,
+    text: str,
+    chapter_title: str,
+    section_title: str,
+) -> tuple[float, tuple[str, ...]]:
+    """Small chapter/section nudges for task-specific DDIA neighborhoods."""
+
+    user_tags = set(query_profile["user_concept_tags"]) | set(query_profile["user_principle_tags"])
+    user_text = str(query_profile["user_text"]).lower()
+    location = f"{chapter_title} {section_title}".lower()
+    lower_text = text.lower()
+    boost = 0.0
+    reasons: list[str] = []
+
+    schema_heavy = "schema" in user_tags and any(
+        term in user_text for term in ("migration", "migrate", "compatibility", "encoding")
+    )
+    tenant_heavy = "tenant" in user_text
+    crash_heavy = any(
+        term in user_text
+        for term in (
+            "crash",
+            "dies",
+            "restart",
+            "stale",
+            "pid",
+            "supervisor",
+            "mid-run",
+            "process dies",
+        )
+    )
+    drift_heavy = any(
+        term in user_text
+        for term in (
+            "drift",
+            "fingerprint",
+            "batchplan",
+            "checkpoint",
+            "deterministic",
+            "reproducible",
+        )
+    )
+    experiment_lineage_heavy = any(
+        term in user_text
+        for term in (
+            "experiment",
+            "parent",
+            "selected",
+            "selection",
+            "policy",
+            "research round",
+            "random seed",
+        )
+    )
+
+    if schema_heavy and "encoding and evolution" in location:
+        boost += 0.20
+        reasons.append("affinity:encoding-evolution")
+
+    if drift_heavy and ("batch processing" in location or "stream processing" in location):
+        boost += 0.18
+        reasons.append("affinity:deterministic-replay")
+        if any(term in lower_text for term in ("recompute", "recomputation", "snapshot")):
+            boost += 0.04
+            reasons.append("affinity:rebuild-state")
+
+    if crash_heavy and (
+        "replication" in location
+        or "stream processing" in location
+        or any(
+            term in lower_text
+            for term in (
+                "node outage",
+                "outage",
+                "crash",
+                "failed batch",
+                "retrying",
+                "cascading failure",
+            )
+        )
+    ):
+        boost += 0.16
+        reasons.append("affinity:failure-recovery")
+        if any(term in lower_text for term in ("node outage", "failed batch", "snapshot")):
+            boost += 0.04
+            reasons.append("affinity:recoverable-state")
+
+    if experiment_lineage_heavy and (
+        "stream processing" in location
+        or any(term in lower_text for term in ("event sourcing", "causality"))
+    ):
+        boost += 0.12
+        reasons.append("affinity:lineage-log")
+        if "event sourcing" in lower_text:
+            boost += 0.04
+            reasons.append("affinity:event-history")
+
+    if tenant_heavy and (
+        "transactions" in location or "isolation" in lower_text or "serializable" in lower_text
+    ):
+        boost += 0.12
+        reasons.append("affinity:tenant-isolation")
+
+    return min(boost, 0.26), tuple(reasons)
 
 
 def explain_hit(
@@ -1007,7 +1237,7 @@ def explain_hit(
     if lexical_score:
         parts.append(f"lexical overlap +{lexical_score:.4f}")
     if query_boost:
-        parts.append(f"query tag boost +{query_boost:.4f}")
+        parts.append(f"query boost +{query_boost:.4f}")
     if noise_penalty:
         parts.append(f"noise penalty -{noise_penalty:.4f}")
     if matched_terms:
@@ -1062,16 +1292,49 @@ def search_context(
     query = build_context_query(task, stage, next_steps)
     query_profile = build_query_profile(task, stage, next_steps)
     collection = open_zvec_read_only_with_retry(zvec, vector_path)
-    candidate_top_k = min(len(chunks), max(top_k, top_k * 6, top_k + 12))
+    candidate_top_k = min(len(chunks), max(top_k, top_k * 12, top_k + 32, 60))
     results = collection.query(
         zvec.VectorQuery("embedding", vector=embed_hash(query, dim=dim)),
         topk=candidate_top_k,
     )
 
-    hits: list[SearchHit] = []
+    vector_scores: dict[str, float] = {}
     for result in results:
         chunk_id = result["id"] if isinstance(result, dict) else result.id
-        raw_score = float(result.get("score", 0.0) if isinstance(result, dict) else result.score)
+        vector_scores[chunk_id] = float(
+            result.get("score", 0.0) if isinstance(result, dict) else result.score
+        )
+
+    lexical_candidates: list[tuple[float, str]] = []
+    for chunk_id, record in chunks.items():
+        text = record["text"]
+        page = int(record["page"])
+        principle_tags = tuple(record.get("principle_tags", []))
+        stage_tags = tuple(record.get("stage_tags", []))
+        concept_tags = unique_in_order(
+            (*tuple(record.get("concept_tags", [])), *infer_concept_tags(text))
+        )
+        lexical_score, _matched_terms = weighted_lexical_match_score(query_profile, text)
+        tag_boost, _matched_tags = query_tag_boost(
+            query_profile, (*principle_tags, *stage_tags, *concept_tags)
+        )
+        affinity_boost, _affinity_tags = query_affinity_boost(
+            query_profile,
+            text=text,
+            chapter_title=str(record.get("chapter_title", "") or ""),
+            section_title=str(record.get("section_title", "") or ""),
+        )
+        noise_penalty = chunk_noise_penalty(classify_chunk_noise(text, page))
+        lexical_candidate_score = lexical_score + tag_boost + affinity_boost - noise_penalty
+        if lexical_candidate_score > 0:
+            lexical_candidates.append((lexical_candidate_score, chunk_id))
+
+    lexical_candidate_top_k = min(len(chunks), max(top_k * 30, top_k + 60, 100))
+    for _score, chunk_id in sorted(lexical_candidates, reverse=True)[:lexical_candidate_top_k]:
+        vector_scores.setdefault(chunk_id, 0.0)
+
+    hits: list[SearchHit] = []
+    for chunk_id, raw_score in vector_scores.items():
         record = chunks.get(chunk_id)
         if record is None:
             continue
@@ -1079,19 +1342,29 @@ def search_context(
         page = int(record["page"])
         principle_tags = tuple(record.get("principle_tags", []))
         stage_tags = tuple(record.get("stage_tags", []))
-        concept_tags = tuple(record.get("concept_tags") or infer_concept_tags(text))
+        concept_tags = unique_in_order(
+            (*tuple(record.get("concept_tags", [])), *infer_concept_tags(text))
+        )
         all_tags = (*principle_tags, *stage_tags, *concept_tags)
-        lexical_score, matched_terms = lexical_match_score(query_profile["terms"], text)
+        lexical_score, matched_terms = weighted_lexical_match_score(query_profile, text)
         tag_boost, matched_tags = query_tag_boost(query_profile, all_tags)
-        noise_flags = classify_chunk_noise(text, page)
-        noise_penalty = chunk_noise_penalty(noise_flags)
-        score = raw_score + lexical_score + tag_boost - noise_penalty
         chapter_title = str(record.get("chapter_title", "") or "")
         section_title = str(record.get("section_title", "") or "")
+        affinity_boost, affinity_tags = query_affinity_boost(
+            query_profile,
+            text=text,
+            chapter_title=chapter_title,
+            section_title=section_title,
+        )
+        query_boost = tag_boost + affinity_boost
+        matched_tags = (*matched_tags, *affinity_tags)
+        noise_flags = classify_chunk_noise(text, page)
+        noise_penalty = chunk_noise_penalty(noise_flags)
+        score = raw_score + lexical_score + query_boost - noise_penalty
         why_this_hit = explain_hit(
             vector_score=raw_score,
             lexical_score=lexical_score,
-            query_boost=tag_boost,
+            query_boost=query_boost,
             noise_penalty=noise_penalty,
             matched_terms=matched_terms,
             matched_tags=matched_tags,
@@ -1113,7 +1386,7 @@ def search_context(
                 section_title=section_title,
                 vector_score=raw_score,
                 lexical_score=lexical_score,
-                query_boost=tag_boost,
+                query_boost=query_boost,
                 noise_penalty=noise_penalty,
                 matched_terms=matched_terms,
                 matched_tags=matched_tags,
