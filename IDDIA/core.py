@@ -26,7 +26,8 @@ DEFAULT_DDIA_URL = (
     "Martin-Kleppmann---Designing-Data-Intensive-Applications_-"
     "O%E2%80%99Reilly-Media-(2017).pdf"
 )
-DEFAULT_ARTIFACT_ROOT = Path("artifacts/agent_context/ddia")
+TOOL_ROOT = Path(__file__).resolve().parent
+DEFAULT_ARTIFACT_ROOT = TOOL_ROOT / "artifacts" / "ddia"
 DEFAULT_EMBED_DIM = 384
 
 STAGES = ("onboard", "plan", "build", "verify", "handoff", "exit")
@@ -160,7 +161,7 @@ def download_pdf(url: str, pdf_path: Path, *, force: bool = False) -> Path:
 
     ensure_parent(pdf_path)
     tmp_path = pdf_path.with_suffix(".tmp")
-    request = urllib.request.Request(url, headers={"User-Agent": "chuk-lazarus-agent-context"})
+    request = urllib.request.Request(url, headers={"User-Agent": "iddia-agent-context"})
     with urllib.request.urlopen(request, timeout=120) as response:
         with tmp_path.open("wb") as handle:
             shutil.copyfileobj(response, handle)
@@ -571,7 +572,7 @@ def search_context(
     vector_path = artifact_root / "vectors" / "zvec"
     if not chunks_path.exists() or not vector_path.exists():
         raise FileNotFoundError(
-            f"missing context index under {artifact_root}; run 'lazarus agent-context ingest-ddia'"
+            f"missing context index under {artifact_root}; run 'python -m IDDIA ingest-ddia'"
         )
 
     chunks = load_chunks(chunks_path)
@@ -715,7 +716,7 @@ def render_context_package_markdown(
         [
             "## Chain",
             "",
-            f'- Recommended next package: `lazarus agent-context package --stage {next_name} --task "..." --next-steps "..."`',
+            f'- Recommended next package: `python -m IDDIA package --stage {next_name} --task "..." --next-steps "..."`',
             f"- Slash command next hop: `/agent-context:{next_name}`",
             "",
         ]

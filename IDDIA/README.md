@@ -1,36 +1,42 @@
-# Agent Context From DDIA
+# IDDIA
 
-This workflow turns a legally available DDIA PDF into an agent-stage context
-system:
+IDDIA is a standalone tool that turns a legally available DDIA PDF into
+agent-stage context packages:
 
-1. The PDF is stored as immutable source under `artifacts/agent_context/ddia/source/`.
+1. The PDF is stored as immutable source under `IDDIA/artifacts/ddia/source/`.
 2. Each PDF page is converted to one Markdown file with Microsoft MarkItDown.
 3. Page Markdown is chunked into JSONL records with stable ids and provenance.
 4. zvec stores a rebuildable vector index over those chunk records.
-5. `lazarus agent-context package` creates bounded context packages for an
-   agent task, lifecycle stage, and next steps.
+5. `python -m IDDIA package` creates bounded context packages for an agent
+   task, lifecycle stage, and next steps.
 
-`artifacts/` is ignored by git. The repo should carry the pipeline, schemas,
-and command chain; book-derived source text and vector stores stay local and
+`IDDIA/artifacts/` is ignored by git. The repo carries the tool, schemas, and
+command chain; book-derived source text and vector stores stay local and
 reproducible.
 
 ## Data Layout
 
 ```text
-artifacts/agent_context/ddia/
-  source/
-    pdf/ddia.pdf
-    manifest.json
-  markdown/
-    manifest.json
-    pages/page_0001.md
-    pages/page_0002.md
-  chunks/
-    chunks.jsonl
-  vectors/
-    manifest.json
-    zvec/
-  packages/
+IDDIA/
+  core.py
+  __main__.py
+  requirements.txt
+  slash/agent-context/
+  tests/
+  artifacts/ddia/
+    source/
+      pdf/ddia.pdf
+      manifest.json
+    markdown/
+      manifest.json
+      pages/page_0001.md
+      pages/page_0002.md
+    chunks/
+      chunks.jsonl
+    vectors/
+      manifest.json
+      zvec/
+    packages/
 ```
 
 The layout follows the project principles the tool is meant to teach:
@@ -46,19 +52,19 @@ The layout follows the project principles the tool is meant to teach:
 Install the optional dependencies:
 
 ```bash
-python -m pip install "markitdown[pdf]>=0.1.3" "pypdf>=5.0.0" "zvec>=0.3.0"
+python -m pip install -r IDDIA/requirements.txt
 ```
 
 Build the local knowledge artifacts:
 
 ```bash
-lazarus agent-context ingest-ddia
+python -m IDDIA ingest-ddia
 ```
 
 Create a package for a specific agent:
 
 ```bash
-lazarus agent-context package \
+python -m IDDIA package \
   --stage plan \
   --task "Add a zvec-backed agent context workflow" \
   --next-steps "Wire CLI, docs, slash commands, and verification"
@@ -67,7 +73,13 @@ lazarus agent-context package \
 Print the chain:
 
 ```bash
-lazarus agent-context stages
+python -m IDDIA stages
+```
+
+On PowerShell you can also run:
+
+```powershell
+.\IDDIA\iddia.ps1 package --stage plan --task "..." --next-steps "..."
 ```
 
 ## Lifecycle
@@ -87,11 +99,11 @@ Each stage adds a different retrieval lens:
 - `handoff`: decisions, durable state, next command.
 - `exit`: issue status, commits, push state, replay notes.
 
-Tracked slash-command templates live in `prompts/slash/agent-context/`. Local
+Tracked slash-command templates live in `IDDIA/slash/agent-context/`. Local
 Claude runtime copies can live in `.claude/commands/`, which this repo ignores.
 
 Install local runtime copies with:
 
 ```bash
-python scripts/install_agent_context_slash_commands.py
+python IDDIA/install_slash_commands.py
 ```

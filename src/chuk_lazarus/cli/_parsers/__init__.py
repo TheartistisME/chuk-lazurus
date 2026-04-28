@@ -17,7 +17,6 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = [
     "BACKEND_CHOICES",
     "add_backend_flags",
-    "register_agent_context_parsers",
     "register_bench_parser",
     "register_context_parsers",
     "register_data_parsers",
@@ -40,10 +39,6 @@ def _load(module_name: str, attr_name: str):
 
 def register_bench_parser(subparsers):
     return _load("_bench", "register_bench_parser")(subparsers)
-
-
-def register_agent_context_parsers(subparsers):
-    return _load("_agent_context", "register_agent_context_parsers")(subparsers)
 
 
 def register_context_parsers(subparsers):

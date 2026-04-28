@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from chuk_lazarus.agent_context import (
+from IDDIA import (
     STAGES,
     build_context_query,
     chunk_markdown_text,

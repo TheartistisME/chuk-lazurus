@@ -1,6 +1,6 @@
-"""Agent context packaging backed by page Markdown and zvec indexes."""
+"""IDDIA: DDIA-backed context packages for agents."""
 
-from .ddia import (
+from .core import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_DDIA_URL,
     STAGES,
