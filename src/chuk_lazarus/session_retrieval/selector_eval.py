@@ -18,22 +18,35 @@ from chuk_lazarus.session_retrieval.tier_policy import (
     POLICY_VERSION_RANK_V1,
     POLICY_VERSION_UTILITY_V2,
     TierAssignment,
-    TierLabel,
     assign_tiers,
 )
 
-
 DEFAULT_FIXTURE_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "tests"
-    / "fixtures"
-    / "memory_selector_eval.json"
+    Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "memory_selector_eval.json"
 )
 
 _WORD_RE = re.compile(r"[a-z0-9$%]+")
 _STOPWORDS = {
-    "a", "about", "after", "and", "are", "as", "at", "be", "did", "do",
-    "for", "how", "is", "it", "of", "on", "the", "to", "was", "we",
+    "a",
+    "about",
+    "after",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "did",
+    "do",
+    "for",
+    "how",
+    "is",
+    "it",
+    "of",
+    "on",
+    "the",
+    "to",
+    "was",
+    "we",
     "what",
 }
 
@@ -49,10 +62,7 @@ class _Window:
 
 
 def _tokens(text: str) -> set[str]:
-    return {
-        token for token in _WORD_RE.findall(str(text).lower())
-        if token not in _STOPWORDS
-    }
+    return {token for token in _WORD_RE.findall(str(text).lower()) if token not in _STOPWORDS}
 
 
 def _rank_map(scores: dict[str, float]) -> dict[str, int]:
@@ -71,7 +81,7 @@ def _normalise_by_id(scores: dict[str, float]) -> dict[str, float]:
     lo = min(scores.values())
     if hi == lo:
         value = 1.0 if hi > 0.0 else 0.0
-        return {key: value for key in scores}
+        return dict.fromkeys(scores, value)
     return {key: (value - lo) / (hi - lo) for key, value in scores.items()}
 
 
@@ -146,32 +156,34 @@ def _candidate_pool(
             relevance = 0.0
         cost_norm = float(window.cost) / max(1.0, max(w.cost for w in windows))
         utility = relevance + rrf_score - (0.10 * cost_norm)
-        candidates.append(AsiRouterCandidate(
-            handle=_handle_for(window, fixture_root),
-            window_id=int(window.window_id),
-            ucb1_score=float(lexical_scores[window.id]),
-            raw_router_score=float(lexical_norm[window.id]),
-            island_id=0,
-            visit_count=0,
-            mean_reward=0.0,
-            raw_tfidf_score_pre_normalization=float(lexical_scores[window.id]),
-            literal_score=float(literal_scores[window.id]),
-            entity_score=float(entity_scores[window.id]),
-            dense_score=float(dense_scores[window.id] if hybrid else 0.0),
-            rrf_score=float(rrf_score),
-            relevance_score=float(relevance),
-            freshness_score=0.5,
-            learned_reward=0.0,
-            estimated_cost=float(window.cost),
-            utility_score=float(utility),
-            lexical_rank=int(lexical_rank[window.id]),
-            dense_rank=int(dense_rank[window.id] if hybrid else 0),
-            literal_rank=int(literal_rank[window.id]),
-            entity_rank=int(entity_rank[window.id]),
-            content_fingerprint=str(window.duplicate_group),
-            dense_vector=tuple(vectors[window.id] if hybrid else ()),
-            selector_telemetry={"eval_window_id": window.id},
-        ))
+        candidates.append(
+            AsiRouterCandidate(
+                handle=_handle_for(window, fixture_root),
+                window_id=int(window.window_id),
+                ucb1_score=float(lexical_scores[window.id]),
+                raw_router_score=float(lexical_norm[window.id]),
+                island_id=0,
+                visit_count=0,
+                mean_reward=0.0,
+                raw_tfidf_score_pre_normalization=float(lexical_scores[window.id]),
+                literal_score=float(literal_scores[window.id]),
+                entity_score=float(entity_scores[window.id]),
+                dense_score=float(dense_scores[window.id] if hybrid else 0.0),
+                rrf_score=float(rrf_score),
+                relevance_score=float(relevance),
+                freshness_score=0.5,
+                learned_reward=0.0,
+                estimated_cost=float(window.cost),
+                utility_score=float(utility),
+                lexical_rank=int(lexical_rank[window.id]),
+                dense_rank=int(dense_rank[window.id] if hybrid else 0),
+                literal_rank=int(literal_rank[window.id]),
+                entity_rank=int(entity_rank[window.id]),
+                content_fingerprint=str(window.duplicate_group),
+                dense_vector=tuple(vectors[window.id] if hybrid else ()),
+                selector_telemetry={"eval_window_id": window.id},
+            )
+        )
     if hybrid:
         candidates.sort(key=lambda c: (-c.utility_score, str(c.handle.session_id), c.window_id))
     else:
@@ -209,9 +221,7 @@ def _score_query(
     false_support = set(query.get("false_support_ids", []) or [])
     hot_ids = {row["window_id"] for row in selected if row["tier"] == "hot"}
     warm_ids = {row["window_id"] for row in selected if row["tier"] == "warm"}
-    active_ids = {
-        row["window_id"] for row in selected if row["tier"] in {"hot", "warm"}
-    }
+    active_ids = {row["window_id"] for row in selected if row["tier"] in {"hot", "warm"}}
     selected_ids = {row["window_id"] for row in selected}
     exact_literal = str(query.get("exact_literal", "") or "")
 
@@ -286,17 +296,17 @@ def run_selector_eval(fixture_path: Path | None = None) -> dict[str, Any]:
         for row in payload["windows"]
     ]
     windows_by_id = {window.id: window for window in windows}
-    id_by_key = {
-        (window.session_id, int(window.window_id)): window.id
-        for window in windows
-    }
+    id_by_key = {(window.session_id, int(window.window_id)): window.id for window in windows}
 
     baseline_results: list[dict[str, Any]] = []
     new_results: list[dict[str, Any]] = []
     fixture_root = path.parent / "_selector_eval_virtual_store"
     for query in payload["queries"]:
         baseline_candidates = _candidate_pool(
-            windows, query, fixture_root=fixture_root, hybrid=False,
+            windows,
+            query,
+            fixture_root=fixture_root,
+            hybrid=False,
         )
         baseline_assignments = assign_tiers(
             baseline_candidates,
@@ -306,7 +316,10 @@ def run_selector_eval(fixture_path: Path | None = None) -> dict[str, Any]:
             policy_version=POLICY_VERSION_RANK_V1,
         )
         new_candidates = _candidate_pool(
-            windows, query, fixture_root=fixture_root, hybrid=True,
+            windows,
+            query,
+            fixture_root=fixture_root,
+            hybrid=True,
         )
         new_assignments = assign_tiers(
             new_candidates,
@@ -318,24 +331,31 @@ def run_selector_eval(fixture_path: Path | None = None) -> dict[str, Any]:
             mmr_lambda=0.75,
             rrf_k=60.0,
         )
-        baseline_results.append(_score_query(
-            baseline_assignments, query, windows_by_id, id_by_key,
-        ))
-        new_results.append(_score_query(
-            new_assignments, query, windows_by_id, id_by_key,
-        ))
+        baseline_results.append(
+            _score_query(
+                baseline_assignments,
+                query,
+                windows_by_id,
+                id_by_key,
+            )
+        )
+        new_results.append(
+            _score_query(
+                new_assignments,
+                query,
+                windows_by_id,
+                id_by_key,
+            )
+        )
 
     baseline_metrics = _metrics(baseline_results)
     new_metrics = _metrics(new_results)
     delta = new_metrics["mean_score"] - baseline_metrics["mean_score"]
     criteria = {
         "mean_score_delta_at_least_0_15": delta >= 0.15,
-        "recall_hot_not_worse": (
-            new_metrics["recall_at_hot"] >= baseline_metrics["recall_at_hot"]
-        ),
+        "recall_hot_not_worse": (new_metrics["recall_at_hot"] >= baseline_metrics["recall_at_hot"]),
         "irrelevant_hot_rate_not_worse": (
-            new_metrics["irrelevant_hot_rate"]
-            <= baseline_metrics["irrelevant_hot_rate"]
+            new_metrics["irrelevant_hot_rate"] <= baseline_metrics["irrelevant_hot_rate"]
         ),
         "budget_overflow_rate_zero": new_metrics["budget_overflow_rate"] == 0.0,
     }

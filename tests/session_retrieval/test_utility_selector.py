@@ -10,8 +10,8 @@ from chuk_lazarus.session_retrieval import asi_router as asi_router_module
 from chuk_lazarus.session_retrieval.asi_router import (
     ASI_ROUTER_STATE_FILENAME,
     AsiRouterCandidate,
-    record_asi_feedback,
     asi_route_candidates,
+    record_asi_feedback,
 )
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle
 from chuk_lazarus.session_retrieval.selector_eval import run_selector_eval
@@ -130,7 +130,9 @@ def test_mmr_duplicate_suppression(tmp_path: Path) -> None:
         budget=2,
         mmr_lambda=0.75,
     )
-    active = [assignment.candidate for assignment in assignments if assignment.tier != TierLabel.COLD]
+    active = [
+        assignment.candidate for assignment in assignments if assignment.tier != TierLabel.COLD
+    ]
 
     assert duplicate_a in active
     assert diverse in active
@@ -150,7 +152,9 @@ def test_budget_aware_utility_selection(tmp_path: Path) -> None:
         policy_version=POLICY_VERSION_UTILITY_V2,
         budget=2,
     )
-    active = [assignment.candidate for assignment in assignments if assignment.tier != TierLabel.COLD]
+    active = [
+        assignment.candidate for assignment in assignments if assignment.tier != TierLabel.COLD
+    ]
 
     assert active == [efficient_a, efficient_b]
     assert sum(candidate.estimated_cost for candidate in active) <= 2
@@ -170,8 +174,7 @@ def test_dynamic_tier_thresholds(tmp_path: Path) -> None:
         budget=3,
     )
     by_name = {
-        assignment.candidate.content_fingerprint: assignment.tier
-        for assignment in assignments
+        assignment.candidate.content_fingerprint: assignment.tier for assignment in assignments
     }
 
     assert by_name["high"] == TierLabel.HOT
@@ -202,10 +205,7 @@ def test_selector_fixture_eval_passes_hard_criteria() -> None:
 
     assert report["pass"] is True
     assert report["delta"] >= 0.15
-    assert (
-        report["new_metrics"]["recall_at_hot"]
-        >= report["baseline_metrics"]["recall_at_hot"]
-    )
+    assert report["new_metrics"]["recall_at_hot"] >= report["baseline_metrics"]["recall_at_hot"]
     assert (
         report["new_metrics"]["irrelevant_hot_rate"]
         <= report["baseline_metrics"]["irrelevant_hot_rate"]

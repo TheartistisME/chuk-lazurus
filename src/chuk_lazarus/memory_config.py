@@ -9,9 +9,9 @@ and power users.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
-from typing import Any, Mapping
-
+from typing import Any
 
 MEMORY_MODES = ("auto", "topical", "entity_mention", "vec_inject", "kv_direct", "off")
 MEMORY_PROFILES = ("plug_and_play", "proof", "smoke", "nightly", "diagnostic")
@@ -149,8 +149,7 @@ def get_memory_profile(name: str | None) -> MemoryRecallConfig:
         return _PROFILE_CONFIGS[profile_name]
     except KeyError as exc:
         raise ValueError(
-            f"unknown memory profile {name!r}; expected one of: "
-            + ", ".join(MEMORY_PROFILES)
+            f"unknown memory profile {name!r}; expected one of: " + ", ".join(MEMORY_PROFILES)
         ) from exc
 
 
@@ -158,8 +157,7 @@ def _normalized(config: MemoryRecallConfig) -> MemoryRecallConfig:
     mode = str(config.mode).strip().lower().replace("-", "_")
     if mode not in MEMORY_MODES:
         raise ValueError(
-            f"unknown memory mode {config.mode!r}; expected one of: "
-            + ", ".join(MEMORY_MODES)
+            f"unknown memory mode {config.mode!r}; expected one of: " + ", ".join(MEMORY_MODES)
         )
     enabled = bool(config.enabled) and mode != "off"
     return replace(
@@ -202,9 +200,7 @@ def resolve_memory_config(
         config = replace(config, **env_updates)
 
     clean_overrides = {
-        key: value
-        for key, value in dict(overrides or {}).items()
-        if value is not None
+        key: value for key, value in dict(overrides or {}).items() if value is not None
     }
     if clean_overrides:
         config = replace(config, **clean_overrides)

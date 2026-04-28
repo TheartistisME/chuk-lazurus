@@ -95,10 +95,9 @@ def _candidate_similarity(a: AsiRouterCandidate, b: AsiRouterCandidate) -> float
     fp_b = str(getattr(b, "content_fingerprint", "") or "")
     if fp_a and fp_a == fp_b:
         return 1.0
-    if (
-        str(getattr(a.handle, "session_id", "")) == str(getattr(b.handle, "session_id", ""))
-        and int(getattr(a, "window_id", -1)) == int(getattr(b, "window_id", -2))
-    ):
+    if str(getattr(a.handle, "session_id", "")) == str(getattr(b.handle, "session_id", "")) and int(
+        getattr(a, "window_id", -1)
+    ) == int(getattr(b, "window_id", -2)):
         return 1.0
     return 0.0
 
@@ -151,7 +150,8 @@ def _mmr_budget_order(
     spent = 0.0
     while remaining:
         feasible = [
-            candidate for candidate in remaining
+            candidate
+            for candidate in remaining
             if spent + _candidate_cost(candidate) <= float(budget)
         ]
         if not feasible:
@@ -294,13 +294,15 @@ def _assign_tiers_utility_v2(
     assignments: list[TierAssignment] = []
     for rank, candidate in enumerate(ordered):
         tier = tier_by_id.get(id(candidate), TierLabel.COLD)
-        assignments.append(TierAssignment(
-            candidate=candidate,
-            tier=tier,
-            rank=int(rank),
-            policy_version=str(policy_version),
-            policy_params=dict(policy_params),
-        ))
+        assignments.append(
+            TierAssignment(
+                candidate=candidate,
+                tier=tier,
+                rank=int(rank),
+                policy_version=str(policy_version),
+                policy_params=dict(policy_params),
+            )
+        )
     return assignments
 
 
@@ -379,13 +381,15 @@ def assign_tiers(
             tier = TierLabel.WARM
         else:
             tier = TierLabel.COLD
-        assignments.append(TierAssignment(
-            candidate=candidate,
-            tier=tier,
-            rank=int(rank),
-            policy_version=str(policy_version),
-            policy_params=dict(policy_params),
-        ))
+        assignments.append(
+            TierAssignment(
+                candidate=candidate,
+                tier=tier,
+                rank=int(rank),
+                policy_version=str(policy_version),
+                policy_params=dict(policy_params),
+            )
+        )
     return assignments
 
 
@@ -396,8 +400,7 @@ def _handle_to_dict(handle: CheckpointHandle) -> dict[str, Any]:
         "torch_store_dir": str(handle.torch_store_dir),
         "manifest": handle.manifest,
         "original_input_dir": (
-            None if handle.original_input_dir is None
-            else str(handle.original_input_dir)
+            None if handle.original_input_dir is None else str(handle.original_input_dir)
         ),
     }
 
@@ -421,9 +424,7 @@ def _candidate_to_dict(candidate: AsiRouterCandidate) -> dict[str, Any]:
         "window_id": int(candidate.window_id),
         "ucb1_score": float(candidate.ucb1_score),
         "raw_router_score": float(candidate.raw_router_score),
-        "raw_tfidf_score_pre_normalization": float(
-            candidate.raw_tfidf_score_pre_normalization
-        ),
+        "raw_tfidf_score_pre_normalization": float(candidate.raw_tfidf_score_pre_normalization),
         "island_id": int(candidate.island_id),
         "visit_count": int(candidate.visit_count),
         "mean_reward": float(candidate.mean_reward),
@@ -448,8 +449,13 @@ def _candidate_to_dict(candidate: AsiRouterCandidate) -> dict[str, Any]:
 
 def _candidate_from_dict(data: dict[str, Any]) -> AsiRouterCandidate:
     for key in (
-        "window_id", "ucb1_score", "raw_router_score",
-        "island_id", "visit_count", "mean_reward", "handle",
+        "window_id",
+        "ucb1_score",
+        "raw_router_score",
+        "island_id",
+        "visit_count",
+        "mean_reward",
+        "handle",
     ):
         if key not in data:
             raise ValueError(f"tier_policy: candidate missing required key: {key!r}")
@@ -461,9 +467,7 @@ def _candidate_from_dict(data: dict[str, Any]) -> AsiRouterCandidate:
         island_id=int(data["island_id"]),
         visit_count=int(data["visit_count"]),
         mean_reward=float(data["mean_reward"]),
-        raw_tfidf_score_pre_normalization=float(
-            data.get("raw_tfidf_score_pre_normalization", 0.0)
-        ),
+        raw_tfidf_score_pre_normalization=float(data.get("raw_tfidf_score_pre_normalization", 0.0)),
         literal_score=float(data.get("literal_score", 0.0)),
         entity_score=float(data.get("entity_score", 0.0)),
         dense_score=float(data.get("dense_score", 0.0)),
@@ -528,9 +532,7 @@ def tier_assignments_to_json(ts: Sequence[TierAssignment]) -> str:
     the first assignment's; an empty sequence uses :data:`POLICY_VERSION_RANK_V1`.
     """
     assignments = [tier_assignment_to_dict(ta) for ta in ts]
-    envelope_policy = (
-        assignments[0]["policy_version"] if assignments else POLICY_VERSION_RANK_V1
-    )
+    envelope_policy = assignments[0]["policy_version"] if assignments else POLICY_VERSION_RANK_V1
     envelope: dict[str, Any] = {
         "schema_version": TIER_POLICY_SCHEMA_VERSION,
         "policy_version": envelope_policy,
@@ -552,15 +554,13 @@ def tier_assignments_from_json(raw: str) -> list[TierAssignment]:
     sv = envelope["schema_version"]
     if int(sv) != TIER_POLICY_SCHEMA_VERSION:
         raise ValueError(
-            f"tier_policy: unsupported schema_version: {sv}; "
-            f"expected {TIER_POLICY_SCHEMA_VERSION}"
+            f"tier_policy: unsupported schema_version: {sv}; expected {TIER_POLICY_SCHEMA_VERSION}"
         )
     envelope_policy = str(envelope["policy_version"])
     raw_assignments = envelope["assignments"]
     if not isinstance(raw_assignments, list):
         raise ValueError(
-            f"tier_policy: 'assignments' must be a list, got "
-            f"{type(raw_assignments).__name__}"
+            f"tier_policy: 'assignments' must be a list, got {type(raw_assignments).__name__}"
         )
     parsed = [tier_assignment_from_dict(entry) for entry in raw_assignments]
     if parsed and parsed[0].policy_version != envelope_policy:

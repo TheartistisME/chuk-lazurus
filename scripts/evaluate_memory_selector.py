@@ -13,7 +13,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from chuk_lazarus.session_retrieval.selector_eval import (
+from chuk_lazarus.session_retrieval.selector_eval import (  # noqa: E402
     DEFAULT_FIXTURE_PATH,
     run_selector_eval,
 )

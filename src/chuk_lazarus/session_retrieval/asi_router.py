@@ -133,8 +133,11 @@ class AsiRouterState:
 
 def _fresh_state(ni: int, mi: int, mr: float) -> AsiRouterState:
     return AsiRouterState(
-        current_island=0, total_selections=0,
-        num_islands=int(ni), migration_interval=int(mi), migration_rate=float(mr),
+        current_island=0,
+        total_selections=0,
+        num_islands=int(ni),
+        migration_interval=int(mi),
+        migration_rate=float(mr),
     )
 
 
@@ -208,7 +211,8 @@ def compute_ucb1(q_w: float, n_w: int, total_visits: int, *, ucb1_c: float = 1.4
         raise TypeError(f"n_w must be int, got {type(n_w).__name__}")
     if not isinstance(total_visits, int):
         raise TypeError(f"total_visits must be int, got {type(total_visits).__name__}")
-    q_w = float(q_w); ucb1_c = float(ucb1_c)
+    q_w = float(q_w)
+    ucb1_c = float(ucb1_c)
     if n_w == 0:
         return math.inf
     if n_w < 0:
@@ -217,8 +221,12 @@ def compute_ucb1(q_w: float, n_w: int, total_visits: int, *, ucb1_c: float = 1.4
 
 
 def assign_island(
-    session_id: str, window_id: int, *,
-    keyword_count: int, session_age_seconds: float, num_islands: int = 5,
+    session_id: str,
+    window_id: int,
+    *,
+    keyword_count: int,
+    session_age_seconds: float,
+    num_islands: int = 5,
 ) -> int:
     """Deterministic island id per adaptation (iii)."""
     if num_islands <= 0:
@@ -253,7 +261,8 @@ def advance_island(state: AsiRouterState) -> int:
     if migrate_count <= 0:
         return new_island
     outgoing_keys = [
-        k for k in state.visit_counts
+        k
+        for k in state.visit_counts
         if int(state.feature_map.get(k, 0)) % num_islands == outgoing_island
     ]
     outgoing_keys.sort(key=lambda k: (-float(state.mean_rewards.get(k, 0.0)), k))
@@ -309,7 +318,10 @@ class _WindowScoreRow:
 
 def _truthy_env(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default)).strip().lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -405,10 +417,7 @@ def _rank_by_score(
             row.window_id,
         )
     )
-    return {
-        (row.session_id, row.window_id): int(rank)
-        for rank, row in enumerate(ordered, start=1)
-    }
+    return {(row.session_id, row.window_id): int(rank) for rank, row in enumerate(ordered, start=1)}
 
 
 def _content_fingerprint(text: str) -> str:
@@ -489,9 +498,7 @@ def _score_all_windows(
             )
         router = TFIDFRouter(window_tokens, idf)
         store_keywords: dict[int, list[str]] = getattr(store, "keywords", {}) or {}
-        window_token_lists: dict[int, list[int]] = (
-            getattr(store, "window_token_lists", {}) or {}
-        )
+        window_token_lists: dict[int, list[int]] = getattr(store, "window_token_lists", {}) or {}
         literal_scores = literal_match_scores(store, literal_token_sequences)
         num_windows = int(getattr(store, "num_windows", 0) or 0)
         if num_windows <= 0:
@@ -526,9 +533,7 @@ def _score_all_windows(
                     str(keyword).strip().lower()
                     for keyword in store_keywords.get(int(window_id), []) or []
                 }
-                matched_entities = {
-                    entity for entity in query_entities if entity in keyword_set
-                }
+                matched_entities = {entity for entity in query_entities if entity in keyword_set}
                 missing_entities = [
                     entity for entity in query_entities if entity not in matched_entities
                 ]
@@ -564,20 +569,22 @@ def _score_all_windows(
                 or _truthy_env("LAZARUS_ASI_DECODE_FOR_SELECTOR")
             ):
                 window_text = window_text_lower()
-            raw.append(_WindowScoreRow(
-                raw_score=float(raw_score),
-                raw_tfidf_score=float(tfidf_score),
-                literal_score=float(literal_score),
-                entity_score=float(entity_score),
-                session_id=str(handle.session_id),
-                window_id=int(window_id),
-                handle=handle,
-                keyword_count=int(kc),
-                estimated_cost=float(estimated_cost),
-                freshness_score=_freshness_from_age_seconds(_session_age_seconds(handle)),
-                window_text=str(window_text),
-                content_fingerprint=_content_fingerprint(str(window_text)),
-            ))
+            raw.append(
+                _WindowScoreRow(
+                    raw_score=float(raw_score),
+                    raw_tfidf_score=float(tfidf_score),
+                    literal_score=float(literal_score),
+                    entity_score=float(entity_score),
+                    session_id=str(handle.session_id),
+                    window_id=int(window_id),
+                    handle=handle,
+                    keyword_count=int(kc),
+                    estimated_cost=float(estimated_cost),
+                    freshness_score=_freshness_from_age_seconds(_session_age_seconds(handle)),
+                    window_text=str(window_text),
+                    content_fingerprint=_content_fingerprint(str(window_text)),
+                )
+            )
     return raw
 
 
@@ -634,7 +641,9 @@ def _dense_scores_for_rows(
         for row in rows:
             key = (row.session_id, row.window_id)
             w_vec = _lookup_dense_window_vector(
-                dense_window_vectors, row.session_id, row.window_id,
+                dense_window_vectors,
+                row.session_id,
+                row.window_id,
             )
             if not w_vec:
                 raise RuntimeError(
@@ -730,7 +739,7 @@ def record_asi_feedback(
         session_id = str(getattr(handle, "session_id", ""))
         if not session_id:
             continue
-        window_id = int(getattr(candidate, "window_id"))
+        window_id = int(candidate.window_id)
         key = f"{session_id}:{window_id}"
         old_count = int(state.visit_counts.get(key, 0))
         old_mean = float(state.mean_rewards.get(key, 0.0))
@@ -739,7 +748,7 @@ def record_asi_feedback(
         state.visit_counts[key] = int(new_count)
         state.mean_rewards[key] = float(new_mean)
         if hasattr(candidate, "island_id"):
-            state.feature_map[key] = int(getattr(candidate, "island_id"))
+            state.feature_map[key] = int(candidate.island_id)
     state.islands = [
         {
             "outcome": str(outcome),
@@ -802,26 +811,43 @@ def asi_route_candidates(
     else:
         state = _fresh_state(num_islands, migration_interval, migration_rate)
 
-    dense_mode = str(
-        dense_scoring
-        if dense_scoring is not None
-        else os.environ.get("LAZARUS_ASI_DENSE_SCORING", "off")
-    ).strip().lower()
-    selected_ranking_policy = str(
-        ranking_policy
-        if ranking_policy is not None
-        else os.environ.get("LAZARUS_ASI_SELECTOR_POLICY", "rank-v1")
-    ).strip().lower().replace("_", "-")
+    dense_mode = (
+        str(
+            dense_scoring
+            if dense_scoring is not None
+            else os.environ.get("LAZARUS_ASI_DENSE_SCORING", "off")
+        )
+        .strip()
+        .lower()
+    )
+    selected_ranking_policy = (
+        str(
+            ranking_policy
+            if ranking_policy is not None
+            else os.environ.get("LAZARUS_ASI_SELECTOR_POLICY", "rank-v1")
+        )
+        .strip()
+        .lower()
+        .replace("_", "-")
+    )
     route_query_text = _expand_semantic_route_query(query_text)
     query_ids = _encode_token_ids(tokenizer, route_query_text)
     literal_token_sequences = encode_literal_sequences(tokenizer, route_query_text)
-    router_text_only = str(
-        os.environ.get("LAZARUS_ROUTER_TEXT_ONLY", "0")
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    entity_tokens = [] if router_text_only else [
-        token for token in extract_entity_tokens(route_query_text)
-        if token not in {"tell", "list", "return", "rank"}
-    ]
+    router_text_only = str(os.environ.get("LAZARUS_ROUTER_TEXT_ONLY", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    entity_tokens = (
+        []
+        if router_text_only
+        else [
+            token
+            for token in extract_entity_tokens(route_query_text)
+            if token not in {"tell", "list", "return", "rank"}
+        ]
+    )
     raw_scored = _score_all_windows(
         handles,
         query_ids,
@@ -845,16 +871,13 @@ def asi_route_candidates(
     )
     key_seq = [(row.session_id, row.window_id) for row in raw_scored]
     lexical_scores = {
-        (row.session_id, row.window_id): float(row.raw_tfidf_score)
-        for row in raw_scored
+        (row.session_id, row.window_id): float(row.raw_tfidf_score) for row in raw_scored
     }
     literal_scores_by_key = {
-        (row.session_id, row.window_id): float(row.literal_score)
-        for row in raw_scored
+        (row.session_id, row.window_id): float(row.literal_score) for row in raw_scored
     }
     entity_scores_by_key = {
-        (row.session_id, row.window_id): float(row.entity_score)
-        for row in raw_scored
+        (row.session_id, row.window_id): float(row.entity_score) for row in raw_scored
     }
     lexical_ranks = _rank_by_score(raw_scored, lexical_scores)
     literal_ranks = _rank_by_score(raw_scored, literal_scores_by_key)
@@ -865,15 +888,9 @@ def asi_route_candidates(
         rank_maps.append(dense_ranks)
 
     lexical_norm = dict(zip(key_seq, _normalise([lexical_scores[k] for k in key_seq])))
-    literal_norm = dict(zip(
-        key_seq, _normalise([literal_scores_by_key[k] for k in key_seq])
-    ))
-    entity_norm = dict(zip(
-        key_seq, _normalise([entity_scores_by_key[k] for k in key_seq])
-    ))
-    dense_norm = dict(zip(
-        key_seq, _normalise([dense_scores.get(k, 0.0) for k in key_seq])
-    ))
+    literal_norm = dict(zip(key_seq, _normalise([literal_scores_by_key[k] for k in key_seq])))
+    entity_norm = dict(zip(key_seq, _normalise([entity_scores_by_key[k] for k in key_seq])))
+    dense_norm = dict(zip(key_seq, _normalise([dense_scores.get(k, 0.0) for k in key_seq])))
     max_cost = max((float(row.estimated_cost) for row in raw_scored), default=1.0)
     row_metrics: dict[tuple[str, int], dict[str, float]] = {}
     for row in raw_scored:
@@ -936,40 +953,46 @@ def asi_route_candidates(
             q_for_ucb = float(q_w)
         ucb1_score = compute_ucb1(q_for_ucb, n_w, int(state.total_selections), ucb1_c=ucb1_c)
         island_id = assign_island(
-            session_id, int(window_id),
+            session_id,
+            int(window_id),
             keyword_count=int(row.keyword_count),
             session_age_seconds=_session_age_seconds(row.handle),
             num_islands=int(num_islands),
         )
         key = (session_id, window_id)
         metrics = row_metrics.get(key, {})
-        candidates.append(AsiRouterCandidate(
-            handle=row.handle, window_id=int(window_id),
-            ucb1_score=float(ucb1_score), raw_router_score=float(q_w),
-            island_id=int(island_id), visit_count=int(n_w),
-            mean_reward=float(mean_reward),
-            raw_tfidf_score_pre_normalization=float(row.raw_tfidf_score),
-            literal_score=float(row.literal_score),
-            entity_score=float(row.entity_score),
-            dense_score=float(dense_scores.get(key, 0.0)),
-            rrf_score=float(metrics.get("rrf", 0.0)),
-            relevance_score=float(metrics.get("relevance", float(q_w))),
-            freshness_score=float(row.freshness_score),
-            learned_reward=float(metrics.get("learned", mean_reward)),
-            estimated_cost=float(row.estimated_cost),
-            utility_score=float(metrics.get("utility", float(q_w))),
-            lexical_rank=int(lexical_ranks.get(key, 0)),
-            dense_rank=int(dense_ranks.get(key, 0)),
-            literal_rank=int(literal_ranks.get(key, 0)),
-            entity_rank=int(entity_ranks.get(key, 0)),
-            content_fingerprint=str(row.content_fingerprint),
-            dense_vector=tuple(dense_vectors.get(key, ())),
-            selector_telemetry={
-                "dense_status": dense_status,
-                "ranking_policy": selected_ranking_policy,
-                "rrf_k": float(rrf_k),
-            },
-        ))
+        candidates.append(
+            AsiRouterCandidate(
+                handle=row.handle,
+                window_id=int(window_id),
+                ucb1_score=float(ucb1_score),
+                raw_router_score=float(q_w),
+                island_id=int(island_id),
+                visit_count=int(n_w),
+                mean_reward=float(mean_reward),
+                raw_tfidf_score_pre_normalization=float(row.raw_tfidf_score),
+                literal_score=float(row.literal_score),
+                entity_score=float(row.entity_score),
+                dense_score=float(dense_scores.get(key, 0.0)),
+                rrf_score=float(metrics.get("rrf", 0.0)),
+                relevance_score=float(metrics.get("relevance", float(q_w))),
+                freshness_score=float(row.freshness_score),
+                learned_reward=float(metrics.get("learned", mean_reward)),
+                estimated_cost=float(row.estimated_cost),
+                utility_score=float(metrics.get("utility", float(q_w))),
+                lexical_rank=int(lexical_ranks.get(key, 0)),
+                dense_rank=int(dense_ranks.get(key, 0)),
+                literal_rank=int(literal_ranks.get(key, 0)),
+                entity_rank=int(entity_ranks.get(key, 0)),
+                content_fingerprint=str(row.content_fingerprint),
+                dense_vector=tuple(dense_vectors.get(key, ())),
+                selector_telemetry={
+                    "dense_status": dense_status,
+                    "ranking_policy": selected_ranking_policy,
+                    "rrf_k": float(rrf_k),
+                },
+            )
+        )
 
     # Primary: ucb1_score desc. At cold start every ucb1_score == +inf so
     # all candidates tie on the primary key; per adaptation (ii) the
@@ -1003,8 +1026,14 @@ def asi_route_candidates(
 
 
 __all__ = [
-    "ASI_ROUTER_STATE_FILENAME", "AsiRouterCandidate", "AsiRouterState",
-    "advance_island", "asi_route_candidates", "assign_island",
-    "compute_ucb1", "load_asi_router_state", "record_asi_feedback",
+    "ASI_ROUTER_STATE_FILENAME",
+    "AsiRouterCandidate",
+    "AsiRouterState",
+    "advance_island",
+    "asi_route_candidates",
+    "assign_island",
+    "compute_ucb1",
+    "load_asi_router_state",
+    "record_asi_feedback",
     "save_asi_router_state",
 ]

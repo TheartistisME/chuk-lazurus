@@ -121,7 +121,6 @@ from __future__ import annotations
 
 import argparse
 import atexit
-from contextlib import contextmanager
 import inspect
 import json
 import os
@@ -129,10 +128,11 @@ import shlex
 import sys
 import time
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from chuk_lazarus.memory_config import (
     MemoryRecallConfig,
@@ -149,7 +149,6 @@ from chuk_lazarus.memory_config import (
 # intentionally retained for rebuild-from-AUS3000 workflows but is NEVER
 # invoked at runtime from this REPL.
 from chuk_lazarus.session_store.live_indexer import LiveIndexer
-
 
 DEFAULT_STORE = "/tmp/interactive-memory"
 HEADER_W = 72
@@ -229,9 +228,7 @@ def _asi_feedback_reward(
     if evidence_supports:
         reward += 0.30
     bool_assertions = [
-        bool(value)
-        for value in strict_assertions.values()
-        if isinstance(value, bool)
+        bool(value) for value in strict_assertions.values() if isinstance(value, bool)
     ]
     if bool_assertions and not all(bool_assertions):
         reward -= 0.50
@@ -241,11 +238,7 @@ def _asi_feedback_reward(
 
 
 def ts() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def info(msg: str) -> None:
@@ -266,10 +259,7 @@ def _env_max_total_inject_tokens() -> int:
 def _normalize_generation_engine(raw_value: str | None) -> str:
     normalized = str(raw_value or "standard").strip().lower()
     if normalized not in GENERATION_ENGINES:
-        raise ValueError(
-            "generation_engine must be one of: "
-            + ", ".join(GENERATION_ENGINES)
-        )
+        raise ValueError("generation_engine must be one of: " + ", ".join(GENERATION_ENGINES))
     return normalized
 
 
@@ -292,15 +282,11 @@ def truncate(text: str, n: int) -> str:
 def _parse_csv_int_tuple(raw_value: str, *, option_name: str) -> tuple[int, ...]:
     parts = [part.strip() for part in raw_value.split(",")]
     if not parts or any(part == "" for part in parts):
-        raise ValueError(
-            f"{option_name} must be a comma-separated list of integers"
-        )
+        raise ValueError(f"{option_name} must be a comma-separated list of integers")
     try:
         return tuple(int(part) for part in parts)
     except ValueError as exc:
-        raise ValueError(
-            f"{option_name} must be a comma-separated list of integers"
-        ) from exc
+        raise ValueError(f"{option_name} must be a comma-separated list of integers") from exc
 
 
 def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
@@ -320,7 +306,7 @@ def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
     while idx < len(tokens):
         token = tokens[idx]
         if token == "--":
-            query_tokens = tokens[idx + 1:]
+            query_tokens = tokens[idx + 1 :]
             break
         if not token.startswith("-"):
             query_tokens = tokens[idx:]
@@ -331,25 +317,18 @@ def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
                 raise ValueError(f"{token} requires a value ({KV_QUERY_USAGE})")
             family = tokens[idx].strip().lower()
             if family not in {"full_attention", "sliding"}:
-                raise ValueError(
-                    "--insertion-family must be one of "
-                    "{full_attention, sliding}"
-                )
+                raise ValueError("--insertion-family must be one of {full_attention, sliding}")
             insertion_family = family
         elif token == "--sliding-layer-indices":
             idx += 1
             if idx >= len(tokens):
                 raise ValueError(f"{token} requires a value ({KV_QUERY_USAGE})")
-            sliding_layer_indices = _parse_csv_int_tuple(
-                tokens[idx], option_name=token
-            )
+            sliding_layer_indices = _parse_csv_int_tuple(tokens[idx], option_name=token)
         elif token == "--sliding-head-indices":
             idx += 1
             if idx >= len(tokens):
                 raise ValueError(f"{token} requires a value ({KV_QUERY_USAGE})")
-            sliding_head_indices = _parse_csv_int_tuple(
-                tokens[idx], option_name=token
-            )
+            sliding_head_indices = _parse_csv_int_tuple(tokens[idx], option_name=token)
         else:
             raise ValueError(f"unrecognized /kv_query option {token!r}")
         idx += 1
@@ -367,8 +346,7 @@ def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
         sliding_layer_indices is not None or sliding_head_indices is not None
     ):
         raise ValueError(
-            "--sliding-layer-indices and --sliding-head-indices require "
-            "--insertion-family sliding"
+            "--sliding-layer-indices and --sliding-head-indices require --insertion-family sliding"
         )
 
     query_text = " ".join(query_tokens).strip()
@@ -413,21 +391,15 @@ def _select_kv_direct_kwargs(
 
         parameters = signature.parameters
         if any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
         ):
             return
-        supported = {
-            key for key in selector_kwargs if key in parameters
-        }
+        supported = {key for key in selector_kwargs if key in parameters}
         if supported == set(selector_kwargs):
             return
-        missing = ", ".join(
-            key for key in selector_kwargs if key not in supported
-        )
+        missing = ", ".join(key for key in selector_kwargs if key not in supported)
         raise RuntimeError(
-            "kv_query selector requested, but "
-            f"{label} is missing selector kwargs: {missing}"
+            f"kv_query selector requested, but {label} is missing selector kwargs: {missing}"
         )
 
     _assert_selector_support(
@@ -436,7 +408,8 @@ def _select_kv_direct_kwargs(
     )
     runtime = getattr(retriever, "runtime", None)
     runtime_generate = (
-        None if runtime is None
+        None
+        if runtime is None
         else getattr(runtime, "generate_with_kv_direct_materialization", None)
     )
     if runtime_generate is not None:
@@ -474,8 +447,8 @@ class TurnMetadata:
     selected_tier: str = "not-implemented-yet"
     mask_penalty_applied: bool = False
     kv_direct_active: bool = False
-    vram_peak_mib: Optional[float] = None
-    vram_delta_mib: Optional[float] = None
+    vram_peak_mib: float | None = None
+    vram_delta_mib: float | None = None
     no_silent_fallback: bool = False
     candidate_count: int = 0
     tier_assignment_count: int = 0
@@ -503,11 +476,7 @@ class TurnMetadata:
             )
             return
         if self.mode == "none":
-            reason = (
-                f" reason={self.fallback_reason}"
-                if self.fallback_reason
-                else ""
-            )
+            reason = f" reason={self.fallback_reason}" if self.fallback_reason else ""
             print(
                 "  [memory] memory_used=false "
                 f"generated {self.generated_tokens} tok in {self.generate_time:.2f}s"
@@ -516,10 +485,16 @@ class TurnMetadata:
             )
             return
         if self.mode == "plain":
-            print(f"  [plain turn] no retrieval · generated {self.generated_tokens} tok in {self.generate_time:.2f}s", flush=True)
+            print(
+                f"  [plain turn] no retrieval · generated {self.generated_tokens} tok in {self.generate_time:.2f}s",
+                flush=True,
+            )
             return
         if self.mode == "none":
-            print(f"  [no memory yet] plain stream · {self.generated_tokens} tok in {self.generate_time:.2f}s", flush=True)
+            print(
+                f"  [no memory yet] plain stream · {self.generated_tokens} tok in {self.generate_time:.2f}s",
+                flush=True,
+            )
             return
         section("ROUTING + STRICT ASSERTIONS")
         print(f"  mode            : {self.routing_mode}")
@@ -528,7 +503,7 @@ class TurnMetadata:
         if self.routing_score is not None:
             print(f"  routing_score   : {self.routing_score:.4f}")
         else:
-            print(f"  routing_score   : (exact — no score)")
+            print("  routing_score   : (exact — no score)")
         print(f"  matched_window  : {truncate(self.matched_window_text or '', 220)}")
         if self.window_keywords:
             print(f"  keywords        : {self.window_keywords[:10]}")
@@ -544,7 +519,7 @@ class TurnMetadata:
         # carries no sentinel tag regardless.
         real_kv = bool(self.kv_direct_active) or self.mode == "kv_direct"
         _sent = "" if real_kv else " (sentinel: non-kv path)"
-        print(f"  axis-6 observability:")
+        print("  axis-6 observability:")
         print(f"    memory_used          : {self.memory_used}")
         print(f"    selected_tier        : {self.selected_tier}{_sent}")
         print(f"    mask_penalty_applied : {self.mask_penalty_applied}{_sent}")
@@ -578,7 +553,9 @@ class TurnMetadata:
                 f"64={self.candidate_recall_at_64}",
                 flush=True,
             )
-        print(f"  timing (s)      : retrieve={self.retrieve_time:.2f}  generate={self.generate_time:.2f}  total={self.total_time:.2f}")
+        print(
+            f"  timing (s)      : retrieve={self.retrieve_time:.2f}  generate={self.generate_time:.2f}  total={self.total_time:.2f}"
+        )
         print(f"  tokens          : prompt={self.prompt_tokens}  generated={self.generated_tokens}")
         print("=" * HEADER_W)
 
@@ -722,14 +699,9 @@ class MemoryChat:
             else ""
         )
         budget_note = (
-            f" hot_budget_mib={self.hot_budget_mib}"
-            if self.hot_budget_mib is not None
-            else ""
+            f" hot_budget_mib={self.hot_budget_mib}" if self.hot_budget_mib is not None else ""
         )
-        info(
-            "generation runtime ready: "
-            f"engine={self.generation_engine}{budget_note}{cache_note}"
-        )
+        info(f"generation runtime ready: engine={self.generation_engine}{budget_note}{cache_note}")
 
     def _install_runtime_session_cache(self, runtime: Any) -> Any | None:
         if getattr(runtime, "engine_mode", None) != "residual_bounded_kv_direct":
@@ -770,7 +742,9 @@ class MemoryChat:
             self.retriever = None
             return
 
-        info(f"found {len(handles)} checkpoint(s) under {self.checkpoints_root} — building retriever")
+        info(
+            f"found {len(handles)} checkpoint(s) under {self.checkpoints_root} — building retriever"
+        )
         from chuk_lazarus.session_retrieval.retriever import SessionRetriever
 
         # System prompt tuned for chat (vs. the retriever's default recall-only prompt)
@@ -978,12 +952,8 @@ class MemoryChat:
                 # windows) instead of maintaining a parallel token buffer
                 # inside the windower — which would require modifying
                 # streaming.py (out of scope for this axis).
-                token_ids = self.tokenizer(
-                    decoded_text, add_special_tokens=False
-                ).input_ids
-                keywords = _extract_keywords_from_text(
-                    decoded_text, max_keywords=12
-                )
+                token_ids = self.tokenizer(decoded_text, add_special_tokens=False).input_ids
+                keywords = _extract_keywords_from_text(decoded_text, max_keywords=12)
                 sid = self.session.session_id if self.session is not None else ""
                 role_str = getattr(turn.role, "value", str(turn.role))
                 clause_metadata = {
@@ -994,9 +964,7 @@ class MemoryChat:
                     "start_token_offset": int(boundary.start_token_offset),
                     "end_token_offset": int(boundary.end_token_offset),
                     "emitted_at": str(boundary.emitted_at),
-                    "token_count": int(
-                        boundary.end_token_offset - boundary.start_token_offset
-                    ),
+                    "token_count": int(boundary.end_token_offset - boundary.start_token_offset),
                 }
                 wid = self._window_counter
                 self._window_counter += 1
@@ -1085,9 +1053,7 @@ class MemoryChat:
             self.session.append_chunk(turn, tail)
             if on_chunk is not None:
                 decoded = self.tokenizer.decode(
-                    windower._token_ids[
-                        tail.start_token_offset : tail.end_token_offset
-                    ],
+                    windower._token_ids[tail.start_token_offset : tail.end_token_offset],
                     skip_special_tokens=True,
                 )
                 on_chunk(tail, decoded)
@@ -1235,21 +1201,13 @@ class MemoryChat:
         meta.retrieve_time = t_retrieve
 
         # Token counts for the reply
-        gen_ids = self.tokenizer(
-            result.generated_answer, add_special_tokens=False
-        ).input_ids
+        gen_ids = self.tokenizer(result.generated_answer, add_special_tokens=False).input_ids
         meta.generated_tokens = len(gen_ids)
         # Prompt tokens approximation: system + matched window + context
         prompt_preview = (
-            self.retriever.system_prompt
-            + "\n"
-            + result.matched_window_text
-            + "\n"
-            + chat_context
+            self.retriever.system_prompt + "\n" + result.matched_window_text + "\n" + chat_context
         )
-        meta.prompt_tokens = len(
-            self.tokenizer(prompt_preview, add_special_tokens=False).input_ids
-        )
+        meta.prompt_tokens = len(self.tokenizer(prompt_preview, add_special_tokens=False).input_ids)
         meta.generate_time = meta.total_time = time.time() - t_total_start
         # (generate_time ≈ total - retrieve is more accurate, but we don't
         # split out the non-retrieve path inside the retriever; report total.)
@@ -1263,9 +1221,7 @@ class MemoryChat:
         # selected_tier remains the sentinel on this non-KV path.
         # Deriving a tier here would fabricate evidence; only /kv_query
         # carries real tier data.
-        meta.no_silent_fallback = (
-            meta.mode != "none" and meta.window_id is not None
-        )
+        meta.no_silent_fallback = meta.mode != "none" and meta.window_id is not None
         meta.memory_used = True
 
         # Append assistant turn to session/history
@@ -1373,10 +1329,11 @@ class MemoryChat:
             return TurnMetadata(mode="none", no_silent_fallback=False)
 
         from chuk_lazarus.inference.backends.torch_runtime import WarmPenaltyConfig
-        from chuk_lazarus.inference.generation import GenerationConfig
         from chuk_lazarus.inference.context.knowledge.gemma4_e2b_it_layers import (
             GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS,
         )
+        from chuk_lazarus.inference.generation import GenerationConfig
+
         session_retrieval = sys.modules.get("chuk_lazarus.session_retrieval")
         if session_retrieval is None:
             import chuk_lazarus.session_retrieval as session_retrieval
@@ -1454,9 +1411,9 @@ class MemoryChat:
                     seen_sessions.add(session_id)
                     deduped.append(candidate)
                 candidates = deduped
-            required_substring = str(
-                os.environ.get("LAZARUS_KV_REQUIRED_SUBSTRING", "") or ""
-            ).strip().lower()
+            required_substring = (
+                str(os.environ.get("LAZARUS_KV_REQUIRED_SUBSTRING", "") or "").strip().lower()
+            )
             if required_substring:
                 from chuk_lazarus.session_retrieval.enumeration import load_store
 
@@ -1509,9 +1466,7 @@ class MemoryChat:
                 max_total_inject_tokens=int(config.max_total_inject_tokens),
             )
             if not assignments_for_generation:
-                raise RuntimeError(
-                    "axis-4 token-budget governor truncated all assignments"
-                )
+                raise RuntimeError("axis-4 token-budget governor truncated all assignments")
             dynamic_policy_active = any(
                 str(getattr(a, "policy_version", "")) == POLICY_VERSION_UTILITY_V2
                 for a in tier_assignments
@@ -1520,8 +1475,7 @@ class MemoryChat:
                 assignments_for_generation = [
                     assignment
                     for assignment in assignments_for_generation
-                    if str(getattr(assignment.tier, "value", assignment.tier))
-                    != "cold"
+                    if str(getattr(assignment.tier, "value", assignment.tier)) != "cold"
                 ]
                 if not assignments_for_generation:
                     raise NoRelevantMemory("only cold memories matched")
@@ -1571,13 +1525,12 @@ class MemoryChat:
                 # available.
                 top_handle = assignments_for_generation[0].candidate.handle
                 assignments_for_generation = [
-                    a for a in assignments_for_generation
+                    a
+                    for a in assignments_for_generation
                     if a.candidate.handle.session_id == top_handle.session_id
                 ]
                 if not assignments_for_generation:
-                    raise RuntimeError(
-                        "no tier assignments owned by top-ranked candidate's handle"
-                    )
+                    raise RuntimeError("no tier assignments owned by top-ranked candidate's handle")
                 result = self.retriever.answer_with_kv_direct(
                     query_text,
                     assignments_for_generation,
@@ -1646,12 +1599,11 @@ class MemoryChat:
         meta.retrieve_time = t_retrieve
         answer_lower = str(result.generated_answer or "").lower()
         meta.no_memory_detected = (
-            ("do not have" in answer_lower or "don't have" in answer_lower or "no stored" in answer_lower)
-            and "stored decision" in answer_lower
-        )
-        meta.fallback_is_explicit_if_used = bool(
-            meta.no_memory_detected or meta.no_silent_fallback
-        )
+            "do not have" in answer_lower
+            or "don't have" in answer_lower
+            or "no stored" in answer_lower
+        ) and "stored decision" in answer_lower
+        meta.fallback_is_explicit_if_used = bool(meta.no_memory_detected or meta.no_silent_fallback)
 
         # axis-6 observability fields — REAL values from result.
         meta.memory_used = True
@@ -1662,18 +1614,16 @@ class MemoryChat:
         meta.multi_session_count = int(
             kv_strict.get(
                 "multi_session_count",
-                len({
-                    str(getattr(a.candidate.handle, "session_id", ""))
-                    for a in assignments_for_generation
-                }),
+                len(
+                    {
+                        str(getattr(a.candidate.handle, "session_id", ""))
+                        for a in assignments_for_generation
+                    }
+                ),
             )
         )
-        meta.semantic_prefix_active = bool(
-            kv_strict.get("semantic_prefix_active", False)
-        )
-        meta.semantic_prefix_tokens = int(
-            kv_strict.get("semantic_prefix_tokens", 0)
-        )
+        meta.semantic_prefix_active = bool(kv_strict.get("semantic_prefix_active", False))
+        meta.semantic_prefix_tokens = int(kv_strict.get("semantic_prefix_tokens", 0))
         evidence_supports = list(getattr(result, "evidence_supports", []) or [])
         meta.evidence_supports = evidence_supports
         meta.evidence_support_count = int(
@@ -1697,10 +1647,7 @@ class MemoryChat:
         # selected_tier: report the highest-priority tier that contributed to
         # this generation. Multi-fact queries can include HOT and WARM slots in
         # one answer, but the selected tier remains the top active tier.
-        tiers_used = {
-            str(getattr(a.tier, "value", a.tier))
-            for a in assignments_for_generation
-        }
+        tiers_used = {str(getattr(a.tier, "value", a.tier)) for a in assignments_for_generation}
         if not tiers_used:
             meta.selected_tier = "kv_direct"
         elif "hot" in tiers_used:
@@ -1715,27 +1662,17 @@ class MemoryChat:
         # no_silent_fallback: True iff window_id is set (>= 0) AND KV-direct
         # path actually ran (kv_direct_active flag from the runtime).
         meta.no_silent_fallback = bool(
-            meta.window_id is not None
-            and int(meta.window_id) != -1
-            and meta.kv_direct_active
+            meta.window_id is not None and int(meta.window_id) != -1 and meta.kv_direct_active
         )
         meta.memory_used = bool(meta.no_silent_fallback)
-        meta.fallback_is_explicit_if_used = bool(
-            meta.no_memory_detected or meta.no_silent_fallback
-        )
+        meta.fallback_is_explicit_if_used = bool(meta.no_memory_detected or meta.no_silent_fallback)
 
         # Token counts for the reply.
-        gen_ids = self.tokenizer(
-            result.generated_answer, add_special_tokens=False
-        ).input_ids
+        gen_ids = self.tokenizer(result.generated_answer, add_special_tokens=False).input_ids
         meta.generated_tokens = len(gen_ids)
         # Prompt tokens approximation: system + query.
-        prompt_preview = (
-            (self.retriever.system_prompt or "") + "\n" + query_text
-        )
-        meta.prompt_tokens = len(
-            self.tokenizer(prompt_preview, add_special_tokens=False).input_ids
-        )
+        prompt_preview = (self.retriever.system_prompt or "") + "\n" + query_text
+        meta.prompt_tokens = len(self.tokenizer(prompt_preview, add_special_tokens=False).input_ids)
         meta.total_time = time.time() - t_total_start
         meta.generate_time = max(0.0, meta.total_time - meta.retrieve_time)
 
@@ -1886,13 +1823,9 @@ class MemoryChat:
             window_count = 0
             try:
                 if manifest_abs.exists():
-                    manifest_obj = json.loads(
-                        manifest_abs.read_text(encoding="utf-8")
-                    )
+                    manifest_obj = json.loads(manifest_abs.read_text(encoding="utf-8"))
                     window_count = int(
-                        manifest_obj.get(
-                            "num_entries", manifest_obj.get("num_windows", 0)
-                        )
+                        manifest_obj.get("num_entries", manifest_obj.get("num_windows", 0))
                     )
             except Exception:  # noqa: BLE001 - best-effort; counting fallback
                 window_count = 0
@@ -1921,16 +1854,13 @@ class MemoryChat:
                 "session_id": sid,
                 "saved_at_iso": datetime.now(timezone.utc).isoformat(),
                 "entrypoint": (
-                    "scripts/interactive_memory_chat.py::"
-                    "MemoryChat.save_current_session"
+                    "scripts/interactive_memory_chat.py::MemoryChat.save_current_session"
                 ),
                 "torch_store_path": "torch_store",
                 "manifest_path": "torch_store/manifest.json",
                 "window_count": int(window_count),
                 "selection_ready_descriptor_dir": "torch_store/selection_ready",
-                "selection_ready_descriptor_count": int(
-                    selection_ready_descriptor_count
-                ),
+                "selection_ready_descriptor_count": int(selection_ready_descriptor_count),
                 "boundary_residual_dir": "torch_store/boundaries",
                 "boundary_residual_count": int(boundary_residual_count),
                 "residual_stream_dir": "torch_store/residual_streams",
@@ -1940,8 +1870,7 @@ class MemoryChat:
                 "indexer_flush_seconds": float(dt),
                 "kv_direct_ready": False,
                 "kv_direct_pending_reason": (
-                    "axes 2-5 runtime fields not yet landed "
-                    "(lead-runtime-router scope)"
+                    "axes 2-5 runtime fields not yet landed (lead-runtime-router scope)"
                 ),
                 "axis_1_closure_artifact": True,
                 "baseline_copy_artifact_id": "ve-ins-0mo9oppka000042c2c9",
@@ -1971,10 +1900,7 @@ class MemoryChat:
                 except RuntimeError as exc:
                     info(f"  retriever refresh FAILED: {exc}")
                     return False
-                info(
-                    f"  retriever refreshed in {time.time() - t0:.2f}s "
-                    f"(+{added} handle(s))"
-                )
+                info(f"  retriever refreshed in {time.time() - t0:.2f}s (+{added} handle(s))")
         return True
 
     # ── axis-3 (Q3 + Addition 2): unified emit_store entry ─────────────────
@@ -2053,7 +1979,9 @@ class MemoryChat:
             print(f"  memory_mode      : {self.memory_mode}")
             print(f"  memory_profile   : {getattr(self, 'memory_profile', 'plug_and_play')}")
             print(f"  device           : {self.retriever.device}")
-        print(f"  current_session  : session_id={self.session.session_id if self.session else '—'}  turns={len(self.session.turns) if self.session else 0}")
+        print(
+            f"  current_session  : session_id={self.session.session_id if self.session else '—'}  turns={len(self.session.turns) if self.session else 0}"
+        )
         print("=" * HEADER_W)
 
     # ── probes (do NOT mutate chat history) ────────────────────────────────
@@ -2087,9 +2015,7 @@ class MemoryChat:
             strict_assertions=dict(result.strict_assertions or {}),
             generated_answer=result.generated_answer,
         )
-        gen_ids = self.tokenizer(
-            result.generated_answer, add_special_tokens=False
-        ).input_ids
+        gen_ids = self.tokenizer(result.generated_answer, add_special_tokens=False).input_ids
         meta.generated_tokens = len(gen_ids)
         meta.pretty_print()
         print(f"probe answer> {result.generated_answer}\n", flush=True)
@@ -2214,10 +2140,7 @@ class MemoryChat:
                 self.memory_profile = config.profile
                 self.memory_config = config
                 self.memory_mode = config.mode
-                info(
-                    "memory_profile = "
-                    f"{self.memory_profile}; memory_mode = {self.memory_mode}"
-                )
+                info(f"memory_profile = {self.memory_profile}; memory_mode = {self.memory_mode}")
             elif memory_arg in SCRIPT_MEMORY_MODES:
                 self.memory_mode = memory_arg
                 info(f"memory_mode = {self.memory_mode}")
