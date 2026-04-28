@@ -14,6 +14,201 @@ agent-stage context packages:
 command chain; book-derived source text and vector stores stay local and
 reproducible.
 
+## Agentic Operating Guide
+
+Use IDDIA as an agent context and self-improvement loop. Your job is not just to
+retrieve DDIA-shaped advice; your job is to make bounded, provable progress and
+leave a durable handoff for the next agent.
+
+### First Five Minutes
+
+Run these before changing behavior:
+
+```bash
+python -m IDDIA stages
+python -m IDDIA.meta helper-context
+python -m pytest IDDIA/tests -q
+```
+
+If your task is about retrieval quality, also establish the frozen eval baseline:
+
+```bash
+python IDDIA/evals/run_brownfield_greenfield.py
+```
+
+Treat the eval output as the benchmark. Do not claim the tool improved unless
+the same benchmark or same meta-grade command improves after your change.
+
+### Build A Context Package For Your Task
+
+Every context package needs three inputs:
+
+- `task`: the concrete work the agent is doing.
+- `stage`: one of `onboard`, `plan`, `build`, `verify`, `handoff`, or `exit`.
+- `next_steps`: the known next command, constraint, or decision.
+
+Example:
+
+```bash
+python -m IDDIA package \
+  --stage plan \
+  --task "Improve schema migration retrieval for brownfield projects" \
+  --next-steps "Raise the frozen schema-migration eval above 4.0/5 without hurting other scenarios" \
+  --format json \
+  --output IDDIA/artifacts/ddia/packages/schema-migration-plan.json
+```
+
+Read the package as a bounded context, not as an oracle. Prefer hits that have:
+
+- matching `concept_tags` for the task;
+- a relevant `chapter_title` / `section_title`;
+- a useful `why_this_hit.summary`;
+- low or empty `noise_flags`;
+- provenance fields such as page and chunk id.
+
+Do not paste long DDIA source text into commits, reports, or prompts. Package
+outputs and eval reports intentionally omit or cap source snippets.
+
+### Agent Lifecycle
+
+Work through this loop:
+
+```text
+onboard -> plan -> build -> verify -> handoff -> exit -> onboard
+```
+
+Use the stage to choose your behavior:
+
+- `onboard`: read helper context, manifests, recent signoffs, and current evals.
+- `plan`: state the claim, metric, intended files, and rollback path.
+- `build`: make the smallest scoped change that can move the metric.
+- `verify`: run focused tests, full IDDIA tests, lint, eval, and meta-grade.
+- `handoff`: append changelog/signoff with proof fields.
+- `exit`: supervise spawned agents, close panes, commit scoped changes, report blockers.
+
+### Proof Contract
+
+Before changing behavior, write down the claim you intend to prove:
+
+```text
+Claim: <what should improve>
+Metric: <fixed command/rubric that decides the claim>
+Baseline: <score/result before the change>
+Pass condition: <score/result that counts as better>
+```
+
+After the change, rerun the same metric. Tests prove implementation contracts;
+they do not prove retrieval quality by themselves. For retrieval work, use:
+
+```bash
+python IDDIA/evals/run_brownfield_greenfield.py
+python -m IDDIA.meta grade <fresh-package.json> \
+  --expected-concept <concept> \
+  --preferred-chapter "<chapter>"
+```
+
+A valid proof signoff must include:
+
+- files modified;
+- agent objective;
+- TLDR of the change;
+- mandatory dependencies/context;
+- proof claim;
+- proof metric/rubric;
+- proof evidence;
+- proof verdict: `proven`, `partially_proven`, or `not_proven`.
+
+Append it with:
+
+```bash
+python -m IDDIA.meta signoff append \
+  --file IDDIA/core.py \
+  --objective "Improve schema migration retrieval" \
+  --tldr "Added concept diversification for migration/replay/manifest queries" \
+  --dependency "python -m pytest IDDIA/tests -q" \
+  --dependency "python IDDIA/evals/run_brownfield_greenfield.py" \
+  --proof-claim "Schema migration retrieval rises above 4.0/5" \
+  --proof-metric "brownfield-medium-schema-migration grade in the frozen eval" \
+  --proof-evidence "before: 3.1/5; after: 4.4/5" \
+  --proof-verdict proven
+```
+
+### Let IDDIA Spawn An Optimizer Agent
+
+Grade a weak package:
+
+```bash
+python -m IDDIA.meta grade <package.json> \
+  --expected-concept schema \
+  --expected-concept replay \
+  --preferred-chapter "Encoding and Evolution"
+```
+
+Spawn an optimizer from that grade:
+
+```bash
+python -m IDDIA.meta spawn IDDIA/artifacts/meta/grades/<grade>.json \
+  --objective "Improve the weakest retrieval criteria and prove the result with the frozen eval" \
+  --vee-agent claude \
+  --tmux-session iddia-meta \
+  --tmux-window agents \
+  --worker-name iddia-improve-schema
+```
+
+Then supervise it:
+
+```bash
+python -m IDDIA.meta supervise IDDIA/artifacts/meta/spawn_requests/<request>.json \
+  --wait-seconds 60
+```
+
+Supervisor statuses mean:
+
+- `running`: the pane is still active and no fresh proof signoff exists yet.
+- `completed`: a signoff created after the spawn request has complete proof fields.
+- `failed_no_signoff`: the agent is gone and no matching fresh signoff exists.
+- `failed_no_proof`: a fresh signoff exists but proof fields are incomplete.
+
+Do not accept an optimizer result until `supervise` reports `completed` and you
+have independently rerun the claimed metric.
+
+### Improve IDDIA Itself
+
+When editing IDDIA, stay inside `IDDIA/` unless the user explicitly asks
+otherwise. Keep source data immutable, logs append-only, and indexes
+rebuildable. Prefer adding or tuning:
+
+- query-profile extraction;
+- concept synonyms and affinity boosts;
+- reranking or top-K diversification;
+- eval scenarios;
+- meta-grader criteria or score gates;
+- supervisor validation.
+
+Run this verification stack before signoff:
+
+```bash
+python -m pytest IDDIA/tests -q
+uvx ruff check IDDIA
+python IDDIA/evals/run_brownfield_greenfield.py
+```
+
+For the specific package you changed behavior for, also run a fresh meta-grade.
+The result should show either no score gates or an intentional lower score with
+a clear recommendation.
+
+### Handoff Checklist
+
+Before leaving:
+
+- Confirm `git status --short -- IDDIA` only shows intentional IDDIA changes.
+- Append a changelog entry with the measured result.
+- Append a signoff with proof fields.
+- Supervise any spawned agent until it is `completed` or an explicit failure.
+- Commit scoped IDDIA changes.
+- Report external blockers such as broken `bd`, dirty non-IDDIA files, or remote
+  push permissions.
+
 ## Data Layout
 
 ```text
