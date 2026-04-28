@@ -47,6 +47,11 @@ The layout follows the project principles the tool is meant to teach:
 - Context is bounded: package generation retrieves a small, stage-specific set.
 - Handoffs carry provenance: every hit reports page, chunk id, score, and tags.
 
+Package generation opens zvec in read-only mode with a short retry loop so
+parallel agents are less likely to trip over the local collection lock. Retrieval
+also asks for a wider candidate pool, softly downranks citation-list chunks, and
+then returns the bounded `top-k` package.
+
 ## Commands
 
 Install the optional dependencies:

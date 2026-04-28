@@ -14,6 +14,7 @@ import math
 import re
 import shutil
 import sys
+import time
 import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -29,6 +30,9 @@ DEFAULT_DDIA_URL = (
 TOOL_ROOT = Path(__file__).resolve().parent
 DEFAULT_ARTIFACT_ROOT = TOOL_ROOT / "artifacts" / "ddia"
 DEFAULT_EMBED_DIM = 384
+REFERENCE_CHUNK_PENALTY = 0.12
+ZVEC_OPEN_RETRY_ATTEMPTS = 8
+ZVEC_OPEN_RETRY_DELAY_SECONDS = 0.15
 
 STAGES = ("onboard", "plan", "build", "verify", "handoff", "exit")
 NEXT_STAGE = {
@@ -401,6 +405,66 @@ def load_chunks(chunks_path: Path) -> dict[str, dict[str, Any]]:
     return {record["id"]: record for record in iter_jsonl(chunks_path)}
 
 
+def is_reference_like_chunk(text: str) -> bool:
+    """Detect citation-list chunks that are usually weaker agent context."""
+
+    compact = " ".join(text.split()).lower()
+    if not compact:
+        return False
+    if compact.startswith(("references", "bibliography")):
+        return True
+
+    citation_markers = len(re.findall(r"\[\d+\]", text))
+    line_citations = len(re.findall(r"(?m)^\s*\[\d+\]", text))
+    reference_terms = sum(
+        term in compact
+        for term in (
+            "doi:",
+            "proceedings",
+            "conference",
+            "symposium",
+            "ieee",
+            "acm",
+            "arxiv",
+            "volume",
+        )
+    )
+    if line_citations >= 2 or citation_markers >= 4:
+        return True
+    if citation_markers >= 1 and reference_terms >= 2:
+        return True
+    return bool(
+        reference_terms >= 3
+        and re.match(r"^(and\s+)?[a-z ,.-]+,\s+(volume|number|pages|march|january)", compact)
+    )
+
+
+def adjusted_retrieval_score(raw_score: float, text: str) -> float:
+    penalty = REFERENCE_CHUNK_PENALTY if is_reference_like_chunk(text) else 0.0
+    return float(raw_score) - penalty
+
+
+def open_zvec_read_only_with_retry(
+    zvec: Any,
+    vector_path: Path,
+    *,
+    attempts: int = ZVEC_OPEN_RETRY_ATTEMPTS,
+    initial_delay_seconds: float = ZVEC_OPEN_RETRY_DELAY_SECONDS,
+    sleep: Any = time.sleep,
+) -> Any:
+    option = zvec.CollectionOption(read_only=True)
+    for attempt in range(max(1, attempts)):
+        try:
+            return zvec.open(str(vector_path), option)
+        except RuntimeError as exc:
+            is_lock_error = "lock" in str(exc).lower()
+            is_last_attempt = attempt >= max(1, attempts) - 1
+            if not is_lock_error or is_last_attempt:
+                raise
+            sleep(initial_delay_seconds * (attempt + 1))
+    raise RuntimeError(f"failed to open zvec collection at {vector_path}")
+
+
 def remove_rebuildable_path(path: Path, artifact_root: Path) -> None:
     ensure_within(artifact_root, path)
     if path.exists():
@@ -574,22 +638,26 @@ def search_context(
         raise FileNotFoundError(
             f"missing context index under {artifact_root}; run 'python -m IDDIA ingest-ddia'"
         )
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1")
 
     chunks = load_chunks(chunks_path)
     query = build_context_query(task, stage, next_steps)
-    collection = zvec.open(str(vector_path))
+    collection = open_zvec_read_only_with_retry(zvec, vector_path)
+    candidate_top_k = min(len(chunks), max(top_k, top_k * 4, top_k + 8))
     results = collection.query(
         zvec.VectorQuery("embedding", vector=embed_hash(query, dim=dim)),
-        topk=top_k,
+        topk=candidate_top_k,
     )
 
     hits: list[SearchHit] = []
     for result in results:
         chunk_id = result["id"] if isinstance(result, dict) else result.id
-        score = float(result.get("score", 0.0) if isinstance(result, dict) else result.score)
+        raw_score = float(result.get("score", 0.0) if isinstance(result, dict) else result.score)
         record = chunks.get(chunk_id)
         if record is None:
             continue
+        score = adjusted_retrieval_score(raw_score, record["text"])
         hits.append(
             SearchHit(
                 chunk_id=record["id"],
@@ -601,7 +669,8 @@ def search_context(
                 text=record["text"],
             )
         )
-    return hits
+    hits.sort(key=lambda hit: (-hit.score, hit.page, hit.chunk_id))
+    return hits[:top_k]
 
 
 def stage_questions(stage: str) -> list[str]:

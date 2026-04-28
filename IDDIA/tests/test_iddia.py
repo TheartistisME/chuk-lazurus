@@ -6,10 +6,13 @@ import pytest
 
 from IDDIA import (
     STAGES,
+    adjusted_retrieval_score,
     build_context_query,
     chunk_markdown_text,
     embed_hash,
+    is_reference_like_chunk,
     next_stage,
+    open_zvec_read_only_with_retry,
 )
 from IDDIA.install_slash_commands import install_commands
 
@@ -66,3 +69,53 @@ def test_slash_command_installer_uses_windows_safe_namespace_dir(tmp_path):
     assert installed == [target_dir / "agent-context" / "build.md"]
     assert installed[0].read_text(encoding="utf-8") == "build command"
     assert ":" not in installed[0].name
+
+
+def test_reference_like_chunks_are_downranked():
+    reference_text = (
+        '[41] Example Author: "A Database Paper," Proceedings of ExampleConf, '
+        "volume 1, pages 1-9. doi:10.1000/example.\n"
+        '[42] Another Author: "A Second Paper," IEEE Symposium.'
+    )
+    prose_text = (
+        "Atomic commit helps a system provide simple semantics when a write may fail "
+        "partway through updating durable state."
+    )
+
+    assert is_reference_like_chunk(reference_text)
+    assert not is_reference_like_chunk(prose_text)
+    assert adjusted_retrieval_score(0.25, reference_text) < adjusted_retrieval_score(
+        0.20, prose_text
+    )
+
+
+def test_zvec_open_uses_read_only_option_and_retries_lock(tmp_path):
+    calls: list[object] = []
+
+    class FakeOption:
+        def __init__(self, *, read_only: bool):
+            self.read_only = read_only
+
+    class FakeZvec:
+        CollectionOption = FakeOption
+
+        @staticmethod
+        def open(path: str, option: FakeOption):
+            calls.append((path, option.read_only))
+            if len(calls) == 1:
+                raise RuntimeError("Can't lock read-write collection")
+            return "collection"
+
+    collection = open_zvec_read_only_with_retry(
+        FakeZvec,
+        tmp_path / "vectors",
+        attempts=2,
+        initial_delay_seconds=0,
+        sleep=lambda _: None,
+    )
+
+    assert collection == "collection"
+    assert calls == [
+        (str(tmp_path / "vectors"), True),
+        (str(tmp_path / "vectors"), True),
+    ]
