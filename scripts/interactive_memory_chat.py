@@ -140,6 +140,12 @@ from chuk_lazarus.memory_config import (
     memory_config_env,
     resolve_memory_config,
 )
+from chuk_lazarus.repl_agent_tools import (
+    TOOL_SYSTEM_PROMPT,
+    LocalCodingToolRunner,
+    extract_tool_calls,
+    format_tool_results,
+)
 
 # LiveIndexer replaces the subprocess `invoke_build` call at runtime. The
 # chat loop now indexes streaming windows into the per-session torch_store
@@ -190,7 +196,16 @@ Commands:
   /memory profile <name>        switch profile: plug_and_play, proof, smoke,
                                 nightly, diagnostic
   /memory config                show resolved memory configuration
+  /tools status                 show coding-agent tool status
+  /tools schema                 show model tool-call instructions
+  /tools on                     enable coding-agent tool execution for future turns
+  /tools off                    disable coding-agent tool execution
   /quit                         save if needed and exit
+
+When coding-agent tools are enabled, the model may emit tool_call JSON for
+list_dir, read_file, search, shell, or apply_patch. Tool outputs are appended as
+synthetic TOOL_RESULT user turns, bounded by the max tool-step setting, so the
+transcript/tool traces are durable source-of-truth events and memory is derived.
 
 Power-user /ask-memory options:
   /ask-memory --insertion-family sliding --sliding-layer-indices 13,15
@@ -261,6 +276,10 @@ def _normalize_generation_engine(raw_value: str | None) -> str:
     if normalized not in GENERATION_ENGINES:
         raise ValueError("generation_engine must be one of: " + ", ".join(GENERATION_ENGINES))
     return normalized
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def rule(char: str = "─") -> str:
@@ -577,14 +596,20 @@ class MemoryChat:
         session_cache_size: int | None = None,
         memory_profile: str = "plug_and_play",
         memory_config: MemoryRecallConfig | None = None,
+        agent_tools_enabled: bool = False,
+        agent_tools_workspace: Path | None = None,
+        agent_tools_timeout: int = 30,
+        agent_tools_max_steps: int = 4,
     ) -> None:
         self.store_root = Path(store_root)
         self.inputs_root = self.store_root / "inputs"
         self.checkpoints_root = self.store_root / "checkpoints"
         self.transcripts_root = self.store_root / "transcripts"
+        self.tool_traces_root = self.store_root / "tool_traces"
         self.inputs_root.mkdir(parents=True, exist_ok=True)
         self.checkpoints_root.mkdir(parents=True, exist_ok=True)
         self.transcripts_root.mkdir(parents=True, exist_ok=True)
+        self.tool_traces_root.mkdir(parents=True, exist_ok=True)
 
         if memory_config is None:
             memory_config = resolve_memory_config(
@@ -618,6 +643,18 @@ class MemoryChat:
             )
         )
         self.session_cache_size = session_cache_size
+        self.agent_tools_enabled = bool(agent_tools_enabled)
+        self.agent_tools_workspace = Path(agent_tools_workspace or Path.cwd()).resolve()
+        self.agent_tools_timeout = int(agent_tools_timeout)
+        self.agent_tools_max_steps = int(agent_tools_max_steps)
+        self.agent_tool_runner: LocalCodingToolRunner | None = None
+        self._agent_tool_prompt_added = False
+        if self.agent_tools_enabled:
+            self.agent_tool_runner = LocalCodingToolRunner(
+                workspace_root=self.agent_tools_workspace,
+                trace_root=self.tool_traces_root,
+                timeout_seconds=self.agent_tools_timeout,
+            )
 
         self.tokenizer: Any = None
         self.model: Any = None
@@ -647,6 +684,25 @@ class MemoryChat:
             **overrides,
         }
         return resolve_memory_config(base=base, overrides=merged_overrides)
+
+    def _agent_tool_system_prompt(self) -> str | None:
+        return TOOL_SYSTEM_PROMPT if self.agent_tools_enabled else None
+
+    def _ensure_agent_tool_runner(self) -> LocalCodingToolRunner:
+        if self.agent_tool_runner is None:
+            self.agent_tool_runner = LocalCodingToolRunner(
+                workspace_root=self.agent_tools_workspace,
+                trace_root=self.tool_traces_root,
+                timeout_seconds=self.agent_tools_timeout,
+            )
+        return self.agent_tool_runner
+
+    def _inject_agent_tool_system_prompt(self) -> None:
+        prompt = self._agent_tool_system_prompt()
+        if prompt is None or self.history is None or self._agent_tool_prompt_added:
+            return
+        self.history.add_system(prompt)
+        self._agent_tool_prompt_added = True
 
     @contextmanager
     def _memory_runtime_env(self, config: MemoryRecallConfig):
@@ -755,6 +811,9 @@ class MemoryChat:
             "answer accurately; quote verbatim when the user asks for exact content. "
             "When no context is relevant, chat normally."
         )
+        tool_prompt = self._agent_tool_system_prompt()
+        if tool_prompt:
+            chat_system = chat_system + "\n\n" + tool_prompt
 
         # SessionRetriever.from_checkpoint_root loads its own model copy — to avoid
         # doubling memory we pass the same model_id; torch/transformers caches weights.
@@ -804,6 +863,8 @@ class MemoryChat:
 
         self.session = ChatLoopSession()
         self.history = ChatHistory()
+        self._agent_tool_prompt_added = False
+        self._inject_agent_tool_system_prompt()
         self._window_counter = 0
         self.indexer = self._make_live_indexer(self.session.session_id)
         info(f"new session started · session_id={self.session.session_id}")
@@ -2020,6 +2081,60 @@ class MemoryChat:
         meta.pretty_print()
         print(f"probe answer> {result.generated_answer}\n", flush=True)
 
+    # ── coding-agent tool loop ────────────────────────────────────────────
+
+    def _print_agent_tools_status(self) -> None:
+        section("CODING-AGENT TOOLS")
+        print(f"  enabled     : {self.agent_tools_enabled}")
+        print(f"  workspace   : {self.agent_tools_workspace}")
+        print(f"  trace_root  : {self.tool_traces_root}")
+        print(f"  timeout_s   : {self.agent_tools_timeout}")
+        print(f"  max_steps   : {self.agent_tools_max_steps}")
+        print("=" * HEADER_W)
+
+    def _run_agent_tool_loop(self, seed_meta: TurnMetadata) -> TurnMetadata:
+        """Execute model-requested tools and feed results back as transcript turns.
+
+        The durable transcript and JSONL tool traces are source-of-truth records.
+        Live memory captures the synthetic TOOL_RESULT turns as derived state.
+        """
+        if not self.agent_tools_enabled:
+            return seed_meta
+        answer = seed_meta.generated_answer or ""
+        calls = extract_tool_calls(answer)
+        if not calls:
+            return seed_meta
+
+        runner = self._ensure_agent_tool_runner()
+        meta = seed_meta
+        steps = 0
+        while calls and steps < max(0, self.agent_tools_max_steps):
+            turn_index = None
+            if self.session is not None and self.session.turns:
+                turn_index = int(getattr(self.session.turns[-1], "turn_index", -1))
+            session_id = self.session.session_id if self.session is not None else None
+            results = [
+                runner.execute(call, session_id=session_id, turn_index=turn_index)
+                for call in calls
+            ]
+            for result in results:
+                status = "ok" if result.ok else "failed"
+                print(f"[tool] {result.name} {result.call_id} {status}", flush=True)
+
+            # This synthetic user turn is intentional: it makes tool observations
+            # replayable transcript events, while the memory index remains rebuildable.
+            meta = self.plain_chat_turn(format_tool_results(results))
+            self.last_meta = meta
+            steps += 1
+            calls = extract_tool_calls(meta.generated_answer or "")
+
+        if calls:
+            info(
+                "tool loop stopped at max_steps="
+                f"{self.agent_tools_max_steps}; remaining tool calls ignored"
+            )
+        return meta
+
     # ── main REPL ──────────────────────────────────────────────────────────
 
     def run_repl(self) -> None:
@@ -2066,6 +2181,8 @@ class MemoryChat:
                 meta.pretty_print()
             else:
                 meta = self.recall_chat_turn(stripped)
+            if self.agent_tools_enabled:
+                meta = self._run_agent_tool_loop(meta)
             self.last_meta = meta
 
     def _handle_command(self, cmd: str) -> bool:
@@ -2082,6 +2199,24 @@ class MemoryChat:
 
         if head == "/help":
             print(HELP_TEXT)
+            return False
+
+        if head == "/tools":
+            tools_arg = arg.strip().lower() or "status"
+            if tools_arg == "status":
+                self._print_agent_tools_status()
+            elif tools_arg == "schema":
+                print(TOOL_SYSTEM_PROMPT)
+            elif tools_arg == "on":
+                self.agent_tools_enabled = True
+                self._ensure_agent_tool_runner()
+                self._inject_agent_tool_system_prompt()
+                info("coding-agent tools enabled for future turns")
+            elif tools_arg == "off":
+                self.agent_tools_enabled = False
+                info("coding-agent tool execution disabled")
+            else:
+                info("usage: /tools status|schema|on|off")
             return False
 
         if head in ("/save", "/save-memory"):
@@ -2299,6 +2434,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Residual session cache entries for residual_bounded_kv_direct.",
     )
     parser.add_argument(
+        "--enable-agent-tools",
+        action="store_true",
+        default=_env_truthy("LAZARUS_AGENT_TOOLS"),
+        help="Enable local coding-agent tools for model-emitted tool_call JSON.",
+    )
+    parser.add_argument(
+        "--agent-tools-workspace",
+        type=Path,
+        default=Path(os.environ.get("LAZARUS_AGENT_TOOLS_WORKSPACE", Path.cwd())),
+        help="Workspace root for coding-agent tools.",
+    )
+    parser.add_argument(
+        "--agent-tools-timeout",
+        type=int,
+        default=int(os.environ.get("LAZARUS_AGENT_TOOLS_TIMEOUT", "30")),
+        help="Maximum seconds for each coding-agent tool command.",
+    )
+    parser.add_argument(
+        "--agent-tools-max-steps",
+        type=int,
+        default=int(os.environ.get("LAZARUS_AGENT_TOOLS_MAX_STEPS", "4")),
+        help="Maximum tool-result feedback turns per user turn.",
+    )
+    parser.add_argument(
         "--device",
         default="cuda",
         help="Torch device (default cuda).",
@@ -2341,6 +2500,10 @@ def main(argv: list[str] | None = None) -> int:
         session_cache_size=args.session_cache_size,
         memory_profile=args.memory_profile,
         memory_config=memory_config,
+        agent_tools_enabled=args.enable_agent_tools,
+        agent_tools_workspace=args.agent_tools_workspace,
+        agent_tools_timeout=args.agent_tools_timeout,
+        agent_tools_max_steps=args.agent_tools_max_steps,
     )
 
     try:
