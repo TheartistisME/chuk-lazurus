@@ -15,6 +15,13 @@ from .state import DEFAULT_META_ROOT
 from .supervisor import supervise_spawn
 
 
+class AgentHelpFormatter(
+    argparse.ArgumentDefaultsHelpFormatter,
+    argparse.RawDescriptionHelpFormatter,
+):
+    """Keep workflow examples readable while still showing defaults."""
+
+
 def _write_stdout_utf8(text: str) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -24,55 +31,184 @@ def _write_stdout_utf8(text: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m IDDIA.meta",
-        description="Grade IDDIA/tool outputs and optionally spawn improvement agents.",
+        description="Grade IDDIA outputs, spawn optimizer agents, and verify proof signoffs.",
+        formatter_class=AgentHelpFormatter,
+        epilog="""Agent loop:
+  1. Grade a package with fixed expected concepts and preferred chapters.
+  2. If weak, spawn an optimizer from the grade.
+  3. Supervise until completed, failed_no_signoff, failed_no_proof, or running.
+  4. Independently rerun the claimed metric before accepting a proven result.
+  5. Append changelog/signoff with proof claim, metric, evidence, and verdict.
+
+Trust rule: tests prove implementation contracts; evals/meta-grades prove retrieval quality.""",
     )
-    parser.add_argument("--state-root", type=Path, default=DEFAULT_META_ROOT)
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=DEFAULT_META_ROOT,
+        help="Local ignored meta state root for grades, spawn requests, transcripts, and signoffs.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    grade = subparsers.add_parser("grade", help="Grade a tool-output JSON package/report")
+    grade = subparsers.add_parser(
+        "grade",
+        help="Grade a JSON package/report against an explicit rubric",
+        description=(
+            "Score an IDDIA/tool JSON output with concept, chapter, noise, "
+            "explanation, handoff, and actionability criteria."
+        ),
+        formatter_class=AgentHelpFormatter,
+        epilog="""Agent notes:
+  - Pass every required concept with repeated --expected-concept flags.
+  - Pass chapter intent with repeated --preferred-chapter flags.
+  - Grades write JSON under IDDIA/artifacts/meta/grades/.
+  - score_gates cap false confidence when critical retrieval signals are missing.
+  - Use --spawn or --policy only after the rubric is explicit.""",
+    )
     grade.add_argument("input", type=Path)
-    grade.add_argument("--expected-concept", action="append", default=[])
-    grade.add_argument("--preferred-chapter", action="append", default=[])
-    grade.add_argument("--criteria-config", type=Path)
+    grade.add_argument(
+        "--expected-concept",
+        action="append",
+        default=[],
+        help="Required concept signal; repeat for each concept in the rubric.",
+    )
+    grade.add_argument(
+        "--preferred-chapter",
+        action="append",
+        default=[],
+        help="Preferred DDIA chapter/section direction; repeat when needed.",
+    )
+    grade.add_argument(
+        "--criteria-config",
+        type=Path,
+        help="Optional JSON file with extra required_terms or required_fields criteria.",
+    )
     grade.add_argument("--policy", type=Path, help="Activation policy JSON")
-    grade.add_argument("--objective", default="Improve IDDIA output quality based on the grade")
-    grade.add_argument("--spawn", action="store_true", help="Force a spawn attempt after grading")
-    grade.add_argument("--vee-repo", type=Path, default=default_vee_repo())
-    grade.add_argument("--vee-agent", default=default_vee_agent())
-    grade.add_argument("--tmux-session", default=None)
-    grade.add_argument("--tmux-window", default=None)
-    grade.add_argument("--worker-name", default=None)
+    grade.add_argument(
+        "--objective",
+        default="Improve IDDIA output quality based on the grade",
+        help="Objective sent to a spawned optimizer when activation fires.",
+    )
+    grade.add_argument(
+        "--spawn",
+        action="store_true",
+        help="Force a Vee/tmux optimizer spawn after grading.",
+    )
+    grade.add_argument("--vee-repo", type=Path, default=default_vee_repo(), help="Local Vee repo")
+    grade.add_argument("--vee-agent", default=default_vee_agent(), help="Vee agent type/name")
+    grade.add_argument("--tmux-session", default=None, help="tmux session for spawned agents")
+    grade.add_argument("--tmux-window", default=None, help="tmux window for spawned agents")
+    grade.add_argument("--worker-name", default=None, help="Stable worker name for the optimizer")
 
-    spawn = subparsers.add_parser("spawn", help="Spawn from an existing grade JSON")
+    spawn = subparsers.add_parser(
+        "spawn",
+        help="Spawn an optimizer from an existing grade JSON",
+        description=(
+            "Create or reuse a tmux target, launch a Vee worker, and send it a "
+            "proof-before-signoff prompt based on a grade record."
+        ),
+        formatter_class=AgentHelpFormatter,
+        epilog="""Agent notes:
+  - The spawned agent must stay inside IDDIA unless instructed otherwise.
+  - The prompt tells it to state a claim, use a fixed metric, run tests/evals,
+    append changelog/signoff, and close itself.
+  - Always run `python -m IDDIA.meta supervise <spawn-request>` after spawning.""",
+    )
     spawn.add_argument("grade", type=Path)
-    spawn.add_argument("--objective", default="Improve IDDIA output quality based on the grade")
-    spawn.add_argument("--vee-repo", type=Path, default=default_vee_repo())
-    spawn.add_argument("--vee-agent", default=default_vee_agent())
-    spawn.add_argument("--tmux-session", default=None)
-    spawn.add_argument("--tmux-window", default=None)
-    spawn.add_argument("--worker-name", default=None)
+    spawn.add_argument(
+        "--objective",
+        default="Improve IDDIA output quality based on the grade",
+        help="Concrete improvement objective and proof target for the optimizer.",
+    )
+    spawn.add_argument("--vee-repo", type=Path, default=default_vee_repo(), help="Local Vee repo")
+    spawn.add_argument("--vee-agent", default=default_vee_agent(), help="Vee agent type/name")
+    spawn.add_argument("--tmux-session", default=None, help="tmux session for the worker pane")
+    spawn.add_argument("--tmux-window", default=None, help="tmux window for the worker pane")
+    spawn.add_argument("--worker-name", default=None, help="Stable worker name for supervision")
 
-    supervise = subparsers.add_parser("supervise", help="Supervise a spawn request")
+    supervise = subparsers.add_parser(
+        "supervise",
+        help="Check a spawned optimizer and validate fresh proof signoff",
+        description=(
+            "Capture tmux pane output, inspect fresh signoffs created after the "
+            "spawn request, and write a status JSON."
+        ),
+        formatter_class=AgentHelpFormatter,
+        epilog="""Statuses:
+  running            pane is still active and no fresh proof signoff exists
+  completed          fresh signoff has claim, metric, evidence, and verdict
+  failed_no_signoff  pane is gone and no matching fresh signoff exists
+  failed_no_proof    fresh signoff exists but proof fields are incomplete""",
+    )
     supervise.add_argument("request", type=Path)
-    supervise.add_argument("--wait-seconds", type=float, default=0)
+    supervise.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=0,
+        help="Seconds to wait before checking tmux/signoff state.",
+    )
 
-    helper = subparsers.add_parser("helper-context", help="Print helper context for agents")
+    helper = subparsers.add_parser(
+        "helper-context",
+        help="Print changelog tail, latest signoff, and mandatory agent context",
+        description=(
+            "Print the local meta memory an optimizer should read before editing: "
+            "last changelog lines, latest signoff, and required commands."
+        ),
+        formatter_class=AgentHelpFormatter,
+    )
     helper.set_defaults(command="helper-context")
 
-    changelog = subparsers.add_parser("changelog", help="Append to the IDDIA meta changelog")
+    changelog = subparsers.add_parser(
+        "changelog",
+        help="Append durable local meta notes",
+        formatter_class=AgentHelpFormatter,
+    )
     changelog_sub = changelog.add_subparsers(dest="changelog_command", required=True)
-    changelog_append = changelog_sub.add_parser("append")
+    changelog_append = changelog_sub.add_parser(
+        "append",
+        help="Append one measured note to the IDDIA meta changelog",
+        formatter_class=AgentHelpFormatter,
+    )
     changelog_append.add_argument("message")
 
-    signoff = subparsers.add_parser("signoff", help="Append an IDDIA meta signoff")
+    signoff = subparsers.add_parser(
+        "signoff",
+        help="Append an agent handoff with mandatory proof fields",
+        formatter_class=AgentHelpFormatter,
+    )
     signoff_sub = signoff.add_subparsers(dest="signoff_command", required=True)
-    signoff_append = signoff_sub.add_parser("append")
-    signoff_append.add_argument("--file", action="append", default=[], dest="files")
-    signoff_append.add_argument("--objective", required=True)
-    signoff_append.add_argument("--tldr", required=True)
-    signoff_append.add_argument("--proof-claim", default="")
-    signoff_append.add_argument("--proof-metric", default="")
-    signoff_append.add_argument("--proof-evidence", action="append", default=[])
+    signoff_append = signoff_sub.add_parser(
+        "append",
+        help="Append a proof-bearing signoff for the next agent",
+        description="Record what changed, why, how to understand it, and whether proof succeeded.",
+        formatter_class=AgentHelpFormatter,
+        epilog="""Proof verdicts:
+  proven             fixed metric improved or requirement was fully met
+  partially_proven   implementation improved but product metric is incomplete
+  not_proven         change could not prove the intended claim""",
+    )
+    signoff_append.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        dest="files",
+        help="Modified file; repeat for each relevant path.",
+    )
+    signoff_append.add_argument("--objective", required=True, help="Agent objective")
+    signoff_append.add_argument("--tldr", required=True, help="Short change summary")
+    signoff_append.add_argument("--proof-claim", default="", help="Claim being proven")
+    signoff_append.add_argument(
+        "--proof-metric",
+        default="",
+        help="Fixed command/rubric used to prove the claim.",
+    )
+    signoff_append.add_argument(
+        "--proof-evidence",
+        action="append",
+        default=[],
+        help="Evidence line; repeat for before/after scores, tests, and evals.",
+    )
     signoff_append.add_argument(
         "--proof-verdict",
         default="",
@@ -83,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         dest="dependencies",
+        help="Mandatory context/command/dependency for the next agent; repeat as needed.",
     )
     return parser
 

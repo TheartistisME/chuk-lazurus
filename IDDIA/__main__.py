@@ -18,6 +18,13 @@ from .core import (
 )
 
 
+class AgentHelpFormatter(
+    argparse.ArgumentDefaultsHelpFormatter,
+    argparse.RawDescriptionHelpFormatter,
+):
+    """Keep examples readable while still showing defaults."""
+
+
 def _write_stdout_utf8(text: str) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -27,13 +34,33 @@ def _write_stdout_utf8(text: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m IDDIA",
-        description="IDDIA: build DDIA-backed context packages for agents",
+        description=(
+            "IDDIA builds DDIA-backed, stage-bounded context packages for agents."
+        ),
+        formatter_class=AgentHelpFormatter,
+        epilog="""Agent loop:
+  1. Onboard: python -m IDDIA stages
+  2. Package: python -m IDDIA package --stage plan --task "..." --next-steps "..."
+  3. Verify retrieval changes: python IDDIA/evals/run_brownfield_greenfield.py
+  4. Grade/spawn/prove improvements: python -m IDDIA.meta --help
+
+Principle: treat packages as bounded context with provenance, not as an oracle.
+For behavior changes, state the metric first and rerun the same metric after.""",
     )
-    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    subparsers = parser.add_subparsers(dest="command", metavar="command", help="Commands")
 
     ingest = subparsers.add_parser(
         "ingest-ddia",
         help="Download DDIA, convert each page with MarkItDown, chunk, and vectorize with zvec",
+        description=(
+            "Build or rebuild local DDIA artifacts: immutable PDF source, page "
+            "Markdown, chunk log, and zvec vector index."
+        ),
+        formatter_class=AgentHelpFormatter,
+        epilog="""Agent notes:
+  - Artifacts live under IDDIA/artifacts/ddia/ and are ignored by git.
+  - Source and chunk logs are durable facts; vectors are rebuildable derived views.
+  - Use --max-pages for smoke tests, then rerun without it for real retrieval.""",
     )
     ingest.add_argument("--url", default=DEFAULT_DDIA_URL, help="PDF URL")
     ingest.add_argument(
@@ -56,10 +83,34 @@ def build_parser() -> argparse.ArgumentParser:
     package = subparsers.add_parser(
         "package",
         help="Create a bounded context package for an agent task and lifecycle stage",
+        description=(
+            "Retrieve a small, provenance-rich context package for one agent task, "
+            "one lifecycle stage, and known next steps."
+        ),
+        formatter_class=AgentHelpFormatter,
+        epilog="""Agent notes:
+  - task: concrete mission, not a vague topic.
+  - stage: current lifecycle position; run `python -m IDDIA stages` for lenses.
+  - next-steps: constraints or the command you expect to run next.
+  - --format json is best for meta-grading; markdown is best for reading.
+  - The command prints next_stage to stderr so slash commands can chain.""",
     )
-    package.add_argument("--task", required=True, help="Agent task or mission statement")
-    package.add_argument("--stage", required=True, choices=STAGES, help="Lifecycle stage")
-    package.add_argument("--next-steps", default="", help="Known next steps or constraints")
+    package.add_argument(
+        "--task",
+        required=True,
+        help="Concrete agent task or mission statement.",
+    )
+    package.add_argument(
+        "--stage",
+        required=True,
+        choices=STAGES,
+        help="Lifecycle stage for the retrieval lens.",
+    )
+    package.add_argument(
+        "--next-steps",
+        default="",
+        help="Known next command, constraint, or handoff target.",
+    )
     package.add_argument(
         "--artifact-root",
         default=str(DEFAULT_ARTIFACT_ROOT),
@@ -84,6 +135,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "stages",
         help="Print the chainable lifecycle stages and their retrieval lenses",
+        description="Print the agent lifecycle chain and each stage's retrieval lens.",
+        formatter_class=AgentHelpFormatter,
+        epilog="""Use the printed next stage to loop:
+  onboard -> plan -> build -> verify -> handoff -> exit -> onboard""",
     )
     return parser
 
