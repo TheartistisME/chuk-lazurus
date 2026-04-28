@@ -73,6 +73,20 @@ The package includes a `why_this_hit` explanation in JSON output and a
 `Why this hit` line in Markdown output so agents can judge whether a retrieved
 chunk is useful or merely nearby.
 
+## Retrieval Evals
+
+Brownfield and greenfield scenario tests live in `IDDIA/evals/`. They query the
+same package builder agents use, suppress source snippets, grade each response
+for expected concepts and chapter direction, and write a local improvement
+report under ignored artifacts:
+
+```bash
+python IDDIA/evals/run_brownfield_greenfield.py
+```
+
+The latest report is written to
+`IDDIA/artifacts/ddia/evals/brownfield-greenfield/latest_report.md`.
+
 ## Commands
 
 Install the optional dependencies:

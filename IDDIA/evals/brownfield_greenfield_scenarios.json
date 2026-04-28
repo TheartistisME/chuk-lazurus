@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "id": "brownfield-simple-workspace-hygiene",
+      "mode": "brownfield",
+      "complexity": "simple",
+      "stage": "onboard",
+      "task": "A new agent is joining an existing Expo React Native workspace with app code, research notes, generated dependencies, private memory files, and runtime artifacts. What should it identify as source-of-truth versus generated or sensitive state before editing product code?",
+      "next_steps": "Map app source files, generated dependencies, research docs, local memory, and rebuildable artifacts before changing code.",
+      "expected_concepts": ["source-of-truth", "schema", "provenance-lineage"],
+      "preferred_chapters": ["Reliable, Scalable", "Data Models", "Encoding and Evolution"]
+    },
+    {
+      "id": "brownfield-medium-schema-migration",
+      "mode": "brownfield",
+      "complexity": "medium",
+      "stage": "plan",
+      "task": "An existing JSONL event log needs a schema migration that adds fields while old agents and old projection builders still read older records. How should compatibility, manifest lineage, and rollback be planned?",
+      "next_steps": "Design schema version fields, migration manifests, compatibility checks, and replayable projection rebuild commands.",
+      "expected_concepts": ["schema", "provenance-lineage", "replay", "manifest"],
+      "preferred_chapters": ["Encoding and Evolution"]
+    },
+    {
+      "id": "brownfield-medium-projection-lag",
+      "mode": "brownfield",
+      "complexity": "medium",
+      "stage": "verify",
+      "task": "A local-first memory CLI already has a canonical event log, SQLite projections, and zvec retrieval. How should it detect projection lag, duplicate or replayed events, and stale vector indexes after partial sync crashes?",
+      "next_steps": "Test monotonic event ids, idempotent projection rebuilds, stale vector index warnings, and retryable sync outcomes.",
+      "expected_concepts": ["event-log", "materialized-view", "replay", "source-of-truth", "failure-recovery"],
+      "preferred_chapters": ["Stream Processing", "Batch Processing", "Storage and Retrieval"]
+    },
+    {
+      "id": "brownfield-complex-otp-crash-recovery",
+      "mode": "brownfield",
+      "complexity": "complex",
+      "stage": "verify",
+      "task": "An Elixir OTP agent fleet has supervisors, ETS run registry state, status files, token-budget logs, circuit breakers, OS child processes, and persisted output manifests. How should it prove consistency after a process dies mid-run and supervisors restart services?",
+      "next_steps": "Test restart recovery, stale PID cleanup, ETS versus file state, append-only run manifests, and circuit breaker persistence.",
+      "expected_concepts": ["failure-recovery", "durability", "consistency", "source-of-truth"],
+      "preferred_chapters": ["Replication", "Stream Processing", "Consistency and Consensus"]
+    },
+    {
+      "id": "brownfield-complex-tenant-isolation",
+      "mode": "brownfield",
+      "complexity": "complex",
+      "stage": "verify",
+      "task": "A Go micro-ML tool stores tenant-scoped support sets, feedback JSONL, synthesized model artifacts, and retraining versions. How should it verify tenant isolation and prevent feedback from one tenant contaminating another model lineage?",
+      "next_steps": "Test tenant-scoped keys, replay boundaries, artifact manifests, version bumps, and deletion behavior.",
+      "expected_concepts": ["consistency", "provenance-lineage", "schema", "durability"],
+      "preferred_chapters": ["Transactions", "Consistency and Consensus", "Encoding and Evolution"]
+    },
+    {
+      "id": "brownfield-complex-training-drift",
+      "mode": "brownfield",
+      "complexity": "complex",
+      "stage": "build",
+      "task": "Distributed training workers share offline BatchPlan artifacts, tokenizer fingerprints, length caches, and checkpoints. How should workers detect drift before training continues and keep checkpoints tied to the exact plan that produced them?",
+      "next_steps": "Implement fingerprint checks, atomic cache writes, checkpoint provenance, worker startup validation, and replay commands.",
+      "expected_concepts": ["deterministic", "checkpoint", "batch", "materialized-view", "provenance-lineage"],
+      "preferred_chapters": ["Batch Processing", "Stream Processing"]
+    },
+    {
+      "id": "greenfield-simple-config-store",
+      "mode": "greenfield",
+      "complexity": "simple",
+      "stage": "plan",
+      "task": "Design a new local CLI configuration store that keeps an append-only history of profile changes and exposes a current settings view for agents.",
+      "next_steps": "Choose the durable write path, rebuildable read model, schema versioning, and recovery behavior.",
+      "expected_concepts": ["event-log", "materialized-view", "source-of-truth", "schema"],
+      "preferred_chapters": ["Storage and Retrieval", "Stream Processing", "Encoding and Evolution"]
+    },
+    {
+      "id": "greenfield-simple-document-indexer",
+      "mode": "greenfield",
+      "complexity": "simple",
+      "stage": "build",
+      "task": "Build a new document indexing tool that downloads source PDFs, converts pages to Markdown, chunks them, and materializes a vector index for agent context packages.",
+      "next_steps": "Write immutable source manifests, page logs, chunk records, rebuildable vector indexes, and package provenance.",
+      "expected_concepts": ["source-of-truth", "materialized-view", "manifest", "replay", "provenance-lineage"],
+      "preferred_chapters": ["Storage and Retrieval", "Batch Processing", "Stream Processing"]
+    },
+    {
+      "id": "greenfield-medium-offline-sync",
+      "mode": "greenfield",
+      "complexity": "medium",
+      "stage": "plan",
+      "task": "Design a local-first notes application where several devices edit offline and later sync. How should conflict detection, ordering, durability, and stale derived views be planned?",
+      "next_steps": "Choose sync records, causality metadata, conflict policy, durable storage, and projection rebuilds.",
+      "expected_concepts": ["consistency", "durability", "partition", "materialized-view", "provenance-lineage"],
+      "preferred_chapters": ["Replication", "Consistency and Consensus", "Stream Processing"]
+    },
+    {
+      "id": "greenfield-medium-experiment-tracker",
+      "mode": "greenfield",
+      "complexity": "medium",
+      "stage": "plan",
+      "task": "Design a new experiment tracker for autonomous research agents. It must store candidate programs, parent selection policy, scores, random seeds, failures, and analysis lessons so future rounds can explain and replay decisions.",
+      "next_steps": "Plan experiment records, lineage, event history, replay commands, and failure recovery.",
+      "expected_concepts": ["provenance-lineage", "event-log", "replay", "failure-recovery", "source-of-truth"],
+      "preferred_chapters": ["Stream Processing", "Reliable, Scalable"]
+    },
+    {
+      "id": "greenfield-complex-multitenant-model-service",
+      "mode": "greenfield",
+      "complexity": "complex",
+      "stage": "verify",
+      "task": "Verify a new multi-tenant model artifact service where each tenant has support sets, model versions, feedback logs, deletion requests, and rebuilt indexes. How should isolation, lineage, rollback, and deletion safety be tested?",
+      "next_steps": "Test tenant boundaries, schema versions, append-only feedback, artifact provenance, rebuild commands, and deletion tombstones.",
+      "expected_concepts": ["consistency", "schema", "provenance-lineage", "durability", "replay"],
+      "preferred_chapters": ["Transactions", "Encoding and Evolution", "Consistency and Consensus"]
+    },
+    {
+      "id": "greenfield-complex-streaming-dashboard",
+      "mode": "greenfield",
+      "complexity": "complex",
+      "stage": "build",
+      "task": "Build a streaming dashboard system that consumes events, updates materialized views, snapshots state, recovers from failed consumers, and lets operators rebuild every derived metric from source events.",
+      "next_steps": "Implement source event logs, idempotent consumers, snapshots, materialized views, replay, and stale-view alerts.",
+      "expected_concepts": ["event-log", "materialized-view", "snapshot", "failure-recovery", "replay"],
+      "preferred_chapters": ["Stream Processing", "Batch Processing"]
+    }
+  ]
+}

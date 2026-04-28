@@ -27,6 +27,12 @@ from IDDIA.core import (
     extract_section_labels,
     render_context_package_markdown,
 )
+from IDDIA.evals.run_brownfield_greenfield import (
+    DEFAULT_SCENARIOS_PATH,
+    Scenario,
+    grade_package,
+    load_scenarios,
+)
 from IDDIA.install_slash_commands import install_commands
 
 
@@ -457,3 +463,83 @@ def test_why_this_hit_renders_in_markdown_and_json(monkeypatch, tmp_path):
 
     assert payload["hits"][0]["why_this_hit"]["summary"] == "matched terms: replay, event log"
     assert payload["hits"][0]["section_title"] == "Event logs"
+
+
+def test_brownfield_greenfield_eval_scenarios_are_valid():
+    scenarios = load_scenarios(DEFAULT_SCENARIOS_PATH)
+
+    ids = [scenario.id for scenario in scenarios]
+
+    assert len(scenarios) >= 12
+    assert len(ids) == len(set(ids))
+    assert {"brownfield", "greenfield"} == {scenario.mode for scenario in scenarios}
+    assert {"simple", "medium", "complex"} <= {scenario.complexity for scenario in scenarios}
+    assert all(scenario.stage in STAGES for scenario in scenarios)
+    assert all(scenario.expected_concepts for scenario in scenarios)
+    assert all(scenario.preferred_chapters for scenario in scenarios)
+
+
+def test_brownfield_greenfield_grade_rewards_expected_signals():
+    scenario = Scenario(
+        id="example",
+        mode="greenfield",
+        complexity="medium",
+        stage="plan",
+        task="Plan an event log and projection",
+        next_steps="Use replay and schema manifests",
+        expected_concepts=("event-log", "materialized-view", "schema"),
+        preferred_chapters=("Stream Processing",),
+    )
+    package = {
+        "hits": [
+            {
+                "chapter_title": "Chapter 11: Stream Processing",
+                "section_title": "Event Sourcing",
+                "principle_tags": ["source-of-truth"],
+                "concept_tags": ["event-log", "materialized-view", "schema"],
+                "matched_tags": ["event-log", "materialized-view"],
+                "matched_terms": ["replay", "schema"],
+                "noise_flags": [],
+                "why_this_hit": {"summary": "matched event log and schema"},
+            }
+        ]
+    }
+
+    grade = grade_package(scenario, package)
+
+    assert grade.value >= 4.5
+    assert grade.missing_concepts == ()
+    assert grade.preferred_chapter_hits == 1
+
+
+def test_brownfield_greenfield_grade_penalizes_missing_or_noisy_context():
+    scenario = Scenario(
+        id="example",
+        mode="brownfield",
+        complexity="complex",
+        stage="verify",
+        task="Verify crash recovery",
+        next_steps="Check durable state and replay",
+        expected_concepts=("failure-recovery", "durability", "source-of-truth"),
+        preferred_chapters=("Stream Processing",),
+    )
+    package = {
+        "hits": [
+            {
+                "chapter_title": "Chapter 2: Data Models and Query Languages",
+                "section_title": "MapReduce Querying",
+                "principle_tags": [],
+                "concept_tags": ["schema"],
+                "matched_tags": ["schema"],
+                "matched_terms": ["query"],
+                "noise_flags": ["table_of_contents"],
+                "why_this_hit": {},
+            }
+        ]
+    }
+
+    grade = grade_package(scenario, package)
+
+    assert grade.value < 3.0
+    assert grade.preferred_chapter_hits == 0
+    assert "failure-recovery" in grade.missing_concepts
