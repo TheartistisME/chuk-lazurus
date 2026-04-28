@@ -96,6 +96,7 @@ import logging
 import sys
 
 from ._parsers import (
+    register_agent_context_parsers,
     register_bench_parser,
     register_context_parsers,
     register_data_parsers,
@@ -140,6 +141,7 @@ Examples:
     # Register all parser groups
     register_train_parsers(subparsers)
     register_infer_parser(subparsers)
+    register_agent_context_parsers(subparsers)
     register_context_parsers(subparsers)
     register_tokenizer_parsers(subparsers)
     register_data_parsers(subparsers)
@@ -181,6 +183,8 @@ def main():
         parser.parse_args(["introspect", "--help"])
     elif args.command == "context" and getattr(args, "ctx_command", None) is None:
         parser.parse_args(["context", "--help"])
+    elif args.command == "agent-context" and getattr(args, "agent_context_command", None) is None:
+        parser.parse_args(["agent-context", "--help"])
     elif args.command == "experiment" and getattr(args, "exp_command", None) is None:
         parser.parse_args(["experiment", "--help"])
     elif args.command == "serve":

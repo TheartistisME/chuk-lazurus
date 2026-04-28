@@ -16,6 +16,8 @@ Related artifacts in the repo:
 - Tool-call hook: `.claude/hooks/posttooluse-vee-log.sh` + `.claude/settings.json`
 - Token counter: `tools/count_tokens.py`
 - Bug-reporting slash command: `.claude/commands/vee:create-bug&patch-Report.md` (authored by run-1 Hand)
+- Agent context slash command templates: `prompts/slash/agent-context/` (install local
+  runtime copies with `python scripts/install_agent_context_slash_commands.py`)
 
 ## Version history
 
