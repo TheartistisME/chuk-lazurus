@@ -390,6 +390,155 @@ def test_schema_migration_affinity_prefers_encoding_chapter(monkeypatch, tmp_pat
     assert "affinity:encoding-evolution" in hits[0].matched_tags
 
 
+def test_schema_migration_diversifies_top_k_across_user_concepts(monkeypatch, tmp_path):
+    artifact_root = write_chunks(
+        tmp_path,
+        [
+            {
+                "id": "encoding-schema-a",
+                "page": 140,
+                "source_path": "page_0140.md",
+                "principle_tags": ["schema-evolution"],
+                "stage_tags": [],
+                "concept_tags": ["schema"],
+                "chapter_title": "Chapter 4: Encoding and Evolution",
+                "text": "Schema migration plans new fields with backward compatibility.",
+            },
+            {
+                "id": "encoding-schema-b",
+                "page": 142,
+                "source_path": "page_0142.md",
+                "principle_tags": ["schema-evolution"],
+                "stage_tags": [],
+                "concept_tags": ["schema"],
+                "chapter_title": "Chapter 4: Encoding and Evolution",
+                "text": "Old readers and new readers must agree on the schema version.",
+            },
+            {
+                "id": "encoding-schema-c",
+                "page": 144,
+                "source_path": "page_0144.md",
+                "principle_tags": ["schema-evolution"],
+                "stage_tags": [],
+                "concept_tags": ["schema"],
+                "chapter_title": "Chapter 4: Encoding and Evolution",
+                "text": "Schema versions, fields, and compatibility checks across migrations.",
+            },
+            {
+                "id": "stream-replay",
+                "page": 465,
+                "source_path": "page_0465.md",
+                "principle_tags": ["source-of-truth", "schema-evolution"],
+                "stage_tags": [],
+                "concept_tags": ["event-log", "provenance-lineage", "replay"],
+                "chapter_title": "Chapter 11: Stream Processing",
+                "text": (
+                    "Reprocessing the event log lets the team replay schema changes "
+                    "and rebuild downstream views with full lineage."
+                ),
+            },
+            {
+                "id": "batch-manifest",
+                "page": 429,
+                "source_path": "page_0429.md",
+                "principle_tags": ["batch-stream"],
+                "stage_tags": [],
+                "concept_tags": ["batch", "manifest"],
+                "chapter_title": "Chapter 10: Batch Processing",
+                "text": (
+                    "Each derived dataset writes a manifest catalog so consumers can "
+                    "validate the schema migration that produced it."
+                ),
+            },
+        ],
+    )
+    install_fake_zvec(
+        monkeypatch,
+        [
+            {"id": "encoding-schema-a", "score": 0.42},
+            {"id": "encoding-schema-b", "score": 0.40},
+            {"id": "encoding-schema-c", "score": 0.39},
+            {"id": "stream-replay", "score": 0.32},
+            {"id": "batch-manifest", "score": 0.18},
+        ],
+    )
+
+    hits = search_context(
+        artifact_root=artifact_root,
+        task=(
+            "An existing JSONL event log needs a schema migration that adds fields "
+            "while old projection builders still read older records. How should "
+            "compatibility, manifest lineage, and rollback be planned?"
+        ),
+        stage="plan",
+        next_steps=(
+            "Design schema version fields, migration manifests, compatibility checks, "
+            "and replayable projection rebuild commands."
+        ),
+        top_k=4,
+    )
+
+    chunk_ids = [hit.chunk_id for hit in hits]
+    concept_union: set[str] = set()
+    affinity_union: set[str] = set()
+    for hit in hits:
+        concept_union.update(hit.concept_tags)
+        affinity_union.update(hit.matched_tags)
+
+    assert "stream-replay" in chunk_ids
+    assert "batch-manifest" in chunk_ids
+    assert any(chunk_id.startswith("encoding-schema") for chunk_id in chunk_ids)
+    assert {"schema", "provenance-lineage", "replay", "manifest"} <= concept_union
+    assert "affinity:migration-lineage" in affinity_union
+    assert "affinity:replay-rebuild" in affinity_union
+    assert "affinity:migration-manifest" in affinity_union
+
+
+def test_diversification_preserves_coverage_when_no_replacement_safe(monkeypatch, tmp_path):
+    artifact_root = write_chunks(
+        tmp_path,
+        [
+            {
+                "id": "schema-only",
+                "page": 142,
+                "source_path": "page_0142.md",
+                "principle_tags": ["schema-evolution"],
+                "stage_tags": [],
+                "concept_tags": ["schema"],
+                "chapter_title": "Chapter 4: Encoding and Evolution",
+                "text": "Schema migration spans backward and forward compatibility.",
+            },
+            {
+                "id": "manifest-only",
+                "page": 429,
+                "source_path": "page_0429.md",
+                "principle_tags": ["batch-stream"],
+                "stage_tags": [],
+                "concept_tags": ["manifest"],
+                "chapter_title": "Chapter 10: Batch Processing",
+                "text": "Manifest files describe the producer schema for each dataset.",
+            },
+        ],
+    )
+    install_fake_zvec(
+        monkeypatch,
+        [
+            {"id": "schema-only", "score": 0.42},
+            {"id": "manifest-only", "score": 0.20},
+        ],
+    )
+
+    hits = search_context(
+        artifact_root=artifact_root,
+        task="Plan schema migration with manifest lineage and rollback",
+        stage="plan",
+        next_steps="Design schema versions and migration manifests",
+        top_k=1,
+    )
+
+    assert [hit.chunk_id for hit in hits] == ["schema-only"]
+
+
 def test_search_handles_old_chunks_without_new_metadata(monkeypatch, tmp_path):
     artifact_root = write_chunks(
         tmp_path,

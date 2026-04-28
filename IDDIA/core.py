@@ -1132,6 +1132,23 @@ def query_affinity_boost(
     schema_heavy = "schema" in user_tags and any(
         term in user_text for term in ("migration", "migrate", "compatibility", "encoding")
     )
+    migration_manifest_heavy = schema_heavy and any(
+        term in user_text
+        for term in (
+            "manifest",
+            "manifests",
+            "lineage",
+            "provenance",
+            "rollback",
+            "replay",
+            "replayable",
+            "rebuild",
+            "rebuilds",
+            "rebuilt",
+            "backfill",
+            "recompute",
+        )
+    )
     tenant_heavy = "tenant" in user_text
     crash_heavy = any(
         term in user_text
@@ -1173,6 +1190,79 @@ def query_affinity_boost(
     if schema_heavy and "encoding and evolution" in location:
         boost += 0.20
         reasons.append("affinity:encoding-evolution")
+
+    if migration_manifest_heavy:
+        in_evolution_neighborhood = any(
+            name in location
+            for name in (
+                "encoding and evolution",
+                "stream processing",
+                "batch processing",
+                "consistency and consensus",
+                "replication",
+            )
+        )
+        chunk_has_schema_signal = any(
+            term in lower_text
+            for term in (
+                "schema",
+                "encoding",
+                "compatibility",
+                "version",
+                "migration",
+                "migrate",
+                "old reader",
+                "new reader",
+                "old writer",
+                "new writer",
+            )
+        )
+        bridge = chunk_has_schema_signal or in_evolution_neighborhood
+        chunk_has_lineage_signal = any(
+            term in lower_text
+            for term in (
+                "lineage",
+                "provenance",
+                "audit",
+                "audit log",
+                "causality",
+                "downstream",
+                "consumers",
+            )
+        )
+        chunk_has_replay_signal = any(
+            term in lower_text
+            for term in (
+                "replay",
+                "replays",
+                "replaying",
+                "rebuild",
+                "rebuilds",
+                "recompute",
+                "recomputation",
+                "backfill",
+                "reprocess",
+            )
+        )
+        chunk_has_manifest_signal = any(
+            term in lower_text
+            for term in (
+                "manifest",
+                "manifests",
+                "metadata file",
+                "metadata catalog",
+                "catalog",
+            )
+        )
+        if chunk_has_lineage_signal and bridge:
+            boost += 0.10
+            reasons.append("affinity:migration-lineage")
+        if chunk_has_replay_signal and bridge:
+            boost += 0.10
+            reasons.append("affinity:replay-rebuild")
+        if chunk_has_manifest_signal and bridge:
+            boost += 0.12
+            reasons.append("affinity:migration-manifest")
 
     if drift_heavy and ("batch processing" in location or "stream processing" in location):
         boost += 0.18
@@ -1218,7 +1308,7 @@ def query_affinity_boost(
         boost += 0.12
         reasons.append("affinity:tenant-isolation")
 
-    return min(boost, 0.26), tuple(reasons)
+    return min(boost, 0.42), tuple(reasons)
 
 
 def explain_hit(
@@ -1398,7 +1488,87 @@ def search_context(
     clean_hits = [hit for hit in hits if not (set(hit.noise_flags) & NOISE_FILTER_FLAGS)]
     if len(clean_hits) >= top_k:
         hits = clean_hits
-    return hits[:top_k]
+    return diversify_for_concept_coverage(hits, query_profile, top_k)
+
+
+def diversify_for_concept_coverage(
+    hits: list[SearchHit],
+    query_profile: dict[str, Any],
+    top_k: int,
+) -> list[SearchHit]:
+    """Promote candidate chunks that cover user concept tags missing from top-K.
+
+    The base ranking optimizes per-chunk relevance, which can let a single
+    dominant concept (for example, ``schema``) crowd out other expected concepts
+    in multi-concept queries. This pass swaps in lower-ranked candidates that
+    carry user concept tags missing from the current top-K, but only when the
+    swap does not lose coverage of any other user concept tag.
+
+    Diversification is capped at half of ``top_k`` (rounded down, with a floor
+    of one swap) so the protected slots preserve the strongest base-ranked hits
+    and any preferred-chapter coverage they carry. Candidates are scanned in
+    score order and chosen greedily for the *most* missing tags they cover, so
+    a chunk that fills two gaps at once is preferred over two single-tag
+    chunks.
+    """
+
+    if top_k < 1 or len(hits) <= top_k:
+        return list(hits[:top_k])
+
+    user_concept_tags = set(query_profile.get("user_concept_tags") or ())
+    if not user_concept_tags:
+        return list(hits[:top_k])
+
+    selected = list(hits[:top_k])
+    candidates = list(hits[top_k:])
+
+    def covered_tags(items: list[SearchHit]) -> set[str]:
+        covered: set[str] = set()
+        for hit in items:
+            covered |= set(hit.concept_tags) & user_concept_tags
+        return covered
+
+    covered = covered_tags(selected)
+    missing = user_concept_tags - covered
+    if not missing:
+        return selected
+
+    swap_budget = max(1, top_k // 2)
+    swaps_used = 0
+
+    while missing and swaps_used < swap_budget and candidates:
+        best_index = -1
+        best_gain: tuple[int, float] = (0, float("-inf"))
+        for index, candidate in enumerate(candidates):
+            gain = len(set(candidate.concept_tags) & missing)
+            if gain == 0:
+                continue
+            metric = (gain, candidate.score)
+            if metric > best_gain:
+                best_gain = metric
+                best_index = index
+        if best_index < 0:
+            break
+
+        replaceable: list[int] = []
+        for slot, hit in enumerate(selected):
+            others = [other for other_slot, other in enumerate(selected) if other_slot != slot]
+            other_covered = covered_tags(others)
+            unique_covered = covered - other_covered
+            if not unique_covered:
+                replaceable.append(slot)
+        if not replaceable:
+            break
+
+        slot_to_replace = min(replaceable, key=lambda slot: selected[slot].score)
+        promoted = candidates.pop(best_index)
+        selected[slot_to_replace] = promoted
+        covered = covered_tags(selected)
+        missing = user_concept_tags - covered
+        swaps_used += 1
+
+    selected.sort(key=lambda hit: (-hit.score, hit.page, hit.chunk_id))
+    return selected
 
 
 def stage_questions(stage: str) -> list[str]:

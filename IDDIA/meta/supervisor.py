@@ -9,6 +9,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +149,32 @@ def _field_value(text: str, label: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def parse_iso_timestamp(value: str) -> datetime | None:
+    if not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def signoff_timestamp(text: str) -> datetime | None:
+    match = re.search(r"^## Signoff\s+(.+)$", text, re.MULTILINE)
+    if not match:
+        return None
+    return parse_iso_timestamp(match.group(1))
+
+
+def signoff_is_fresh_for_request(text: str, request: dict[str, Any]) -> bool:
+    request_created = parse_iso_timestamp(str(request.get("created_at") or ""))
+    if request_created is None:
+        return True
+    signed_at = signoff_timestamp(text)
+    if signed_at is None:
+        return False
+    return signed_at >= request_created
+
+
 def proof_verdict(text: str) -> str | None:
     verdict = _field_value(text, "Verdict").lower()
     return verdict if verdict in VALID_PROOF_VERDICTS else None
@@ -200,6 +227,8 @@ def find_matching_signoff(
     }
     for path in reversed(signoffs):
         text = path.read_text(encoding="utf-8")
+        if not signoff_is_fresh_for_request(text, request):
+            continue
         if not signoff_matches_request(text, request):
             continue
         proof_complete = signoff_has_proof(text)

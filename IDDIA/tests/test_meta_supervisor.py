@@ -24,11 +24,12 @@ def _write_spawn_request(
     request_id: str = "spawn-1",
     objective: str = "Improve IDDIA trust loop",
     worker_name: str = "iddia-worker",
+    created_at: str = "2026-04-28T00:00:00+00:00",
 ) -> Path:
     request = {
         "schema_version": 1,
         "request_id": request_id,
-        "created_at": "2026-04-28T00:00:00+00:00",
+        "created_at": created_at,
         "objective": objective,
         "worker_name": worker_name,
         "prompt_path": str(state_root / "spawn_requests" / f"{request_id}.prompt.md"),
@@ -95,6 +96,42 @@ def test_spawn_with_matching_proof_signoff_completes(tmp_path):
     assert payload["status"] == "completed"
     assert payload["signoff"]["proof_verdict"] == "proven"
     assert payload["signoff"]["proof_complete"] is True
+
+
+def test_spawn_ignores_proof_signoff_from_before_request(tmp_path):
+    objective = "Improve IDDIA trust loop"
+    request_path = _write_spawn_request(
+        tmp_path,
+        objective=objective,
+        created_at="2026-04-28T00:05:00+00:00",
+    )
+    append_signoff(
+        files_modified=("IDDIA/meta/supervisor.py",),
+        agent_objective=objective,
+        tldr="Older signoff must not complete newer request",
+        mandatory_dependencies=("pytest",),
+        proof_claim="Supervisor rejects stale signoffs.",
+        proof_metric="Focused test covers stale signoff rejection.",
+        proof_evidence=("this signoff is before the request timestamp",),
+        proof_verdict="proven",
+        state_root=tmp_path,
+        timestamp="2026-04-28T00:01:00Z",
+    )
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        assert "list-panes" in command
+        return _completed(command, stdout="")
+
+    result = supervise_spawn(
+        request_path,
+        state_root=tmp_path,
+        runner=runner,
+        use_wsl=False,
+    )
+
+    assert result.status == "failed_no_signoff"
+    payload = json.loads(result.status_path.read_text(encoding="utf-8"))
+    assert payload["signoff"]["path"] is None
 
 
 def test_tmux_pane_output_is_captured_when_available(tmp_path):
