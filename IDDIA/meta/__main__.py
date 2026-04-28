@@ -38,12 +38,18 @@ def build_parser() -> argparse.ArgumentParser:
     grade.add_argument("--spawn", action="store_true", help="Force a spawn attempt after grading")
     grade.add_argument("--vee-repo", type=Path, default=default_vee_repo())
     grade.add_argument("--vee-agent", default=default_vee_agent())
+    grade.add_argument("--tmux-session", default=None)
+    grade.add_argument("--tmux-window", default=None)
+    grade.add_argument("--worker-name", default=None)
 
     spawn = subparsers.add_parser("spawn", help="Spawn from an existing grade JSON")
     spawn.add_argument("grade", type=Path)
     spawn.add_argument("--objective", default="Improve IDDIA output quality based on the grade")
     spawn.add_argument("--vee-repo", type=Path, default=default_vee_repo())
     spawn.add_argument("--vee-agent", default=default_vee_agent())
+    spawn.add_argument("--tmux-session", default=None)
+    spawn.add_argument("--tmux-window", default=None)
+    spawn.add_argument("--worker-name", default=None)
 
     helper = subparsers.add_parser("helper-context", help="Print helper context for agents")
     helper.set_defaults(command="helper-context")
@@ -106,6 +112,9 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=Path.cwd(),
                 vee_repo=args.vee_repo,
                 vee_agent=args.vee_agent,
+                tmux_session=args.tmux_session,
+                tmux_window=args.tmux_window,
+                worker_name=args.worker_name,
             )
             print(f"spawn_status={result.status}")
             print(f"spawn_request={result.request_path}")
@@ -120,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=Path.cwd(),
             vee_repo=args.vee_repo,
             vee_agent=args.vee_agent,
+            tmux_session=args.tmux_session,
+            tmux_window=args.tmux_window,
+            worker_name=args.worker_name,
         )
         print(f"spawn_status={result.status}")
         print(f"spawn_request={result.request_path}")

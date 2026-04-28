@@ -43,13 +43,23 @@ def signal_variants(value: str) -> set[str]:
     normalized = normalize_signal(value)
     variants = {normalized, normalized.replace("-", ""), normalized.replace("-", " ")}
     if normalized == "provenance-lineage":
-        variants.update({"provenance", "lineage", "manifest"})
+        variants.update({"provenance", "lineage", "manifest", "manifests"})
+    if normalized == "manifest":
+        variants.update({"manifest", "manifests", "provenance"})
     if normalized == "derived-index":
         variants.update({"derived", "index", "cache", "materialized view"})
     if normalized == "source-of-truth":
         variants.update({"canonical", "authoritative", "system of record"})
     if normalized == "failure-recovery":
         variants.update({"failure", "recovery", "crash", "restart"})
+    if normalized == "replay":
+        variants.update({"replay", "replayed", "replayable", "rebuild", "rerun", "redo"})
+    if normalized == "schema":
+        variants.update({"schema", "schemas", "schema evolution"})
+    if normalized == "durability":
+        variants.update({"durability", "durable", "fsync"})
+    if normalized == "consistency":
+        variants.update({"consistency", "consistent", "invariant"})
     return {variant for variant in variants if variant}
 
 
@@ -288,10 +298,32 @@ def default_criteria(
         )
     )
 
-    backlog_terms = ("improvement backlog", "recommendation", "recommended", "next steps")
+    backlog_terms = (
+        "improvement backlog",
+        "improvement",
+        "recommendation",
+        "recommended",
+        "next steps",
+        "next_steps",
+        "next stage",
+        "follow-up",
+        "follow up",
+        "todo",
+        "to do",
+        "gap",
+        "open question",
+    )
     backlog_score = 1.0 if any(term in text for term in backlog_terms) else 0.0
+    backlog_signal = "term"
     if isinstance(payload.get("improvement_backlog"), list) and payload["improvement_backlog"]:
         backlog_score = 1.0
+        backlog_signal = "improvement_backlog"
+    next_steps_field = payload.get("next_steps")
+    if next_steps_field and (
+        isinstance(next_steps_field, str) or isinstance(next_steps_field, list)
+    ):
+        backlog_score = 1.0
+        backlog_signal = "next_steps"
     criteria.append(
         criterion(
             "improvement_backlog_clarity",
@@ -299,7 +331,7 @@ def default_criteria(
             backlog_score,
             weight=0.7,
             notes=[
-                "clear improvement or next-step backlog present"
+                f"clear improvement or next-step backlog present (signal: {backlog_signal})"
                 if backlog_score
                 else "no clear improvement backlog found"
             ],
@@ -328,6 +360,47 @@ def default_criteria(
                 f"package contract fields present: {', '.join(package_contract) or 'none'}",
             ],
             details={"required_signoff_fields": mandatory_fields},
+        )
+    )
+
+    handoff_action_terms = (
+        "next step",
+        "next steps",
+        "next_steps",
+        "follow-up",
+        "follow up",
+        "todo",
+        "improvement",
+        "recommended",
+        "recommendation",
+    )
+    has_next_stage = bool(payload.get("next_stage"))
+    has_actionable_text = any(term in text for term in handoff_action_terms)
+    has_actionable_list = (
+        isinstance(payload.get("improvement_backlog"), list)
+        and bool(payload["improvement_backlog"])
+    ) or bool(payload.get("next_steps"))
+    if has_next_stage and (has_actionable_text or has_actionable_list):
+        actionability_score = 1.0
+        actionability_note = "next_stage paired with actionable hand-off content"
+    elif has_next_stage or has_actionable_text or has_actionable_list:
+        actionability_score = 0.5
+        actionability_note = "partial: next_stage or actionable content present, not both"
+    else:
+        actionability_score = 0.0
+        actionability_note = "no next_stage and no actionable hand-off content"
+    criteria.append(
+        criterion(
+            "handoff_actionability",
+            "Handoff actionability",
+            actionability_score,
+            weight=0.7,
+            notes=[actionability_note],
+            details={
+                "has_next_stage": has_next_stage,
+                "has_actionable_text": has_actionable_text,
+                "has_actionable_list": has_actionable_list,
+            },
         )
     )
 

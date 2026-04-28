@@ -105,9 +105,15 @@ python -m IDDIA.meta grade IDDIA/artifacts/ddia/evals/brownfield-greenfield/<run
 Each grade writes a structured record under `IDDIA/artifacts/meta/grades/`.
 Default criteria cover expected concept coverage, preferred chapter coverage,
 top-hit relevance, noise flags, explanation coverage, improvement backlog
-clarity, and mandatory handoff/signoff fields. Extra criteria can be added with
-a JSON config containing `criteria` entries of kind `required_terms` or
-`required_fields`.
+clarity, mandatory handoff/signoff fields, and handoff actionability (whether
+`next_stage` is paired with concrete next-step content). Extra criteria can be
+added with a JSON config containing `criteria` entries of kind `required_terms`
+or `required_fields`.
+
+Concept matching also accepts paraphrases: `replay` matches `rebuild`/`rerun`,
+`manifest` is a first-class concept aliased to `provenance`/`manifests`, and the
+`improvement_backlog_clarity` criterion now credits a `next_steps` field on the
+package alongside an `improvement_backlog` list.
 
 Activation policies are JSON files. Supported modes are:
 
@@ -128,9 +134,14 @@ python -m IDDIA.meta grade package.json \
 
 When activation requests an improvement agent, IDDIA invokes vee through WSL
 using the local vee checkout at `C:\Users\jehma\Desktop\vee` by default. The
-cadence is `vee agent spawn <agent> --name <worker> --then <prompt>`, with the
-agent name defaulting to `claude` or `IDDIA_VEE_AGENT`. If WSL, vee, tmux, or
-the local checkout is unavailable, the spawner writes a pending request and prompt under
+spawner creates or reuses a tmux target first, then calls
+`vee agent spawn <agent> --name <worker> --target <session:window>`, waits for
+the pane to boot, and delivers the prompt with `vee agent start <worker> <prompt>`.
+The agent defaults to `claude` or `IDDIA_VEE_AGENT`, and the tmux target defaults
+to `iddia-meta:agents` or `IDDIA_VEE_TMUX_SESSION` / `IDDIA_VEE_TMUX_WINDOW`.
+Spawned panes receive `VEE_BIN` so they can close themselves with
+`node "$VEE_BIN" agent kill <worker>` when `vee` is not on PATH.
+If WSL, vee, tmux, or the local checkout is unavailable, the spawner writes a pending request and prompt under
 `IDDIA/artifacts/meta/spawn_requests/` instead of failing the grade.
 
 Spawn directly from an existing grade:
@@ -138,7 +149,10 @@ Spawn directly from an existing grade:
 ```bash
 python -m IDDIA.meta spawn IDDIA/artifacts/meta/grades/<grade>.json \
   --objective "Patch the weakest IDDIA retrieval criteria" \
-  --vee-agent claude
+  --vee-agent claude \
+  --tmux-session iddia-meta \
+  --tmux-window agents \
+  --worker-name iddia-improve-schema
 ```
 
 Agents can inspect durable meta context:

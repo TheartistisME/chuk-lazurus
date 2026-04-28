@@ -5,7 +5,7 @@ import json
 from IDDIA.meta.activation import ActivationPolicy, evaluate_activation
 from IDDIA.meta.grader import grade_payload
 from IDDIA.meta.signoff import append_changelog, append_signoff, helper_context
-from IDDIA.meta.spawner import spawn_improvement_agent
+from IDDIA.meta.spawner import build_wsl_script, spawn_improvement_agent
 
 
 def sample_package() -> dict:
@@ -52,6 +52,100 @@ def test_meta_grader_scores_and_redacts_source_text(tmp_path):
         item["id"] == "mandatory_handoff_signoff" and item["passed"]
         for item in grade.payload["criteria"]
     )
+
+
+def test_replay_and_manifest_variants_match_paraphrased_signals(tmp_path):
+    package = sample_package()
+    package["hits"][0]["concept_tags"] = ["schema-evolution"]
+    package["hits"][0]["matched_tags"] = ["rebuild"]
+    package["hits"][0]["matched_terms"] = ["manifests", "rerun"]
+    package["hits"][0]["why_this_hit"] = {"summary": "covers rebuild path"}
+
+    grade = grade_payload(
+        package,
+        state_root=tmp_path,
+        expected_concepts=("replay", "manifest"),
+        preferred_chapters=("Stream Processing",),
+    )
+
+    concept_criterion = next(
+        item for item in grade.payload["criteria"] if item["id"] == "expected_concept_coverage"
+    )
+    matched = set(concept_criterion["details"]["matched"])
+    assert "replay" in matched, "rebuild/rerun should now satisfy replay"
+    assert "manifest" in matched, "manifests should satisfy manifest as a first-class concept"
+
+
+def test_improvement_backlog_clarity_recognises_next_steps_field(tmp_path):
+    package = {
+        "stage": "plan",
+        "next_stage": "build",
+        "task": "Plan a schema migration",
+        "next_steps": "Stage the migration behind a feature flag.",
+        "hits": [
+            {
+                "chunk_id": "ddia-page",
+                "principle_tags": ["schema"],
+                "concept_tags": ["schema"],
+                "matched_tags": ["schema"],
+                "matched_terms": ["schema"],
+                "noise_flags": [],
+                "why_this_hit": {"summary": "schema-evolution hit"},
+            }
+        ],
+    }
+
+    grade = grade_payload(
+        package,
+        state_root=tmp_path,
+        expected_concepts=("schema",),
+        preferred_chapters=("Encoding and Evolution",),
+    )
+
+    backlog = next(
+        item for item in grade.payload["criteria"] if item["id"] == "improvement_backlog_clarity"
+    )
+    assert backlog["score"] == 1.0
+    assert "next_steps" in backlog["notes"][0]
+
+
+def test_handoff_actionability_combines_next_stage_and_actionable_content(tmp_path):
+    actionable = {
+        "stage": "verify",
+        "next_stage": "handoff",
+        "task": "Verify schema migration",
+        "next_steps": "Confirm replayability before handoff",
+        "hits": [
+            {
+                "chunk_id": "ddia-page",
+                "noise_flags": [],
+                "why_this_hit": {"summary": "schema replay"},
+            }
+        ],
+    }
+    bare = {
+        "stage": "verify",
+        "task": "Verify schema migration",
+        "hits": [
+            {
+                "chunk_id": "ddia-page",
+                "noise_flags": [],
+                "why_this_hit": {"summary": "schema replay"},
+            }
+        ],
+    }
+
+    full_grade = grade_payload(actionable, state_root=tmp_path)
+    bare_grade = grade_payload(bare, state_root=tmp_path)
+
+    full_action = next(
+        item for item in full_grade.payload["criteria"] if item["id"] == "handoff_actionability"
+    )
+    bare_action = next(
+        item for item in bare_grade.payload["criteria"] if item["id"] == "handoff_actionability"
+    )
+    assert full_action["score"] == 1.0
+    assert bare_action["score"] == 0.0
 
 
 def test_meta_grader_does_not_count_query_only_concepts_when_hits_exist(tmp_path):
@@ -113,8 +207,29 @@ def test_pending_spawn_fallback_writes_request_and_prompt(tmp_path):
     prompt = result.prompt_path.read_text(encoding="utf-8")
     assert request["status"] == "pending"
     assert "Improve IDDIA retrieval grading" in prompt
-    assert "python -m IDDIA.meta helper-context" in prompt
+    assert "python3 -m IDDIA.meta helper-context" in prompt
     assert "vee agent kill" in prompt
+    assert 'node "$VEE_BIN" agent kill' in prompt
+
+
+def test_spawner_builds_tmux_targeted_vee_spawn(tmp_path):
+    script = build_wsl_script(
+        repo_root=tmp_path,
+        vee_repo=tmp_path / "vee",
+        prompt_path=tmp_path / "prompt.md",
+        worker_name="iddia-worker",
+        vee_agent="claude",
+        tmux_session="iddia-test",
+        tmux_window="agents",
+    )
+
+    assert 'tmux new-session -d -s "$TMUX_SESSION"' in script
+    assert 'tmux new-window -d -t "$TMUX_SESSION"' in script
+    assert "run_vee agent spawn claude" in script
+    assert "--target iddia-test:agents" in script
+    assert "--cwd" in script
+    assert "run_vee agent start iddia-worker" in script
+    assert 'tmux set-environment -t "$TMUX_SESSION" VEE_BIN' in script
 
 
 def test_helper_context_includes_changelog_signoff_and_dependencies(tmp_path):
@@ -138,4 +253,5 @@ def test_helper_context_includes_changelog_signoff_and_dependencies(tmp_path):
     assert "Build meta system" in output
     assert "stdlib only" in output
     assert "vee agent spawn <agent>" in output
+    assert "--target <session:window>" in output
     assert signoff_path.parent == tmp_path / "signoffs"

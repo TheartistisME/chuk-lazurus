@@ -92,7 +92,8 @@ def helper_context(*, state_root: Path = DEFAULT_META_ROOT) -> str:
         "- Grade tool outputs with `python -m IDDIA.meta grade <package.json>`.",
         "- Append signoffs with `python -m IDDIA.meta signoff append ...`.",
         "- Improvement agents should run `python -m IDDIA.meta helper-context` first.",
-        "- Vee spawning uses WSL and the cadence `vee agent spawn <agent> --name <name> --then <prompt>`.",
+        "- Vee spawning uses WSL, creates/reuses a tmux target, calls `vee agent spawn <agent> --name <name> --target <session:window>`, then sends startup text with `vee agent start <name> <prompt>`.",
+        '- Spawned panes receive `VEE_BIN`; if `vee` is not on PATH they can close with `node "$VEE_BIN" agent kill <name>`.',
         "",
     ]
     return "\n".join(sections)
