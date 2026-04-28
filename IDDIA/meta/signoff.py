@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .state import DEFAULT_META_ROOT, append_text, utc_now
+from .state import DEFAULT_META_ROOT, append_text, safe_slug, utc_now
 
 
 def append_changelog(
@@ -28,7 +28,7 @@ def append_signoff(
     state_root: Path = DEFAULT_META_ROOT,
     timestamp: str | None = None,
 ) -> Path:
-    path = state_root / "signoffs.md"
+    rollup_path = state_root / "signoffs.md"
     stamp = timestamp or utc_now()
     lines = [
         f"## Signoff {stamp}",
@@ -41,8 +41,13 @@ def append_signoff(
         *[f"  - {item}" for item in mandatory_dependencies],
         "",
     ]
-    append_text(path, "\n".join(lines))
-    return path
+    text = "\n".join(lines)
+    append_text(rollup_path, text)
+    signoff_dir = state_root / "signoffs"
+    signoff_dir.mkdir(parents=True, exist_ok=True)
+    signoff_path = signoff_dir / f"{safe_slug(stamp, 'signoff')}.md"
+    signoff_path.write_text(text, encoding="utf-8")
+    return signoff_path
 
 
 def _last_lines(path: Path, count: int) -> str:
@@ -51,7 +56,10 @@ def _last_lines(path: Path, count: int) -> str:
     return "\n".join(path.read_text(encoding="utf-8").splitlines()[-count:]) or "(empty)"
 
 
-def _last_signoff(path: Path) -> str:
+def _last_signoff(path: Path, signoff_dir: Path) -> str:
+    files = sorted(signoff_dir.glob("*.md")) if signoff_dir.exists() else []
+    if files:
+        return files[-1].read_text(encoding="utf-8").strip() or "(empty)"
     if not path.exists():
         return "(none recorded)"
     text = path.read_text(encoding="utf-8")
@@ -65,6 +73,7 @@ def _last_signoff(path: Path) -> str:
 def helper_context(*, state_root: Path = DEFAULT_META_ROOT) -> str:
     changelog_path = state_root / "changelog.md"
     signoff_path = state_root / "signoffs.md"
+    signoff_dir = state_root / "signoffs"
     sections = [
         "# IDDIA Meta Helper Context",
         "",
@@ -74,15 +83,16 @@ def helper_context(*, state_root: Path = DEFAULT_META_ROOT) -> str:
         "",
         "## Last Agent Signoff",
         "",
-        _last_signoff(signoff_path),
+        _last_signoff(signoff_path, signoff_dir),
         "",
         "## Mandatory Dependencies / Context",
         "",
         "- Meta state is IDDIA-local and ignored under `IDDIA/artifacts/meta/`.",
+        "- Individual agent signoffs live under `IDDIA/artifacts/meta/signoffs/`.",
         "- Grade tool outputs with `python -m IDDIA.meta grade <package.json>`.",
         "- Append signoffs with `python -m IDDIA.meta signoff append ...`.",
         "- Improvement agents should run `python -m IDDIA.meta helper-context` first.",
-        "- Vee spawning uses WSL and the cadence `vee agent spawn codex --name <name> --then <prompt>`, then `vee agent start <name>` when requested.",
+        "- Vee spawning uses WSL and the cadence `vee agent spawn <agent> --name <name> --then <prompt>`.",
         "",
     ]
     return "\n".join(sections)

@@ -128,16 +128,17 @@ python -m IDDIA.meta grade package.json \
 
 When activation requests an improvement agent, IDDIA invokes vee through WSL
 using the local vee checkout at `C:\Users\jehma\Desktop\vee` by default. The
-cadence is `vee agent spawn codex --name <worker> --then <prompt>`, then
-`vee agent start <worker>`. If WSL, vee, tmux, or the local checkout is
-unavailable, the spawner writes a pending request and prompt under
+cadence is `vee agent spawn <agent> --name <worker> --then <prompt>`, with the
+agent name defaulting to `claude` or `IDDIA_VEE_AGENT`. If WSL, vee, tmux, or
+the local checkout is unavailable, the spawner writes a pending request and prompt under
 `IDDIA/artifacts/meta/spawn_requests/` instead of failing the grade.
 
 Spawn directly from an existing grade:
 
 ```bash
 python -m IDDIA.meta spawn IDDIA/artifacts/meta/grades/<grade>.json \
-  --objective "Patch the weakest IDDIA retrieval criteria"
+  --objective "Patch the weakest IDDIA retrieval criteria" \
+  --vee-agent claude
 ```
 
 Agents can inspect durable meta context:
@@ -157,6 +158,10 @@ python -m IDDIA.meta signoff append \
   --dependency "stdlib only" \
   --dependency "vee spawning runs through WSL when available"
 ```
+
+Each signoff is stored as its own file under
+`IDDIA/artifacts/meta/signoffs/` and is also appended to
+`IDDIA/artifacts/meta/signoffs.md` for a single-file trail.
 
 ## Commands
 

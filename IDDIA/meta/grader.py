@@ -43,7 +43,7 @@ def signal_variants(value: str) -> set[str]:
     normalized = normalize_signal(value)
     variants = {normalized, normalized.replace("-", ""), normalized.replace("-", " ")}
     if normalized == "provenance-lineage":
-        variants.update({"provenance", "lineage", "manifest", "why"})
+        variants.update({"provenance", "lineage", "manifest"})
     if normalized == "derived-index":
         variants.update({"derived", "index", "cache", "materialized view"})
     if normalized == "source-of-truth":
@@ -56,7 +56,11 @@ def signal_variants(value: str) -> set[str]:
 def safe_payload(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            str(key): ("[omitted: grade records do not quote source text]" if key in TEXT_OMIT_KEYS else safe_payload(item))
+            str(key): (
+                "[omitted: grade records do not quote source text]"
+                if key in TEXT_OMIT_KEYS
+                else safe_payload(item)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -122,9 +126,11 @@ def hit_signal_text(hit: dict[str, Any]) -> str:
 
 def concept_matched(concept: str, hits: list[dict[str, Any]], payload_text: str) -> bool:
     variants = signal_variants(concept)
+    if hits:
+        return any(any(variant in hit_signal_text(hit) for variant in variants) for hit in hits)
     if any(variant in payload_text for variant in variants):
         return True
-    return any(any(variant in hit_signal_text(hit) for variant in variants) for hit in hits)
+    return False
 
 
 def chapter_matched(chapter: str, hit: dict[str, Any]) -> bool:
@@ -226,11 +232,15 @@ def default_criteria(
         top_hit = hits[0]
         top_text = hit_signal_text(top_hit)
         top_has_concept = any(
-            variant in top_text for concept in expected_concepts for variant in signal_variants(concept)
+            variant in top_text
+            for concept in expected_concepts
+            for variant in signal_variants(concept)
         )
         top_has_chapter = any(chapter_matched(chapter, top_hit) for chapter in preferred_chapters)
         score = 1.0 if top_has_concept or top_has_chapter else 0.25
-        note = "top hit carries expected signal" if score == 1.0 else "top hit lacks expected signal"
+        note = (
+            "top hit carries expected signal" if score == 1.0 else "top hit lacks expected signal"
+        )
     else:
         score = 0.0
         note = "no hits available"
@@ -263,8 +273,10 @@ def default_criteria(
         if isinstance(hit.get("why_this_hit"), dict)
         and str(hit["why_this_hit"].get("summary", "")).strip()
     ]
-    explanation_score = len(explained_hits) / max(1, len(hits)) if hits else (
-        1.0 if any(term in text for term in ("why", "explanation", "rationale")) else 0.0
+    explanation_score = (
+        len(explained_hits) / max(1, len(hits))
+        if hits
+        else (1.0 if any(term in text for term in ("why", "explanation", "rationale")) else 0.0)
     )
     criteria.append(
         criterion(
@@ -300,7 +312,9 @@ def default_criteria(
         "tldr",
         "mandatory_dependencies",
     )
-    present = [field for field in mandatory_fields if get_path(payload, field) not in (None, "", [])]
+    present = [
+        field for field in mandatory_fields if get_path(payload, field) not in (None, "", [])
+    ]
     package_contract = [field for field in ("stage", "task", "next_stage") if payload.get(field)]
     handoff_score = max(len(present) / len(mandatory_fields), len(package_contract) / 3 * 0.6)
     criteria.append(
@@ -320,7 +334,9 @@ def default_criteria(
     return criteria
 
 
-def configured_criteria(payload: dict[str, Any], config: dict[str, Any] | None) -> list[dict[str, Any]]:
+def configured_criteria(
+    payload: dict[str, Any], config: dict[str, Any] | None
+) -> list[dict[str, Any]]:
     if not config:
         return []
     text = flatten_text(payload).lower()

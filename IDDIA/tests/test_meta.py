@@ -54,6 +54,28 @@ def test_meta_grader_scores_and_redacts_source_text(tmp_path):
     )
 
 
+def test_meta_grader_does_not_count_query_only_concepts_when_hits_exist(tmp_path):
+    package = sample_package()
+    package["task"] = "Plan manifest lineage and replay for schema migration"
+    package["next_steps"] = "Add rollback manifests"
+    package["hits"][0]["concept_tags"] = ["schema"]
+    package["hits"][0]["matched_tags"] = ["schema"]
+    package["hits"][0]["matched_terms"] = ["schema"]
+
+    grade = grade_payload(
+        package,
+        state_root=tmp_path,
+        expected_concepts=("schema", "provenance-lineage", "replay", "manifest"),
+        preferred_chapters=("Stream Processing",),
+    )
+    concept_criterion = next(
+        item for item in grade.payload["criteria"] if item["id"] == "expected_concept_coverage"
+    )
+
+    assert concept_criterion["details"]["matched"] == ("schema",)
+    assert "replay" in concept_criterion["details"]["missing"]
+
+
 def test_activation_policy_every_n_and_threshold(tmp_path):
     grade = {"grade_id": "grade-1", "overall_score": 4.7}
     policy = ActivationPolicy(mode="every_n", every_n=3)
@@ -92,11 +114,16 @@ def test_pending_spawn_fallback_writes_request_and_prompt(tmp_path):
     assert request["status"] == "pending"
     assert "Improve IDDIA retrieval grading" in prompt
     assert "python -m IDDIA.meta helper-context" in prompt
+    assert "vee agent kill" in prompt
 
 
 def test_helper_context_includes_changelog_signoff_and_dependencies(tmp_path):
-    append_changelog("Added grading state.", state_root=tmp_path, timestamp="2026-04-28T00:00:00Z")
-    append_signoff(
+    append_changelog(
+        "Added grading state.",
+        state_root=tmp_path,
+        timestamp="2026-04-28T00:00:00Z",
+    )
+    signoff_path = append_signoff(
         files_modified=("IDDIA/meta/grader.py",),
         agent_objective="Build meta system",
         tldr="Added grading and helper context",
@@ -110,4 +137,5 @@ def test_helper_context_includes_changelog_signoff_and_dependencies(tmp_path):
     assert "Added grading state." in output
     assert "Build meta system" in output
     assert "stdlib only" in output
-    assert "vee agent spawn codex" in output
+    assert "vee agent spawn <agent>" in output
+    assert signoff_path.parent == tmp_path / "signoffs"

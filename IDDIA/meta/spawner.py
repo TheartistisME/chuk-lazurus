@@ -39,11 +39,16 @@ def default_vee_repo() -> Path:
     return Path.home() / "Desktop" / "vee"
 
 
+def default_vee_agent() -> str:
+    return os.environ.get("IDDIA_VEE_AGENT", "claude")
+
+
 def build_prompt(
     *,
     grade_record: dict[str, Any],
     objective: str,
     helper_command: str,
+    worker_name: str,
 ) -> str:
     criteria_lines = []
     for item in grade_record.get("criteria", []):
@@ -72,7 +77,12 @@ def build_prompt(
             f"- `{helper_command}`",
             "- `python -m pytest IDDIA/tests`",
             "",
-            "When done, append an IDDIA meta signoff with files modified, objective, TLDR, and mandatory dependencies/context.",
+            "Your improvement loop:",
+            "- Read the grade, read the relevant IDDIA code, and determine how to improve the system.",
+            "- Decide whether a new grading criterion should be added for the next grade.",
+            "- Make the scoped IDDIA fixes, update or append the changelog, and run focused tests.",
+            "- Append an IDDIA meta signoff with files modified, objective, TLDR, and mandatory dependencies/context.",
+            f"- After signoff, close your Vee process with `vee agent kill {worker_name}` if that command is available.",
             "",
         ]
     )
@@ -84,29 +94,27 @@ def build_wsl_script(
     vee_repo: Path,
     prompt_path: Path,
     worker_name: str,
-    start: bool,
+    vee_agent: str,
 ) -> str:
     repo_wsl = windows_path_to_wsl(repo_root)
     vee_wsl = windows_path_to_wsl(vee_repo)
     prompt_wsl = windows_path_to_wsl(prompt_path)
     spawn_args = (
-        "run_vee agent spawn codex --name "
-        f"{shlex.quote(worker_name)} --then \"$(cat {shlex.quote(prompt_wsl)})\""
+        f"run_vee agent spawn {shlex.quote(vee_agent)} --name "
+        f'{shlex.quote(worker_name)} --then "$(cat {shlex.quote(prompt_wsl)})"'
     )
     lines = [
         "set -eu",
         f"cd {shlex.quote(repo_wsl)}",
         f"VEE_REPO={shlex.quote(vee_wsl)}",
         "run_vee() {",
-        "  if command -v vee >/dev/null 2>&1; then vee \"$@\"; return $?; fi",
-        "  if [ -f \"$VEE_REPO/dist/cli.js\" ]; then node \"$VEE_REPO/dist/cli.js\" \"$@\"; return $?; fi",
-        "  if [ -x \"$VEE_REPO/eve\" ]; then \"$VEE_REPO/eve\" \"$@\"; return $?; fi",
+        '  if command -v vee >/dev/null 2>&1; then vee "$@"; return $?; fi',
+        '  if [ -f "$VEE_REPO/dist/cli.js" ]; then node "$VEE_REPO/dist/cli.js" "$@"; return $?; fi',
+        '  if [ -x "$VEE_REPO/eve" ]; then "$VEE_REPO/eve" "$@"; return $?; fi',
         "  return 127",
         "}",
         spawn_args,
     ]
-    if start:
-        lines.append(f"run_vee agent start {shlex.quote(worker_name)}")
     return "\n".join(lines)
 
 
@@ -142,17 +150,25 @@ def spawn_improvement_agent(
     state_root: Path = DEFAULT_META_ROOT,
     repo_root: Path | None = None,
     vee_repo: Path | None = None,
+    vee_agent: str | None = None,
     worker_name: str | None = None,
-    start: bool = True,
     runner: Runner = subprocess.run,
     force_pending: bool = False,
 ) -> SpawnResult:
     repo_root = repo_root or Path.cwd()
     vee_repo = vee_repo or default_vee_repo()
+    vee_agent = vee_agent or default_vee_agent()
     request_id = f"{utc_stamp()}-{safe_slug(str(grade_record.get('grade_id') or 'iddia-improve'))}"
-    worker = worker_name or safe_slug(f"iddia-improve-{grade_record.get('grade_id', utc_stamp())}")[:48]
+    worker = (
+        worker_name or safe_slug(f"iddia-improve-{grade_record.get('grade_id', utc_stamp())}")[:48]
+    )
     helper = "python -m IDDIA.meta helper-context"
-    prompt = build_prompt(grade_record=grade_record, objective=objective, helper_command=helper)
+    prompt = build_prompt(
+        grade_record=grade_record,
+        objective=objective,
+        helper_command=helper,
+        worker_name=worker,
+    )
     request = {
         "schema_version": 1,
         "request_id": request_id,
@@ -160,9 +176,9 @@ def spawn_improvement_agent(
         "grade_id": grade_record.get("grade_id"),
         "objective": objective,
         "worker_name": worker,
+        "vee_agent": vee_agent,
         "vee_repo": str(vee_repo),
         "repo_root": str(repo_root),
-        "start": start,
     }
     if force_pending:
         return pending_request(
@@ -189,7 +205,7 @@ def spawn_improvement_agent(
                 vee_repo=vee_repo,
                 prompt_path=prompt_path,
                 worker_name=worker,
-                start=start,
+                vee_agent=vee_agent,
             ),
         ]
     else:
@@ -201,7 +217,7 @@ def spawn_improvement_agent(
                 vee_repo=vee_repo,
                 prompt_path=prompt_path,
                 worker_name=worker,
-                start=start,
+                vee_agent=vee_agent,
             ),
         ]
     request["command"] = command

@@ -10,7 +10,7 @@ from pathlib import Path
 from .activation import evaluate_activation, load_policy
 from .grader import DEFAULT_EXPECTED_CONCEPTS, grade_file
 from .signoff import append_changelog, append_signoff, helper_context
-from .spawner import default_vee_repo, spawn_improvement_agent
+from .spawner import default_vee_agent, default_vee_repo, spawn_improvement_agent
 from .state import DEFAULT_META_ROOT
 
 
@@ -36,14 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
     grade.add_argument("--policy", type=Path, help="Activation policy JSON")
     grade.add_argument("--objective", default="Improve IDDIA output quality based on the grade")
     grade.add_argument("--spawn", action="store_true", help="Force a spawn attempt after grading")
-    grade.add_argument("--no-start", action="store_true", help="Spawn but do not start the vee agent")
     grade.add_argument("--vee-repo", type=Path, default=default_vee_repo())
+    grade.add_argument("--vee-agent", default=default_vee_agent())
 
     spawn = subparsers.add_parser("spawn", help="Spawn from an existing grade JSON")
     spawn.add_argument("grade", type=Path)
     spawn.add_argument("--objective", default="Improve IDDIA output quality based on the grade")
-    spawn.add_argument("--no-start", action="store_true")
     spawn.add_argument("--vee-repo", type=Path, default=default_vee_repo())
+    spawn.add_argument("--vee-agent", default=default_vee_agent())
 
     helper = subparsers.add_parser("helper-context", help="Print helper context for agents")
     helper.set_defaults(command="helper-context")
@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                 state_root=state_root,
                 repo_root=Path.cwd(),
                 vee_repo=args.vee_repo,
-                start=not args.no_start,
+                vee_agent=args.vee_agent,
             )
             print(f"spawn_status={result.status}")
             print(f"spawn_request={result.request_path}")
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             state_root=state_root,
             repo_root=Path.cwd(),
             vee_repo=args.vee_repo,
-            start=not args.no_start,
+            vee_agent=args.vee_agent,
         )
         print(f"spawn_status={result.status}")
         print(f"spawn_request={result.request_path}")
