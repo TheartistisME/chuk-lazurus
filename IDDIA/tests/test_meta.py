@@ -210,6 +210,9 @@ def test_pending_spawn_fallback_writes_request_and_prompt(tmp_path):
     assert "python3 -m IDDIA.meta helper-context" in prompt
     assert "vee agent kill" in prompt
     assert 'node "$VEE_BIN" agent kill' in prompt
+    assert "Proof-before-signoff contract" in prompt
+    assert "fixed metric or rubric" in prompt
+    assert "not_proven" in prompt
 
 
 def test_spawner_builds_tmux_targeted_vee_spawn(tmp_path):
@@ -243,6 +246,10 @@ def test_helper_context_includes_changelog_signoff_and_dependencies(tmp_path):
         agent_objective="Build meta system",
         tldr="Added grading and helper context",
         mandatory_dependencies=("stdlib only", "vee via WSL when available"),
+        proof_claim="Helper context includes the latest signoff.",
+        proof_metric="helper_context output contains objective and dependency text",
+        proof_evidence=("unit test asserts helper_context content",),
+        proof_verdict="proven",
         state_root=tmp_path,
         timestamp="2026-04-28T00:01:00Z",
     )
@@ -254,4 +261,6 @@ def test_helper_context_includes_changelog_signoff_and_dependencies(tmp_path):
     assert "stdlib only" in output
     assert "vee agent spawn <agent>" in output
     assert "--target <session:window>" in output
+    assert "Proof before signoff" in output
+    assert "Helper context includes the latest signoff." in output
     assert signoff_path.parent == tmp_path / "signoffs"

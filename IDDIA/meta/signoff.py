@@ -25,6 +25,10 @@ def append_signoff(
     agent_objective: str,
     tldr: str,
     mandatory_dependencies: tuple[str, ...],
+    proof_claim: str = "",
+    proof_metric: str = "",
+    proof_evidence: tuple[str, ...] = (),
+    proof_verdict: str = "",
     state_root: Path = DEFAULT_META_ROOT,
     timestamp: str | None = None,
 ) -> Path:
@@ -39,6 +43,12 @@ def append_signoff(
         f"- TLDR: {tldr.strip()}",
         "- Mandatory dependencies/context:",
         *[f"  - {item}" for item in mandatory_dependencies],
+        "- Proof before signoff:",
+        f"  - Claim: {proof_claim.strip() or 'not supplied'}",
+        f"  - Metric/rubric: {proof_metric.strip() or 'not supplied'}",
+        f"  - Verdict: {proof_verdict.strip() or 'not supplied'}",
+        "  - Evidence:",
+        *[f"    - {item}" for item in proof_evidence],
         "",
     ]
     text = "\n".join(lines)
@@ -91,6 +101,7 @@ def helper_context(*, state_root: Path = DEFAULT_META_ROOT) -> str:
         "- Individual agent signoffs live under `IDDIA/artifacts/meta/signoffs/`.",
         "- Grade tool outputs with `python -m IDDIA.meta grade <package.json>`.",
         "- Append signoffs with `python -m IDDIA.meta signoff append ...`.",
+        "- Signoffs must include proof claim, proof metric/rubric, proof evidence, and proof verdict before claiming improvement.",
         "- Improvement agents should run `python -m IDDIA.meta helper-context` first.",
         "- Vee spawning uses WSL, creates/reuses a tmux target, calls `vee agent spawn <agent> --name <name> --target <session:window>`, then sends startup text with `vee agent start <name> <prompt>`.",
         '- Spawned panes receive `VEE_BIN`; if `vee` is not on PATH they can close with `node "$VEE_BIN" agent kill <name>`.',

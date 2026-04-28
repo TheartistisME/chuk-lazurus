@@ -65,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
     signoff_append.add_argument("--file", action="append", default=[], dest="files")
     signoff_append.add_argument("--objective", required=True)
     signoff_append.add_argument("--tldr", required=True)
+    signoff_append.add_argument("--proof-claim", default="")
+    signoff_append.add_argument("--proof-metric", default="")
+    signoff_append.add_argument("--proof-evidence", action="append", default=[])
+    signoff_append.add_argument(
+        "--proof-verdict",
+        default="",
+        help="One of proven, partially_proven, not_proven, or a precise local verdict.",
+    )
     signoff_append.add_argument(
         "--dependency",
         action="append",
@@ -152,6 +160,10 @@ def main(argv: list[str] | None = None) -> int:
             agent_objective=args.objective,
             tldr=args.tldr,
             mandatory_dependencies=tuple(args.dependencies),
+            proof_claim=args.proof_claim,
+            proof_metric=args.proof_metric,
+            proof_evidence=tuple(args.proof_evidence),
+            proof_verdict=args.proof_verdict,
             state_root=state_root,
         )
         print(f"signoff={path}")

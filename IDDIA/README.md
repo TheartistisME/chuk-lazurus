@@ -169,6 +169,10 @@ python -m IDDIA.meta signoff append \
   --file IDDIA/meta/grader.py \
   --objective "Improve meta grading" \
   --tldr "Added a custom criterion" \
+  --proof-claim "The fixed benchmark score improves under the same rubric" \
+  --proof-metric "before/after score from the same grade command" \
+  --proof-evidence "before: 3.41/5; after: 4.05/5" \
+  --proof-verdict "partially_proven" \
   --dependency "stdlib only" \
   --dependency "vee spawning runs through WSL when available"
 ```
@@ -176,6 +180,9 @@ python -m IDDIA.meta signoff append \
 Each signoff is stored as its own file under
 `IDDIA/artifacts/meta/signoffs/` and is also appended to
 `IDDIA/artifacts/meta/signoffs.md` for a single-file trail.
+Improvement agents are instructed to prove their point before signoff: they must
+state the claim, use a fixed metric or frozen rubric, record evidence, and mark
+the verdict as `proven`, `partially_proven`, or `not_proven`.
 
 ## Commands
 
