@@ -31,8 +31,80 @@ TOOL_ROOT = Path(__file__).resolve().parent
 DEFAULT_ARTIFACT_ROOT = TOOL_ROOT / "artifacts" / "ddia"
 DEFAULT_EMBED_DIM = 384
 REFERENCE_CHUNK_PENALTY = 0.12
+NOISE_CHUNK_PENALTIES = {
+    "reference_like": REFERENCE_CHUNK_PENALTY,
+    "table_of_contents": 0.18,
+    "front_matter": 0.10,
+    "chapter_opener": 0.08,
+    "index_like": 0.16,
+}
+NOISE_FILTER_FLAGS = frozenset(
+    {"table_of_contents", "front_matter", "chapter_opener", "index_like"}
+)
 ZVEC_OPEN_RETRY_ATTEMPTS = 8
 ZVEC_OPEN_RETRY_DELAY_SECONDS = 0.15
+
+STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "before",
+        "after",
+        "be",
+        "between",
+        "by",
+        "can",
+        "check",
+        "could",
+        "for",
+        "from",
+        "had",
+        "has",
+        "have",
+        "how",
+        "in",
+        "into",
+        "is",
+        "it",
+        "made",
+        "make",
+        "new",
+        "of",
+        "old",
+        "on",
+        "or",
+        "our",
+        "should",
+        "that",
+        "the",
+        "their",
+        "this",
+        "through",
+        "to",
+        "use",
+        "used",
+        "using",
+        "with",
+        "within",
+        "without",
+        "would",
+        "will",
+        "what",
+        "agent",
+        "building",
+        "context",
+        "next",
+        "package",
+        "retrieve",
+        "stage",
+        "steps",
+        "task",
+    }
+)
 
 STAGES = ("onboard", "plan", "build", "verify", "handoff", "exit")
 NEXT_STAGE = {
@@ -94,6 +166,52 @@ PRINCIPLE_KEYWORDS = {
     "observability": ("monitor", "metric", "debug", "trace", "audit"),
 }
 
+CONCEPT_KEYWORDS = {
+    "atomic": ("atomic", "atomicity", "atomic commit", "compare-and-set", "cas"),
+    "batch": ("batch", "batch processing", "bulk", "mapreduce"),
+    "checkpoint": ("checkpoint", "checkpoints", "checkpointing", "savepoint"),
+    "consistency": (
+        "consistency",
+        "consistent",
+        "linearizable",
+        "linearizability",
+        "serializable",
+        "serializability",
+        "isolation",
+    ),
+    "deterministic": ("deterministic", "determinism", "repeatable", "reproducible"),
+    "durability": ("durability", "durable", "fsync", "recovery", "recoverable"),
+    "event-log": (
+        "event log",
+        "event-log",
+        "events",
+        "append-only log",
+        "commit log",
+        "log-structured",
+        "journal",
+    ),
+    "manifest": ("manifest", "manifests", "metadata file", "catalog"),
+    "materialized-view": (
+        "materialized view",
+        "projection",
+        "derived view",
+        "view maintenance",
+        "secondary index",
+        "cache",
+    ),
+    "partition": ("partition", "partitioning", "shard", "sharding", "split"),
+    "replay": ("replay", "replaying", "rebuild", "recompute", "backfill"),
+    "schema": ("schema", "schema evolution", "migration", "encoding", "compatibility"),
+    "snapshot": ("snapshot", "snapshotting", "point-in-time", "copy-on-write"),
+    "source-of-truth": (
+        "source of truth",
+        "source-of-truth",
+        "system of record",
+        "authoritative",
+        "canonical",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class IngestResult:
@@ -115,6 +233,17 @@ class SearchHit:
     principle_tags: tuple[str, ...]
     stage_tags: tuple[str, ...]
     text: str
+    concept_tags: tuple[str, ...] = ()
+    chapter_title: str = ""
+    section_title: str = ""
+    vector_score: float = 0.0
+    lexical_score: float = 0.0
+    query_boost: float = 0.0
+    noise_penalty: float = 0.0
+    matched_terms: tuple[str, ...] = ()
+    matched_tags: tuple[str, ...] = ()
+    noise_flags: tuple[str, ...] = ()
+    why_this_hit: dict[str, Any] | None = None
 
 
 def utc_now() -> str:
@@ -333,6 +462,84 @@ def infer_tags(text: str, page: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return tuple(principles), tuple(stages)
 
 
+def _contains_phrase(text: str, phrase: str) -> bool:
+    phrase = phrase.lower()
+    if re.search(r"[\s-]", phrase):
+        pattern = r"\b" + re.escape(phrase).replace(r"\ ", r"[\s-]+") + r"\b"
+        return re.search(pattern, text) is not None
+    return re.search(rf"\b{re.escape(phrase)}\b", text) is not None
+
+
+def infer_concept_tags(text: str) -> tuple[str, ...]:
+    lower = text.lower()
+    return tuple(
+        tag
+        for tag, keywords in CONCEPT_KEYWORDS.items()
+        if any(_contains_phrase(lower, keyword) for keyword in keywords)
+    )
+
+
+def tokenize_lexical_terms(text: str) -> list[str]:
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9'-]*", text.lower())
+        if len(token) > 2 and token not in STOPWORDS
+    ]
+    phrases = [
+        " ".join(parts)
+        for size in (2, 3)
+        for parts in zip(*(tokens[offset:] for offset in range(size)))
+    ]
+    return tokens + phrases
+
+
+def unique_in_order(values: Iterable[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        normalized = value.strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            ordered.append(normalized)
+    return tuple(ordered)
+
+
+def extract_section_labels(text: str) -> dict[str, str]:
+    """Best-effort labels from page Markdown or a chunk.
+
+    Existing artifacts may not have labels, so these are deliberately optional
+    hints rather than required schema fields.
+    """
+
+    body = strip_front_matter(text)
+    raw_lines = body.splitlines()
+    lines = [line.strip(" #\t") for line in raw_lines]
+    labels: dict[str, str] = {}
+
+    for index, (raw_line, line) in enumerate(zip(raw_lines, lines, strict=False)):
+        if not line or len(line) > 120:
+            continue
+        is_markdown_heading = raw_line.lstrip().startswith("#")
+        compact = re.sub(r"\s+", " ", line).strip(":- ")
+        lower = compact.lower()
+        if re.match(r"^(part|chapter)\s+([0-9ivxlcdm]+)\b", lower):
+            title = compact
+            for candidate in lines[index + 1 : index + 4]:
+                candidate = re.sub(r"\s+", " ", candidate).strip(":- ")
+                if candidate and len(candidate) <= 100:
+                    title = f"{compact}: {candidate}"
+                    break
+            labels["chapter_title"] = title
+            continue
+        if re.match(r"^\d+(\.\d+){0,3}\s+\S", compact) and not re.match(r"^\d+\s*$", compact):
+            labels.setdefault("section_title", compact)
+            continue
+        if is_markdown_heading and not lower.startswith(("figure", "table")):
+            labels.setdefault("section_title", compact)
+
+    return labels
+
+
 def build_chunks(markdown_dir: Path, chunks_path: Path, *, force: bool = False) -> int:
     if chunks_path.exists() and not force:
         return sum(1 for _ in chunks_path.open("r", encoding="utf-8"))
@@ -340,13 +547,30 @@ def build_chunks(markdown_dir: Path, chunks_path: Path, *, force: bool = False) 
     ensure_parent(chunks_path)
     page_paths = sorted(markdown_dir.glob("page_*.md"))
     count = 0
+    current_chapter_title = ""
+    current_section_title = ""
     with chunks_path.open("w", encoding="utf-8") as handle:
         for page_path in page_paths:
             match = re.search(r"page_(\d+)\.md$", page_path.name)
             page = int(match.group(1)) if match else 0
             text = page_path.read_text(encoding="utf-8", errors="replace")
+            page_labels = extract_section_labels(text)
+            if page_labels.get("chapter_title"):
+                current_chapter_title = page_labels["chapter_title"]
+                current_section_title = ""
+            if page_labels.get("section_title"):
+                current_section_title = page_labels["section_title"]
             for chunk_index, chunk in enumerate(chunk_markdown_text(text)):
                 principle_tags, stage_tags = infer_tags(chunk, page)
+                concept_tags = infer_concept_tags(chunk)
+                chunk_labels = extract_section_labels(chunk)
+                chapter_title = chunk_labels.get("chapter_title", current_chapter_title)
+                section_title = chunk_labels.get("section_title", current_section_title)
+                if chunk_labels.get("chapter_title"):
+                    current_chapter_title = chunk_labels["chapter_title"]
+                    current_section_title = ""
+                if chunk_labels.get("section_title"):
+                    current_section_title = chunk_labels["section_title"]
                 text_hash = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
                 record = {
                     "schema_version": 1,
@@ -359,6 +583,9 @@ def build_chunks(markdown_dir: Path, chunks_path: Path, *, force: bool = False) 
                     "char_count": len(chunk),
                     "principle_tags": list(principle_tags),
                     "stage_tags": list(stage_tags),
+                    "concept_tags": list(concept_tags),
+                    "chapter_title": chapter_title,
+                    "section_title": section_title,
                     "text": chunk,
                 }
                 handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
@@ -439,9 +666,104 @@ def is_reference_like_chunk(text: str) -> bool:
     )
 
 
-def adjusted_retrieval_score(raw_score: float, text: str) -> float:
-    penalty = REFERENCE_CHUNK_PENALTY if is_reference_like_chunk(text) else 0.0
-    return float(raw_score) - penalty
+def is_table_of_contents_like_chunk(text: str) -> bool:
+    compact = " ".join(text.split()).lower()
+    if not compact:
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    first_lines = " ".join(lines[:4]).lower()
+    if first_lines.startswith(("contents", "table of contents")):
+        return True
+    dotted_lines = sum(bool(re.search(r"\.{2,}\s*\d{1,4}$", line)) for line in lines[:40])
+    right_aligned_page_lines = sum(
+        bool(re.search(r"\S.{8,}\s{2,}\d{1,4}$", line)) for line in lines[:50]
+    )
+    chapter_lines = sum(
+        bool(re.search(r"\b(chapter|part)\s+[0-9ivxlcdm]+\b", line.lower())) for line in lines[:40]
+    )
+    numbered_section_lines = sum(
+        bool(re.search(r"^\d+(\.\d+)*\s+.+\s+\d{1,4}$", line)) for line in lines[:40]
+    )
+    return (
+        dotted_lines >= 3
+        or right_aligned_page_lines >= 6
+        or chapter_lines >= 4
+        or numbered_section_lines >= 5
+    )
+
+
+def is_front_matter_like_chunk(text: str, page: int = 0) -> bool:
+    compact = " ".join(text.split()).lower()
+    if not compact:
+        return False
+    front_terms = (
+        "copyright",
+        "isbn",
+        "oreilly media",
+        "all rights reserved",
+        "preface",
+        "foreword",
+        "acknowledgments",
+        "about the author",
+    )
+    if compact.startswith(front_terms):
+        return True
+    if page and page > 30:
+        return False
+    return sum(term in compact for term in front_terms) >= 2
+
+
+def is_chapter_opener_like_chunk(text: str) -> bool:
+    body = strip_front_matter(text).strip()
+    if not body:
+        return False
+    compact = " ".join(body.split())
+    words = re.findall(r"[A-Za-z][A-Za-z'-]+", compact)
+    if len(words) > 90:
+        return False
+    starts_with_chapter = re.match(r"^(part|chapter)\s+([0-9ivxlcdm]+)\b", compact.lower())
+    has_sparse_quote = compact.count('"') >= 2 or compact.count("“") + compact.count("”") >= 2
+    short_heading_page = len(words) <= 45 and bool(starts_with_chapter)
+    return short_heading_page or (len(words) <= 55 and has_sparse_quote and "\n\n" not in body)
+
+
+def is_index_like_chunk(text: str) -> bool:
+    compact = " ".join(text.split()).lower()
+    if not compact:
+        return False
+    if compact.startswith("index"):
+        return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 4:
+        return False
+    index_lines = sum(
+        bool(re.search(r"[a-z][a-z -]+,\s*\d{1,4}([,-]\s*\d{1,4}){1,}", line.lower()))
+        for line in lines[:40]
+    )
+    return index_lines >= max(4, len(lines[:40]) // 3)
+
+
+def classify_chunk_noise(text: str, page: int = 0) -> tuple[str, ...]:
+    flags: list[str] = []
+    if is_reference_like_chunk(text):
+        flags.append("reference_like")
+    if is_table_of_contents_like_chunk(text):
+        flags.append("table_of_contents")
+    if is_front_matter_like_chunk(text, page):
+        flags.append("front_matter")
+    if is_chapter_opener_like_chunk(text):
+        flags.append("chapter_opener")
+    if is_index_like_chunk(text):
+        flags.append("index_like")
+    return tuple(flags)
+
+
+def chunk_noise_penalty(noise_flags: Iterable[str]) -> float:
+    return sum(NOISE_CHUNK_PENALTIES.get(flag, 0.0) for flag in noise_flags)
+
+
+def adjusted_retrieval_score(raw_score: float, text: str, *, page: int = 0) -> float:
+    return float(raw_score) - chunk_noise_penalty(classify_chunk_noise(text, page))
 
 
 def open_zvec_read_only_with_retry(
@@ -505,6 +827,9 @@ def vectorize_chunks(
             zvec.FieldSchema("source_path", zvec.DataType.STRING),
             zvec.FieldSchema("principle_tags", zvec.DataType.ARRAY_STRING),
             zvec.FieldSchema("stage_tags", zvec.DataType.ARRAY_STRING),
+            zvec.FieldSchema("concept_tags", zvec.DataType.ARRAY_STRING),
+            zvec.FieldSchema("chapter_title", zvec.DataType.STRING),
+            zvec.FieldSchema("section_title", zvec.DataType.STRING),
             zvec.FieldSchema("text_hash", zvec.DataType.STRING),
         ],
         vectors=zvec.VectorSchema("embedding", zvec.DataType.VECTOR_FP32, dim),
@@ -518,6 +843,9 @@ def vectorize_chunks(
                 record["text"],
                 " ".join(record.get("principle_tags", [])),
                 " ".join(record.get("stage_tags", [])),
+                " ".join(record.get("concept_tags", [])),
+                record.get("chapter_title", ""),
+                record.get("section_title", ""),
             ]
         )
         batch.append(
@@ -531,6 +859,9 @@ def vectorize_chunks(
                     "source_path": record["source_path"],
                     "principle_tags": list(record.get("principle_tags", [])),
                     "stage_tags": list(record.get("stage_tags", [])),
+                    "concept_tags": list(record.get("concept_tags", [])),
+                    "chapter_title": record.get("chapter_title", ""),
+                    "section_title": record.get("section_title", ""),
                     "text_hash": record["text_hash"],
                 },
             )
@@ -617,6 +948,92 @@ def build_context_query(task: str, stage: str, next_steps: str) -> str:
     )
 
 
+def build_query_profile(task: str, stage: str, next_steps: str) -> dict[str, Any]:
+    stage = normalize_stage(stage)
+    profile_text = " ".join([task, next_steps, stage, *STAGE_LENSES[stage]])
+    query_terms = unique_in_order(tokenize_lexical_terms(profile_text))
+    concept_tags = set(infer_concept_tags(profile_text))
+    principle_tags = {
+        tag
+        for tag, keywords in PRINCIPLE_KEYWORDS.items()
+        if any(_contains_phrase(profile_text.lower(), keyword) for keyword in keywords)
+    }
+    return {
+        "text": profile_text,
+        "terms": query_terms,
+        "concept_tags": tuple(sorted(concept_tags)),
+        "principle_tags": tuple(sorted(principle_tags)),
+    }
+
+
+def lexical_match_score(query_terms: Iterable[str], text: str) -> tuple[float, tuple[str, ...]]:
+    text_lower = text.lower()
+    text_terms = set(tokenize_lexical_terms(text))
+    matched: list[str] = []
+    score = 0.0
+    for term in query_terms:
+        if " " in term:
+            if _contains_phrase(text_lower, term):
+                matched.append(term)
+                score += 0.035
+        elif term in text_terms:
+            matched.append(term)
+            score += 0.014
+    return min(score, 0.28), tuple(matched[:14])
+
+
+def query_tag_boost(
+    query_profile: dict[str, Any],
+    record_tags: Iterable[str],
+) -> tuple[float, tuple[str, ...]]:
+    query_tags = set(query_profile["concept_tags"]) | set(query_profile["principle_tags"])
+    matched = tuple(sorted(query_tags & set(record_tags)))
+    return min(0.035 * len(matched), 0.18), matched
+
+
+def explain_hit(
+    *,
+    vector_score: float,
+    lexical_score: float,
+    query_boost: float,
+    noise_penalty: float,
+    matched_terms: tuple[str, ...],
+    matched_tags: tuple[str, ...],
+    noise_flags: tuple[str, ...],
+    chapter_title: str,
+    section_title: str,
+) -> dict[str, Any]:
+    parts: list[str] = [f"vector score {vector_score:.4f}"]
+    if lexical_score:
+        parts.append(f"lexical overlap +{lexical_score:.4f}")
+    if query_boost:
+        parts.append(f"query tag boost +{query_boost:.4f}")
+    if noise_penalty:
+        parts.append(f"noise penalty -{noise_penalty:.4f}")
+    if matched_terms:
+        parts.append("matched terms: " + ", ".join(matched_terms[:8]))
+    if matched_tags:
+        parts.append("matched tags: " + ", ".join(matched_tags))
+    if chapter_title or section_title:
+        location = " / ".join(part for part in (chapter_title, section_title) if part)
+        parts.append(f"section: {location}")
+    if noise_flags:
+        parts.append("downranked as " + ", ".join(noise_flags))
+
+    return {
+        "summary": "; ".join(parts),
+        "matched_terms": list(matched_terms),
+        "matched_tags": list(matched_tags),
+        "noise_flags": list(noise_flags),
+        "scores": {
+            "vector": vector_score,
+            "lexical": lexical_score,
+            "query_boost": query_boost,
+            "noise_penalty": noise_penalty,
+        },
+    }
+
+
 def search_context(
     *,
     artifact_root: Path,
@@ -643,8 +1060,9 @@ def search_context(
 
     chunks = load_chunks(chunks_path)
     query = build_context_query(task, stage, next_steps)
+    query_profile = build_query_profile(task, stage, next_steps)
     collection = open_zvec_read_only_with_retry(zvec, vector_path)
-    candidate_top_k = min(len(chunks), max(top_k, top_k * 4, top_k + 8))
+    candidate_top_k = min(len(chunks), max(top_k, top_k * 6, top_k + 12))
     results = collection.query(
         zvec.VectorQuery("embedding", vector=embed_hash(query, dim=dim)),
         topk=candidate_top_k,
@@ -657,19 +1075,56 @@ def search_context(
         record = chunks.get(chunk_id)
         if record is None:
             continue
-        score = adjusted_retrieval_score(raw_score, record["text"])
+        text = record["text"]
+        page = int(record["page"])
+        principle_tags = tuple(record.get("principle_tags", []))
+        stage_tags = tuple(record.get("stage_tags", []))
+        concept_tags = tuple(record.get("concept_tags") or infer_concept_tags(text))
+        all_tags = (*principle_tags, *stage_tags, *concept_tags)
+        lexical_score, matched_terms = lexical_match_score(query_profile["terms"], text)
+        tag_boost, matched_tags = query_tag_boost(query_profile, all_tags)
+        noise_flags = classify_chunk_noise(text, page)
+        noise_penalty = chunk_noise_penalty(noise_flags)
+        score = raw_score + lexical_score + tag_boost - noise_penalty
+        chapter_title = str(record.get("chapter_title", "") or "")
+        section_title = str(record.get("section_title", "") or "")
+        why_this_hit = explain_hit(
+            vector_score=raw_score,
+            lexical_score=lexical_score,
+            query_boost=tag_boost,
+            noise_penalty=noise_penalty,
+            matched_terms=matched_terms,
+            matched_tags=matched_tags,
+            noise_flags=noise_flags,
+            chapter_title=chapter_title,
+            section_title=section_title,
+        )
         hits.append(
             SearchHit(
                 chunk_id=record["id"],
                 score=score,
-                page=int(record["page"]),
+                page=page,
                 source_path=record["source_path"],
-                principle_tags=tuple(record.get("principle_tags", [])),
-                stage_tags=tuple(record.get("stage_tags", [])),
-                text=record["text"],
+                principle_tags=principle_tags,
+                stage_tags=stage_tags,
+                text=text,
+                concept_tags=concept_tags,
+                chapter_title=chapter_title,
+                section_title=section_title,
+                vector_score=raw_score,
+                lexical_score=lexical_score,
+                query_boost=tag_boost,
+                noise_penalty=noise_penalty,
+                matched_terms=matched_terms,
+                matched_tags=matched_tags,
+                noise_flags=noise_flags,
+                why_this_hit=why_this_hit,
             )
         )
     hits.sort(key=lambda hit: (-hit.score, hit.page, hit.chunk_id))
+    clean_hits = [hit for hit in hits if not (set(hit.noise_flags) & NOISE_FILTER_FLAGS)]
+    if len(clean_hits) >= top_k:
+        hits = clean_hits
     return hits[:top_k]
 
 
@@ -733,7 +1188,8 @@ def render_context_package_markdown(
     retrieved = "\n".join(
         [
             f"- {hit.chunk_id}: page {hit.page}, score {hit.score:.4f}, "
-            f"tags={','.join(hit.principle_tags or hit.stage_tags or ('untagged',))}"
+            f"tags={','.join(hit.principle_tags or hit.concept_tags or hit.stage_tags or ('untagged',))}; "
+            f"why={hit.why_this_hit.get('summary', '') if hit.why_this_hit else 'not explained'}"
             for hit in hits
         ]
     )
@@ -773,8 +1229,15 @@ def render_context_package_markdown(
                 "",
                 f"- Page: {hit.page}",
                 f"- Score: {hit.score:.4f}",
+                f"- Vector score: {hit.vector_score:.4f}",
+                f"- Lexical score: {hit.lexical_score:.4f}",
+                f"- Query boost: {hit.query_boost:.4f}",
+                f"- Noise penalty: {hit.noise_penalty:.4f}",
                 f"- Source path: {hit.source_path}",
+                f"- Location: {' / '.join(part for part in (hit.chapter_title, hit.section_title) if part) or 'not labeled'}",
                 f"- Principle tags: {', '.join(hit.principle_tags) or 'none'}",
+                f"- Concept tags: {', '.join(hit.concept_tags) or 'none'}",
+                f"- Why this hit: {hit.why_this_hit.get('summary', 'not explained') if hit.why_this_hit else 'not explained'}",
                 "",
                 trim_snippet(hit.text, max_snippet_chars),
                 "",
@@ -831,6 +1294,17 @@ def build_context_package(
                     "source_path": hit.source_path,
                     "principle_tags": list(hit.principle_tags),
                     "stage_tags": list(hit.stage_tags),
+                    "concept_tags": list(hit.concept_tags),
+                    "chapter_title": hit.chapter_title,
+                    "section_title": hit.section_title,
+                    "vector_score": hit.vector_score,
+                    "lexical_score": hit.lexical_score,
+                    "query_boost": hit.query_boost,
+                    "noise_penalty": hit.noise_penalty,
+                    "matched_terms": list(hit.matched_terms),
+                    "matched_tags": list(hit.matched_tags),
+                    "noise_flags": list(hit.noise_flags),
+                    "why_this_hit": hit.why_this_hit or {},
                     "text": trim_snippet(hit.text, max_snippet_chars),
                 }
                 for hit in hits

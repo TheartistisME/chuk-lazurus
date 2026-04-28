@@ -45,12 +45,26 @@ The layout follows the project principles the tool is meant to teach:
 - Logs before indexes: page Markdown and `chunks.jsonl` are the durable facts.
 - Derived views are disposable: zvec can be rebuilt from `chunks.jsonl`.
 - Context is bounded: package generation retrieves a small, stage-specific set.
-- Handoffs carry provenance: every hit reports page, chunk id, score, and tags.
+- Handoffs carry provenance: every hit reports page, chunk id, score, tags,
+  section labels when available, and why it matched.
 
 Package generation opens zvec in read-only mode with a short retry loop so
 parallel agents are less likely to trip over the local collection lock. Retrieval
-also asks for a wider candidate pool, softly downranks citation-list chunks, and
-then returns the bounded `top-k` package.
+asks zvec for a wider bounded candidate pool, then reranks locally with a hybrid
+score:
+
+- deterministic hash-vector similarity from zvec;
+- lexical overlap with the task, stage lens, and next steps;
+- query-aware boosts for DDIA concepts such as event logs, snapshots,
+  materialized views, manifests, schema evolution, atomicity, replay,
+  checkpoints, deterministic rebuilds, batch processing, partitioning,
+  consistency, durability, and source-of-truth records;
+- penalties for low-value context such as tables of contents, front matter,
+  chapter openers, index pages, and bibliography/reference-like chunks.
+
+The package includes a `why_this_hit` explanation in JSON output and a
+`Why this hit` line in Markdown output so agents can judge whether a retrieved
+chunk is useful or merely nearby.
 
 ## Commands
 
