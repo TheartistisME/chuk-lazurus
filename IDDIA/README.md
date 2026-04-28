@@ -100,7 +100,9 @@ Each stage adds a different retrieval lens:
 - `exit`: issue status, commits, push state, replay notes.
 
 Tracked slash-command templates live in `IDDIA/slash/agent-context/`. Local
-Claude runtime copies can live in `.claude/commands/`, which this repo ignores.
+Claude runtime copies can live in `.claude/commands/agent-context/`, which this
+repo ignores. The nested directory keeps the slash namespace while avoiding
+colon characters in Windows filenames.
 
 Install local runtime copies with:
 

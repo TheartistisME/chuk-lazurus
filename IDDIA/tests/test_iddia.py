@@ -11,6 +11,7 @@ from IDDIA import (
     embed_hash,
     next_stage,
 )
+from IDDIA.install_slash_commands import install_commands
 
 
 def test_hash_embedding_is_deterministic_and_normalized():
@@ -52,3 +53,16 @@ def test_context_query_includes_stage_task_and_next_steps():
 def test_unknown_stage_is_rejected():
     with pytest.raises(ValueError):
         next_stage("ship")
+
+
+def test_slash_command_installer_uses_windows_safe_namespace_dir(tmp_path):
+    source_dir = tmp_path / "source"
+    target_dir = tmp_path / "commands"
+    source_dir.mkdir()
+    (source_dir / "build.md").write_text("build command", encoding="utf-8")
+
+    installed = install_commands(source_dir, target_dir)
+
+    assert installed == [target_dir / "agent-context" / "build.md"]
+    assert installed[0].read_text(encoding="utf-8") == "build command"
+    assert ":" not in installed[0].name

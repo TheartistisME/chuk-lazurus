@@ -11,12 +11,21 @@ SOURCE_DIR = TOOL_ROOT / "slash" / "agent-context"
 TARGET_DIR = REPO_ROOT / ".claude" / "commands"
 
 
-def main() -> None:
-    TARGET_DIR.mkdir(parents=True, exist_ok=True)
-    for source in sorted(SOURCE_DIR.glob("*.md")):
-        target = TARGET_DIR / f"agent-context:{source.stem}.md"
+def install_commands(source_dir: Path = SOURCE_DIR, target_dir: Path = TARGET_DIR) -> list[Path]:
+    namespace_dir = target_dir / "agent-context"
+    namespace_dir.mkdir(parents=True, exist_ok=True)
+
+    installed: list[Path] = []
+    for source in sorted(source_dir.glob("*.md")):
+        target = namespace_dir / source.name
         shutil.copy2(source, target)
-        print(f"{source.relative_to(REPO_ROOT)} -> {target.relative_to(REPO_ROOT)}")
+        installed.append(target)
+    return installed
+
+
+def main() -> None:
+    for target in install_commands():
+        print(f"{target.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":
