@@ -28,6 +28,10 @@ class MemoryRecallConfig:
     candidate_pool: int = 12
     k_hot: int = 4
     k_warm: int = 4
+    selector_policy: str = "utility-v2"
+    dense_scoring: str = "deterministic"
+    rrf_k: float = 60.0
+    mmr_lambda: float = 0.75
     dedupe_sessions: bool = True
     residual_mode: str = "stream"
     insertion_family: str = "full_attention"
@@ -107,6 +111,10 @@ def _parse_int(raw_value: object) -> int:
     return int(str(raw_value).strip())
 
 
+def _parse_float(raw_value: object) -> float:
+    return float(str(raw_value).strip())
+
+
 def _parse_str(raw_value: object) -> str:
     return str(raw_value).strip()
 
@@ -118,6 +126,10 @@ _ENV_FIELD_PARSERS: dict[str, tuple[str, Any]] = {
     "LAZARUS_KV_ROUTE_CANDIDATE_POOL": ("route_candidate_pool", _parse_int),
     "LAZARUS_KV_K_HOT": ("k_hot", _parse_int),
     "LAZARUS_KV_K_WARM": ("k_warm", _parse_int),
+    "LAZARUS_ASI_SELECTOR_POLICY": ("selector_policy", _parse_str),
+    "LAZARUS_ASI_DENSE_SCORING": ("dense_scoring", _parse_str),
+    "LAZARUS_ASI_RRF_K": ("rrf_k", _parse_float),
+    "LAZARUS_ASI_MMR_LAMBDA": ("mmr_lambda", _parse_float),
     "LAZARUS_KV_DEDUP_SESSION": ("dedupe_sessions", _parse_bool),
     "LAZARUS_MAX_TOTAL_INJECT_TOKENS": ("max_total_inject_tokens", _parse_int),
     "LAZARUS_KV_HOT_BUDGET_MIB": ("hot_budget_mib", _parse_int),
@@ -161,6 +173,10 @@ def _normalized(config: MemoryRecallConfig) -> MemoryRecallConfig:
         candidate_pool=max(1, int(config.candidate_pool)),
         k_hot=max(0, int(config.k_hot)),
         k_warm=max(0, int(config.k_warm)),
+        selector_policy=str(config.selector_policy).strip().lower().replace("_", "-"),
+        dense_scoring=str(config.dense_scoring).strip().lower().replace("-", "_"),
+        rrf_k=max(1.0, float(config.rrf_k)),
+        mmr_lambda=min(1.0, max(0.0, float(config.mmr_lambda))),
         max_total_inject_tokens=max(0, int(config.max_total_inject_tokens)),
         hot_budget_mib=max(1, int(config.hot_budget_mib)),
         semantic_prefix_tokens=max(0, int(config.semantic_prefix_tokens)),
@@ -202,6 +218,10 @@ def memory_config_env(config: MemoryRecallConfig) -> dict[str, str]:
         "LAZARUS_MAX_TOTAL_INJECT_TOKENS": str(int(config.max_total_inject_tokens)),
         "LAZARUS_KV_SEMANTIC_PREFIX": "1" if config.semantic_prefix_enabled else "0",
         "LAZARUS_KV_SEMANTIC_PREFIX_TOKENS": str(int(config.semantic_prefix_tokens)),
+        "LAZARUS_ASI_SELECTOR_POLICY": str(config.selector_policy),
+        "LAZARUS_ASI_DENSE_SCORING": str(config.dense_scoring),
+        "LAZARUS_ASI_RRF_K": str(float(config.rrf_k)),
+        "LAZARUS_ASI_MMR_LAMBDA": str(float(config.mmr_lambda)),
     }
 
 

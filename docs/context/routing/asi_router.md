@@ -32,6 +32,27 @@ with `c = ucb1_c = 1.414` (from ASI-Evolve `config.yaml` default).
 | `exploration_ratio` | `0.2` | ASI-Evolve config.yaml |
 | `exploitation_ratio` | `0.3` | ASI-Evolve config.yaml |
 | `candidate_pool` | `64` | axis-2 contract |
+| `dense_scoring` | `off` in the bare API; `deterministic` in the REPL config | selector-v2 |
+| `rrf_k` | `60` | selector-v2 |
+| `ranking_policy` | `rank-v1` in the bare API; `utility-v2` in the REPL config | compatibility + selector-v2 |
+
+## Hybrid Retrieval and RRF
+
+The router still computes the original TF-IDF score plus exact literal and
+entity boosts. It now also emits optional dense semantic score, lexical/dense/
+literal/entity ranks, reciprocal-rank-fusion score, relevance score, estimated
+cost, and utility telemetry on each `AsiRouterCandidate`.
+
+Dense scoring is controlled by `dense_scoring` or `LAZARUS_ASI_DENSE_SCORING`:
+
+- `off`: no dense score; preserves the old router default for API callers.
+- `deterministic`: local hash-based semantic sketch; no network/model load.
+- `auto`: emits explicit warning telemetry and uses deterministic fallback
+  when no embedding provider is configured.
+- `provided`: caller must pass query and window vectors; missing vectors raise.
+
+RRF uses `sum_s 1 / (k + rank_s(w))`, with `k=60` by default. The rank
+sources are lexical, dense, literal, and entity when available.
 
 ## Adaptations from ASI-Evolve
 
@@ -103,16 +124,21 @@ Module: `chuk_lazarus.session_retrieval.asi_router` (re-exported from
 
 - `AsiRouterCandidate` — frozen dataclass
   `(handle, window_id, ucb1_score, raw_router_score, island_id, visit_count,
-  mean_reward)`.
+  mean_reward)` plus selector-v2 fields such as `dense_score`, `rrf_score`,
+  `relevance_score`, `estimated_cost`, `utility_score`, and per-source ranks.
 - `AsiRouterState` — mutable dataclass holding the UCB1 / island bookkeeping.
 - `ASI_ROUTER_STATE_FILENAME` — constant `"asi_router_state.json"`.
 - `asi_route_candidates(handles, query_text, tokenizer, *, ucb1_c=1.414,
   num_islands=5, migration_interval=10, migration_rate=0.1,
   exploration_ratio=0.2, exploitation_ratio=0.3, candidate_pool=64,
-  archive_root=None)` — return the full ranked list.
+  archive_root=None, dense_scoring=None, dense_query_vector=None,
+  dense_window_vectors=None, rrf_k=60, ranking_policy=None)` — return the
+  full ranked list.
 - `load_asi_router_state(archive_root, *, num_islands=5,
   migration_interval=10, migration_rate=0.1)` — read state (or fresh).
 - `save_asi_router_state(archive_root, state)` — atomic persist.
+- `record_asi_feedback(archive_root, assignments, *, reward, outcome)` —
+  update visit counts and incremental mean reward from observed outcomes.
 - `compute_ucb1(q_w, n_w, total_visits, *, ucb1_c=1.414)` — canonical math.
 - `assign_island(session_id, window_id, *, keyword_count,
   session_age_seconds, num_islands=5)` — deterministic bin.
@@ -120,16 +146,28 @@ Module: `chuk_lazarus.session_retrieval.asi_router` (re-exported from
 
 ## Integration
 
-Axis-3 will consume the returned `list[AsiRouterCandidate]` to tier windows
-into exploration / exploitation pools (using `exploration_ratio` and
-`exploitation_ratio`). Axis-4 / axis-5 are responsible for updating
-`visit_counts` and `mean_rewards` after downstream evaluation and calling
-`save_asi_router_state` to persist.
+Axis-3 consumes the returned `list[AsiRouterCandidate]` to tier windows.
+The interactive REPL uses `utility-v2` by default through
+`MemoryRecallConfig`; direct library callers still get `rank-v1` defaults
+unless they opt in. Axis-4 / axis-5 update `visit_counts` and `mean_rewards`
+after downstream evaluation by calling `record_asi_feedback` or
+`save_asi_router_state`.
 
 The router does NOT persist state itself — callers are expected to call
 `save_asi_router_state` explicitly after any downstream telemetry update.
 This preserves purity of `asi_route_candidates` except for the optional
 load-from-archive step.
+
+## Evaluation
+
+Run the hard selector eval with:
+
+```
+python scripts/evaluate_memory_selector.py --output artifacts/memory_selector_eval.json
+```
+
+The JSON report includes baseline score, new score, delta, selected windows
+and tiers, per-query score breakdowns, and pass/fail for the hard criteria.
 
 ## Provenance
 

@@ -5,6 +5,10 @@ ranked descending by `ucb1_score` (as produced by `asi_route_candidates`),
 the policy assigns each candidate a `TierLabel` (`HOT` / `WARM` / `COLD`)
 purely as a function of its zero-based rank.
 
+The compatibility policy remains `rank-v1`. The interactive memory/KV-direct
+path now defaults to `utility-v2`, which selects windows by expected utility
+under budget and then assigns tiers dynamically.
+
 ## Provenance
 
 - LEAD frozen contract: `ve-ins-0mo9p8kou0000d20e0d` (axis-3 of
@@ -36,6 +40,40 @@ tiers may be empty.
 | `candidate_pool` | `64` | axis-2 contract |
 | `policy_version` | `"rank-v1"` | axis-3 contract |
 
+## Utility Policy - utility-v2
+
+`utility-v2` keeps up to `candidate_pool` candidates for telemetry, but only
+HOT/WARM assignments are active for KV-direct generation. It scores:
+
+```
+U(w) = alpha * Rel(w) + beta * RRF(w) + gamma * Freshness(w)
+     + delta * LearnedReward(w) - eta * CostNorm(w)
+```
+
+Defaults: `alpha=1.0`, `beta=1.0`, `gamma=0.10`, `delta=0.50`,
+`eta=0.10`, `mmr_lambda=0.75`, `rrf_k=60`.
+
+Selection is budget-aware: candidates are greedily admitted under `budget`
+using MMR pressure:
+
+```
+MMR(w) = lambda * Rel(w, q) - (1 - lambda) * max Sim(w, selected)
+```
+
+The similarity term uses dense vectors when present and falls back to content
+fingerprints. This suppresses duplicate or near-duplicate windows before they
+consume HOT/WARM budget.
+
+Dynamic tiers:
+
+- `HOT`: active, high-utility candidate that survives budget pressure.
+- `WARM`: active, useful but lower-confidence candidate.
+- `COLD`: retained for evidence/telemetry but not active KV in the REPL's
+  `utility-v2` path.
+
+The old fixed slicing remains available with
+`LAZARUS_ASI_SELECTOR_POLICY=rank-v1` or `policy_version="rank-v1"`.
+
 ## Public API
 
 Module: `chuk_lazarus.session_retrieval.tier_policy`.
@@ -44,7 +82,8 @@ Module: `chuk_lazarus.session_retrieval.tier_policy`.
 - `TierAssignment` — frozen dataclass
   `(candidate, tier, rank, policy_version, policy_params)`.
 - `assign_tiers(candidates, *, K_HOT=4, K_WARM=12, candidate_pool=64,
-  policy_version="rank-v1")` — deterministic rank-based tier assignment.
+  policy_version="rank-v1", budget=None, mmr_lambda=0.75, rrf_k=60, ...)`
+  — deterministic rank-v1 or dynamic utility-v2 tier assignment.
 - `tier_assignment_to_dict(ta)` — one-shot dict encode for a single
   assignment.
 - `tier_assignment_from_dict(data)` — inverse; `ValueError` on drift.
@@ -54,6 +93,7 @@ Module: `chuk_lazarus.session_retrieval.tier_policy`.
   schema mismatch, unknown tier label, missing required keys, or a mixed
   envelope (`policy_version` disagreeing with the first assignment).
 - `POLICY_VERSION_RANK_V1 = "rank-v1"`.
+- `POLICY_VERSION_UTILITY_V2 = "utility-v2"`.
 - `TIER_POLICY_SCHEMA_VERSION = 1`.
 
 ## JSON Schema v1
@@ -93,7 +133,7 @@ Rules:
 - Path fields serialize via `str(path)`; deserialize via `Path(value)`.
 - `original_input_dir=None` serializes as JSON `null`.
 - `tier` serializes as its `.value` string; parsed back via `TierLabel(value)`.
-- `policy_params` values are preserved as integers.
+- `policy_params` values are preserved as JSON scalar values.
 - Envelope `policy_version` MUST match the first assignment's
   `policy_version` — mixed-policy blobs are rejected.
 
@@ -118,6 +158,26 @@ Axis-5 (kv-direct-expansion): reads the same assignments to decide which
 windows expand into the direct KV path. The JSON envelope round-trip
 guarantees axis-5 can replay a previously chosen tier layout exactly,
 enabling deterministic offline replay of the KV-direct chat surface.
+
+## Runtime Flags and Eval
+
+The REPL resolves selector controls through `MemoryRecallConfig` and env vars:
+
+- `LAZARUS_ASI_SELECTOR_POLICY`: `utility-v2` default in the REPL; set
+  `rank-v1` for compatibility.
+- `LAZARUS_ASI_DENSE_SCORING`: `deterministic`, `auto`, `provided`, or `off`.
+- `LAZARUS_ASI_RRF_K`: RRF denominator constant, default `60`.
+- `LAZARUS_ASI_MMR_LAMBDA`: MMR relevance/diversity tradeoff, default `0.75`.
+- `LAZARUS_ASI_COST_MODE`: `windows` default, or `tokens` for token-count cost.
+
+Run:
+
+```
+python scripts/evaluate_memory_selector.py --output artifacts/memory_selector_eval.json
+```
+
+The report is machine-readable and includes baseline/new score, delta,
+per-query selected windows and tiers, and pass/fail criteria.
 
 ## Future Policies
 

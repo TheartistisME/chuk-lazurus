@@ -33,11 +33,13 @@ from chuk_lazarus.session_retrieval.asi_router import (
     assign_island,
     compute_ucb1,
     load_asi_router_state,
+    record_asi_feedback,
     save_asi_router_state,
 )
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle
 from chuk_lazarus.session_retrieval.tier_policy import (
     POLICY_VERSION_RANK_V1,
+    POLICY_VERSION_UTILITY_V2,
     TIER_POLICY_SCHEMA_VERSION,
     TierAssignment,
     TierLabel,
@@ -80,6 +82,7 @@ __all__ = [
     "AsiRouterState",
     "CheckpointHandle",
     "POLICY_VERSION_RANK_V1",
+    "POLICY_VERSION_UTILITY_V2",
     "QueryResult",
     "SessionRetriever",
     "TIER_POLICY_SCHEMA_VERSION",
@@ -91,6 +94,7 @@ __all__ = [
     "assign_tiers",
     "compute_ucb1",
     "load_asi_router_state",
+    "record_asi_feedback",
     "route_candidates",
     "save_asi_router_state",
     "tier_assignment_from_dict",

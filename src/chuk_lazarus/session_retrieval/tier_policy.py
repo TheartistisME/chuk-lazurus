@@ -25,6 +25,7 @@ schema mismatch or mixed-policy envelope rather than falling back silently.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -35,7 +36,10 @@ from chuk_lazarus.session_retrieval.asi_router import AsiRouterCandidate
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle
 
 POLICY_VERSION_RANK_V1: str = "rank-v1"
+POLICY_VERSION_UTILITY_V2: str = "utility-v2"
 TIER_POLICY_SCHEMA_VERSION: int = 1
+DEFAULT_MMR_LAMBDA: float = 0.75
+DEFAULT_RRF_K: float = 60.0
 
 
 class TierLabel(str, Enum):
@@ -57,7 +61,247 @@ class TierAssignment:
     tier: TierLabel
     rank: int
     policy_version: str
-    policy_params: dict[str, int | float]
+    policy_params: dict[str, int | float | str]
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _candidate_cost(candidate: AsiRouterCandidate) -> float:
+    return max(
+        1.0,
+        _as_float(
+            getattr(candidate, "estimated_cost", getattr(candidate, "cost", 1.0)),
+            1.0,
+        ),
+    )
+
+
+def _candidate_similarity(a: AsiRouterCandidate, b: AsiRouterCandidate) -> float:
+    vec_a = tuple(float(v) for v in (getattr(a, "dense_vector", ()) or ()))
+    vec_b = tuple(float(v) for v in (getattr(b, "dense_vector", ()) or ()))
+    if vec_a and vec_b:
+        n = min(len(vec_a), len(vec_b))
+        dot = sum(vec_a[i] * vec_b[i] for i in range(n))
+        norm_a = math.sqrt(sum(v * v for v in vec_a[:n]))
+        norm_b = math.sqrt(sum(v * v for v in vec_b[:n]))
+        if norm_a > 0.0 and norm_b > 0.0:
+            return max(0.0, min(1.0, dot / (norm_a * norm_b)))
+    fp_a = str(getattr(a, "content_fingerprint", "") or "")
+    fp_b = str(getattr(b, "content_fingerprint", "") or "")
+    if fp_a and fp_a == fp_b:
+        return 1.0
+    if (
+        str(getattr(a.handle, "session_id", "")) == str(getattr(b.handle, "session_id", ""))
+        and int(getattr(a, "window_id", -1)) == int(getattr(b, "window_id", -2))
+    ):
+        return 1.0
+    return 0.0
+
+
+def _utility_for_candidate(
+    candidate: AsiRouterCandidate,
+    *,
+    max_cost: float,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    delta: float,
+    eta: float,
+) -> float:
+    rel = _as_float(
+        getattr(candidate, "relevance_score", 0.0),
+        _as_float(getattr(candidate, "raw_router_score", 0.0), 0.0),
+    )
+    if rel <= 0.0:
+        rel = _as_float(getattr(candidate, "raw_router_score", 0.0), 0.0)
+    rrf = _as_float(getattr(candidate, "rrf_score", 0.0), 0.0)
+    fresh = _as_float(getattr(candidate, "freshness_score", 0.0), 0.0)
+    reward = _as_float(
+        getattr(candidate, "learned_reward", getattr(candidate, "mean_reward", 0.0)),
+        0.0,
+    )
+    cost_norm = _candidate_cost(candidate) / max(1.0, float(max_cost))
+    utility = (
+        float(alpha) * rel
+        + float(beta) * rrf
+        + float(gamma) * fresh
+        + float(delta) * reward
+        - float(eta) * cost_norm
+    )
+    explicit = _as_float(getattr(candidate, "utility_score", 0.0), 0.0)
+    if explicit > 0.0 and rel <= 0.0 and rrf <= 0.0:
+        return explicit
+    return utility
+
+
+def _mmr_budget_order(
+    candidates: Sequence[AsiRouterCandidate],
+    *,
+    utilities: dict[int, float],
+    budget: float,
+    mmr_lambda: float,
+) -> list[AsiRouterCandidate]:
+    selected: list[AsiRouterCandidate] = []
+    remaining = list(candidates)
+    spent = 0.0
+    while remaining:
+        feasible = [
+            candidate for candidate in remaining
+            if spent + _candidate_cost(candidate) <= float(budget)
+        ]
+        if not feasible:
+            break
+        best = max(
+            feasible,
+            key=lambda candidate: (
+                float(mmr_lambda) * max(0.0, utilities[id(candidate)])
+                - (1.0 - float(mmr_lambda))
+                * max(
+                    (_candidate_similarity(candidate, chosen) for chosen in selected),
+                    default=0.0,
+                ),
+                utilities[id(candidate)] / _candidate_cost(candidate),
+                utilities[id(candidate)],
+                -_candidate_cost(candidate),
+                str(candidate.handle.session_id),
+                -int(candidate.window_id),
+            ),
+        )
+        if utilities[id(best)] <= 0.0 and selected:
+            break
+        selected.append(best)
+        spent += _candidate_cost(best)
+        remaining.remove(best)
+    return selected
+
+
+def _assign_tiers_utility_v2(
+    candidates: Sequence[AsiRouterCandidate],
+    *,
+    K_HOT: int,
+    K_WARM: int,
+    candidate_pool: int,
+    policy_version: str,
+    budget: int | float | None,
+    mmr_lambda: float,
+    rrf_k: float,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    delta: float,
+    eta: float,
+    hot_utility_threshold: float,
+    warm_utility_threshold: float,
+) -> list[TierAssignment]:
+    kept = list(candidates)[: int(candidate_pool)]
+    if not kept:
+        return []
+
+    max_cost = max((_candidate_cost(candidate) for candidate in kept), default=1.0)
+    utilities = {
+        id(candidate): _utility_for_candidate(
+            candidate,
+            max_cost=max_cost,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            delta=delta,
+            eta=eta,
+        )
+        for candidate in kept
+    }
+    total_cost = sum(_candidate_cost(candidate) for candidate in kept)
+    active_budget = float(total_cost if budget is None else max(0.0, float(budget)))
+    active = _mmr_budget_order(
+        kept,
+        utilities=utilities,
+        budget=active_budget,
+        mmr_lambda=float(mmr_lambda),
+    )
+    active_ids = {id(candidate) for candidate in active}
+    active_sorted = sorted(
+        active,
+        key=lambda candidate: (
+            -utilities[id(candidate)],
+            -_as_float(getattr(candidate, "rrf_score", 0.0), 0.0),
+            str(candidate.handle.session_id),
+            int(candidate.window_id),
+        ),
+    )
+    inactive_sorted = sorted(
+        [candidate for candidate in kept if id(candidate) not in active_ids],
+        key=lambda candidate: (
+            -utilities[id(candidate)],
+            str(candidate.handle.session_id),
+            int(candidate.window_id),
+        ),
+    )
+
+    top_utility = max((utilities[id(candidate)] for candidate in active_sorted), default=0.0)
+    hot_floor = max(float(hot_utility_threshold), top_utility * 0.60)
+    warm_floor = max(float(warm_utility_threshold), top_utility * 0.20)
+    tier_by_id: dict[int, TierLabel] = {}
+    hot_count = 0
+    warm_count = 0
+    for candidate in active_sorted:
+        utility = utilities[id(candidate)]
+        if hot_count < int(K_HOT) and utility >= hot_floor and utility > 0.0:
+            tier_by_id[id(candidate)] = TierLabel.HOT
+            hot_count += 1
+        elif warm_count < int(K_WARM) and utility >= warm_floor and utility > 0.0:
+            tier_by_id[id(candidate)] = TierLabel.WARM
+            warm_count += 1
+        else:
+            tier_by_id[id(candidate)] = TierLabel.COLD
+    if (
+        hot_count == 0
+        and active_sorted
+        and utilities[id(active_sorted[0])] >= float(hot_utility_threshold)
+        and K_HOT > 0
+    ):
+        first = active_sorted[0]
+        if tier_by_id.get(id(first)) == TierLabel.WARM:
+            warm_count = max(0, warm_count - 1)
+        tier_by_id[id(first)] = TierLabel.HOT
+        hot_count = 1
+
+    policy_params: dict[str, int | float | str] = {
+        "K_HOT": int(K_HOT),
+        "K_WARM": int(K_WARM),
+        "candidate_pool": int(candidate_pool),
+        "budget": float(active_budget),
+        "mmr_lambda": float(mmr_lambda),
+        "rrf_k": float(rrf_k),
+        "alpha": float(alpha),
+        "beta": float(beta),
+        "gamma": float(gamma),
+        "delta": float(delta),
+        "eta": float(eta),
+        "hot_utility_threshold": float(hot_utility_threshold),
+        "warm_utility_threshold": float(warm_utility_threshold),
+    }
+    ordered = [
+        *[candidate for candidate in active_sorted if tier_by_id[id(candidate)] == TierLabel.HOT],
+        *[candidate for candidate in active_sorted if tier_by_id[id(candidate)] == TierLabel.WARM],
+        *[candidate for candidate in active_sorted if tier_by_id[id(candidate)] == TierLabel.COLD],
+        *inactive_sorted,
+    ]
+    assignments: list[TierAssignment] = []
+    for rank, candidate in enumerate(ordered):
+        tier = tier_by_id.get(id(candidate), TierLabel.COLD)
+        assignments.append(TierAssignment(
+            candidate=candidate,
+            tier=tier,
+            rank=int(rank),
+            policy_version=str(policy_version),
+            policy_params=dict(policy_params),
+        ))
+    return assignments
 
 
 def assign_tiers(
@@ -67,6 +311,16 @@ def assign_tiers(
     K_WARM: int = 12,
     candidate_pool: int = 64,
     policy_version: str = POLICY_VERSION_RANK_V1,
+    budget: int | float | None = None,
+    mmr_lambda: float = DEFAULT_MMR_LAMBDA,
+    rrf_k: float = DEFAULT_RRF_K,
+    utility_alpha: float = 1.0,
+    utility_beta: float = 1.0,
+    utility_gamma: float = 0.10,
+    utility_delta: float = 0.50,
+    utility_eta: float = 0.10,
+    hot_utility_threshold: float = 0.35,
+    warm_utility_threshold: float = 0.05,
 ) -> list[TierAssignment]:
     """Deterministic tier assignment from a ucb1-ranked candidate list.
 
@@ -84,6 +338,30 @@ def assign_tiers(
         raise ValueError(f"K_WARM must be >= 0, got {K_WARM}")
     if candidate_pool <= 0:
         raise ValueError(f"candidate_pool must be >= 1, got {candidate_pool}")
+    policy_name = str(policy_version).strip().lower().replace("_", "-")
+    if policy_name in {POLICY_VERSION_UTILITY_V2, "hybrid-v2"}:
+        return _assign_tiers_utility_v2(
+            candidates,
+            K_HOT=int(K_HOT),
+            K_WARM=int(K_WARM),
+            candidate_pool=int(candidate_pool),
+            policy_version=POLICY_VERSION_UTILITY_V2,
+            budget=budget,
+            mmr_lambda=float(mmr_lambda),
+            rrf_k=float(rrf_k),
+            alpha=float(utility_alpha),
+            beta=float(utility_beta),
+            gamma=float(utility_gamma),
+            delta=float(utility_delta),
+            eta=float(utility_eta),
+            hot_utility_threshold=float(hot_utility_threshold),
+            warm_utility_threshold=float(warm_utility_threshold),
+        )
+    if policy_name != POLICY_VERSION_RANK_V1:
+        raise ValueError(
+            f"unknown tier policy_version={policy_version!r}; expected "
+            f"{POLICY_VERSION_RANK_V1!r} or {POLICY_VERSION_UTILITY_V2!r}"
+        )
 
     kept = list(candidates)[: int(candidate_pool)]
     policy_params: dict[str, int | float] = {
@@ -149,6 +427,21 @@ def _candidate_to_dict(candidate: AsiRouterCandidate) -> dict[str, Any]:
         "island_id": int(candidate.island_id),
         "visit_count": int(candidate.visit_count),
         "mean_reward": float(candidate.mean_reward),
+        "literal_score": float(getattr(candidate, "literal_score", 0.0)),
+        "entity_score": float(getattr(candidate, "entity_score", 0.0)),
+        "dense_score": float(getattr(candidate, "dense_score", 0.0)),
+        "rrf_score": float(getattr(candidate, "rrf_score", 0.0)),
+        "relevance_score": float(getattr(candidate, "relevance_score", 0.0)),
+        "freshness_score": float(getattr(candidate, "freshness_score", 0.0)),
+        "learned_reward": float(getattr(candidate, "learned_reward", 0.0)),
+        "estimated_cost": float(getattr(candidate, "estimated_cost", 1.0)),
+        "utility_score": float(getattr(candidate, "utility_score", 0.0)),
+        "lexical_rank": int(getattr(candidate, "lexical_rank", 0)),
+        "dense_rank": int(getattr(candidate, "dense_rank", 0)),
+        "literal_rank": int(getattr(candidate, "literal_rank", 0)),
+        "entity_rank": int(getattr(candidate, "entity_rank", 0)),
+        "content_fingerprint": str(getattr(candidate, "content_fingerprint", "")),
+        "selector_telemetry": dict(getattr(candidate, "selector_telemetry", {}) or {}),
         "handle": _handle_to_dict(candidate.handle),
     }
 
@@ -171,6 +464,21 @@ def _candidate_from_dict(data: dict[str, Any]) -> AsiRouterCandidate:
         raw_tfidf_score_pre_normalization=float(
             data.get("raw_tfidf_score_pre_normalization", 0.0)
         ),
+        literal_score=float(data.get("literal_score", 0.0)),
+        entity_score=float(data.get("entity_score", 0.0)),
+        dense_score=float(data.get("dense_score", 0.0)),
+        rrf_score=float(data.get("rrf_score", 0.0)),
+        relevance_score=float(data.get("relevance_score", 0.0)),
+        freshness_score=float(data.get("freshness_score", 0.0)),
+        learned_reward=float(data.get("learned_reward", data.get("mean_reward", 0.0))),
+        estimated_cost=float(data.get("estimated_cost", 1.0)),
+        utility_score=float(data.get("utility_score", 0.0)),
+        lexical_rank=int(data.get("lexical_rank", 0)),
+        dense_rank=int(data.get("dense_rank", 0)),
+        literal_rank=int(data.get("literal_rank", 0)),
+        entity_rank=int(data.get("entity_rank", 0)),
+        content_fingerprint=str(data.get("content_fingerprint", "")),
+        selector_telemetry=dict(data.get("selector_telemetry", {}) or {}),
     )
 
 
@@ -180,7 +488,7 @@ def tier_assignment_to_dict(ta: TierAssignment) -> dict[str, Any]:
         "tier": ta.tier.value,
         "rank": int(ta.rank),
         "policy_version": str(ta.policy_version),
-        "policy_params": {str(k): int(v) for k, v in ta.policy_params.items()},
+        "policy_params": dict(ta.policy_params),
         "candidate": _candidate_to_dict(ta.candidate),
     }
 
@@ -208,7 +516,7 @@ def tier_assignment_from_dict(data: dict[str, Any]) -> TierAssignment:
         tier=tier,
         rank=int(data["rank"]),
         policy_version=str(data["policy_version"]),
-        policy_params={str(k): int(v) for k, v in params_raw.items()},
+        policy_params=dict(params_raw),
     )
 
 
@@ -265,6 +573,7 @@ def tier_assignments_from_json(raw: str) -> list[TierAssignment]:
 
 
 __all__ = [
+    "POLICY_VERSION_UTILITY_V2",
     "POLICY_VERSION_RANK_V1",
     "TIER_POLICY_SCHEMA_VERSION",
     "TierAssignment",

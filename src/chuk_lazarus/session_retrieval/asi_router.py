@@ -59,11 +59,13 @@ Adaptations from ASI-Evolve
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
 import time
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +81,8 @@ from chuk_lazarus.session_retrieval.literal_match import (
 
 ASI_ROUTER_STATE_FILENAME: str = "asi_router_state.json"
 _STATE_SCHEMA_VERSION: int = 1
+DEFAULT_RRF_K: float = 60.0
+DEFAULT_DENSE_DIM: int = 64
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,22 @@ class AsiRouterCandidate:
     visit_count: int
     mean_reward: float
     raw_tfidf_score_pre_normalization: float = 0.0
+    literal_score: float = 0.0
+    entity_score: float = 0.0
+    dense_score: float = 0.0
+    rrf_score: float = 0.0
+    relevance_score: float = 0.0
+    freshness_score: float = 0.0
+    learned_reward: float = 0.0
+    estimated_cost: float = 1.0
+    utility_score: float = 0.0
+    lexical_rank: int = 0
+    dense_rank: int = 0
+    literal_rank: int = 0
+    entity_rank: int = 0
+    content_fingerprint: str = ""
+    dense_vector: tuple[float, ...] = ()
+    selector_telemetry: dict[str, Any] = field(default_factory=dict, compare=False)
 
 
 @dataclass
@@ -270,8 +290,138 @@ def _session_age_seconds(handle: CheckpointHandle) -> float:
 _EXACT_LITERAL_BOOST = 1_000_000.0
 _ENTITY_MENTION_BOOST = 750_000.0
 
-# (rank_score, raw_tfidf_score, session_id, window_id, handle, keyword_count)
-_RawRow = tuple[float, float, str, int, CheckpointHandle, int]
+
+@dataclass(frozen=True)
+class _WindowScoreRow:
+    raw_score: float
+    raw_tfidf_score: float
+    literal_score: float
+    entity_score: float
+    session_id: str
+    window_id: int
+    handle: CheckpointHandle
+    keyword_count: int
+    estimated_cost: float
+    freshness_score: float
+    window_text: str
+    content_fingerprint: str
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default)).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_SEMANTIC_ALIASES: dict[str, tuple[str, ...]] = {
+    "automobile": ("car", "vehicle"),
+    "car": ("automobile", "vehicle"),
+    "charge": ("price", "pricing", "cost"),
+    "charged": ("price", "pricing", "cost"),
+    "cost": ("price", "pricing", "charge"),
+    "fee": ("price", "pricing", "charge"),
+    "invoice": ("bill", "receipt"),
+    "bill": ("invoice", "receipt"),
+    "kid": ("child", "children"),
+    "kids": ("child", "children"),
+    "palette": ("colors", "colour", "scheme"),
+    "paraphrase": ("summary", "rewrite"),
+    "price": ("pricing", "cost", "charge"),
+    "pricing": ("price", "cost", "charge"),
+    "repair": ("fix", "service"),
+    "recall": ("remember", "retrieve"),
+    "remember": ("recall", "retrieve"),
+    "trial": ("demo", "evaluation"),
+    "vehicle": ("car", "automobile"),
+}
+
+
+def _semantic_terms(text: str) -> list[str]:
+    terms: list[str] = []
+    for token in _WORD_RE.findall(str(text).lower()):
+        terms.append(token)
+        terms.extend(_SEMANTIC_ALIASES.get(token, ()))
+    return terms
+
+
+def _hash_unit_interval(text: str) -> float:
+    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
+    value = int.from_bytes(digest, "big")
+    return float(value) / float((1 << 64) - 1)
+
+
+def _deterministic_dense_vector(text: str, *, dim: int = DEFAULT_DENSE_DIM) -> tuple[float, ...]:
+    """Small deterministic semantic sketch used when embeddings are unavailable."""
+    dim = max(8, int(dim))
+    vec = [0.0 for _ in range(dim)]
+    for term in _semantic_terms(text):
+        digest = hashlib.blake2b(term.encode("utf-8"), digest_size=8).digest()
+        bucket = int.from_bytes(digest[:4], "big") % dim
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        vec[bucket] += sign
+        if len(term) >= 5:
+            stem = term[:5]
+            stem_digest = hashlib.blake2b(stem.encode("utf-8"), digest_size=8).digest()
+            stem_bucket = int.from_bytes(stem_digest[:4], "big") % dim
+            vec[stem_bucket] += 0.35 * sign
+    norm = math.sqrt(sum(v * v for v in vec))
+    if norm <= 0.0:
+        return tuple(0.0 for _ in vec)
+    return tuple(v / norm for v in vec)
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    if not a or not b:
+        return 0.0
+    n = min(len(a), len(b))
+    dot = sum(float(a[i]) * float(b[i]) for i in range(n))
+    norm_a = math.sqrt(sum(float(v) * float(v) for v in a[:n]))
+    norm_b = math.sqrt(sum(float(v) * float(v) for v in b[:n]))
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _normalise(values: Sequence[float]) -> list[float]:
+    if not values:
+        return []
+    hi, lo = max(values), min(values)
+    if hi == lo:
+        return [1.0 if hi > 0.0 else 0.0 for _ in values]
+    span = hi - lo
+    return [(float(v) - lo) / span for v in values]
+
+
+def _rank_by_score(
+    rows: Sequence[_WindowScoreRow],
+    score_by_key: dict[tuple[str, int], float],
+) -> dict[tuple[str, int], int]:
+    ordered = list(rows)
+    ordered.sort(
+        key=lambda row: (
+            -float(score_by_key.get((row.session_id, row.window_id), 0.0)),
+            row.session_id,
+            row.window_id,
+        )
+    )
+    return {
+        (row.session_id, row.window_id): int(rank)
+        for rank, row in enumerate(ordered, start=1)
+    }
+
+
+def _content_fingerprint(text: str) -> str:
+    tokens = _semantic_terms(text)
+    if not tokens:
+        return ""
+    canonical = " ".join(sorted(dict.fromkeys(tokens)))
+    return hashlib.blake2b(canonical.encode("utf-8"), digest_size=12).hexdigest()
+
+
+def _freshness_from_age_seconds(age_seconds: float) -> float:
+    age_days = max(0.0, float(age_seconds)) / 86_400.0
+    return 1.0 / (1.0 + math.log1p(age_days))
 
 
 def _expand_semantic_route_query(query_text: str) -> str:
@@ -314,10 +464,13 @@ def _score_all_windows(
     literal_token_sequences: list[list[int]],
     entity_tokens: list[str],
     tokenizer: Any,
-) -> list[_RawRow]:
+    *,
+    decode_window_text: bool = False,
+) -> list[_WindowScoreRow]:
     """Score every window via TFIDFRouter.score_window; no silent fallback."""
-    raw: list[_RawRow] = []
+    raw: list[_WindowScoreRow] = []
     query_entities = tuple(dict.fromkeys(token.lower() for token in entity_tokens if token))
+    cost_mode = str(os.environ.get("LAZARUS_ASI_COST_MODE", "windows")).strip().lower()
     for handle in handles:
         try:
             store = load_store(handle)
@@ -336,6 +489,9 @@ def _score_all_windows(
             )
         router = TFIDFRouter(window_tokens, idf)
         store_keywords: dict[int, list[str]] = getattr(store, "keywords", {}) or {}
+        window_token_lists: dict[int, list[int]] = (
+            getattr(store, "window_token_lists", {}) or {}
+        )
         literal_scores = literal_match_scores(store, literal_token_sequences)
         num_windows = int(getattr(store, "num_windows", 0) or 0)
         if num_windows <= 0:
@@ -353,10 +509,11 @@ def _score_all_windows(
                 nonlocal window_text_cache
                 if window_text_cache is None:
                     try:
-                        window_text_cache = store.get_window_text(
+                        decoded = store.get_window_text(
                             int(window_id),
                             tokenizer,
-                        ).lower()
+                        )
+                        window_text_cache = decoded.lower() if isinstance(decoded, str) else ""
                     except Exception:
                         window_text_cache = ""
                 return window_text_cache
@@ -391,15 +548,208 @@ def _score_all_windows(
             )
             if archived_cold_penalty > 0.0 and "archived cold" in window_text_lower():
                 raw_score -= archived_cold_penalty
-            raw.append((
-                raw_score,
-                tfidf_score,
-                handle.session_id,
-                int(window_id),
-                handle,
-                int(kc),
+            token_cost = max(
+                1,
+                len(window_token_lists.get(int(window_id), []))
+                or len(window_tokens.get(int(window_id), ()))
+                or 1,
+            )
+            estimated_cost = float(token_cost if cost_mode == "tokens" else 1)
+            window_text = ""
+            if window_text_cache is not None:
+                window_text = str(window_text_cache)
+            elif (
+                decode_window_text
+                or cost_mode == "tokens"
+                or _truthy_env("LAZARUS_ASI_DECODE_FOR_SELECTOR")
+            ):
+                window_text = window_text_lower()
+            raw.append(_WindowScoreRow(
+                raw_score=float(raw_score),
+                raw_tfidf_score=float(tfidf_score),
+                literal_score=float(literal_score),
+                entity_score=float(entity_score),
+                session_id=str(handle.session_id),
+                window_id=int(window_id),
+                handle=handle,
+                keyword_count=int(kc),
+                estimated_cost=float(estimated_cost),
+                freshness_score=_freshness_from_age_seconds(_session_age_seconds(handle)),
+                window_text=str(window_text),
+                content_fingerprint=_content_fingerprint(str(window_text)),
             ))
     return raw
+
+
+def _coerce_vector(value: Sequence[float] | None) -> tuple[float, ...]:
+    if value is None:
+        return ()
+    return tuple(float(v) for v in value)
+
+
+def _lookup_dense_window_vector(
+    dense_window_vectors: Any,
+    session_id: str,
+    window_id: int,
+) -> tuple[float, ...]:
+    if not dense_window_vectors:
+        return ()
+    key_tuple = (str(session_id), int(window_id))
+    key_colon = f"{session_id}:{int(window_id)}"
+    key_slash = f"{session_id}/{int(window_id)}"
+    for key in (key_tuple, key_colon, key_slash, int(window_id)):
+        try:
+            if key in dense_window_vectors:
+                return _coerce_vector(dense_window_vectors[key])
+        except TypeError:
+            continue
+    return ()
+
+
+def _dense_scores_for_rows(
+    query_text: str,
+    rows: Sequence[_WindowScoreRow],
+    *,
+    dense_scoring: str,
+    dense_query_vector: Sequence[float] | None = None,
+    dense_window_vectors: Any = None,
+) -> tuple[dict[tuple[str, int], float], dict[tuple[str, int], tuple[float, ...]], str]:
+    """Return dense cosine scores plus explicit fallback telemetry."""
+    mode = str(dense_scoring or "off").strip().lower().replace("-", "_")
+    if mode in {"0", "false", "no", "none"}:
+        mode = "off"
+    if mode == "off":
+        return {}, {}, "off"
+
+    scores: dict[tuple[str, int], float] = {}
+    vectors: dict[tuple[str, int], tuple[float, ...]] = {}
+
+    if mode in {"provided", "vectors"}:
+        q_vec = _coerce_vector(dense_query_vector)
+        if not q_vec:
+            raise RuntimeError(
+                "asi_route_candidates: dense_scoring='provided' requires "
+                "dense_query_vector; refusing silent fallback."
+            )
+        for row in rows:
+            key = (row.session_id, row.window_id)
+            w_vec = _lookup_dense_window_vector(
+                dense_window_vectors, row.session_id, row.window_id,
+            )
+            if not w_vec:
+                raise RuntimeError(
+                    "asi_route_candidates: dense_scoring='provided' missing "
+                    f"vector for {row.session_id}:{row.window_id}; refusing "
+                    "silent fallback."
+                )
+            vectors[key] = w_vec
+            scores[key] = _cosine(q_vec, w_vec)
+        return scores, vectors, "provided"
+
+    if mode not in {"auto", "deterministic", "fallback", "deterministic_fallback"}:
+        raise RuntimeError(
+            f"asi_route_candidates: unknown dense_scoring={dense_scoring!r}; "
+            "expected off, auto, deterministic, or provided."
+        )
+
+    q_vec = _deterministic_dense_vector(query_text)
+    for row in rows:
+        key = (row.session_id, row.window_id)
+        text = row.window_text
+        if not text:
+            text = " ".join(str(t) for t in (row.session_id, row.window_id))
+        w_vec = _deterministic_dense_vector(text)
+        vectors[key] = w_vec
+        scores[key] = _cosine(q_vec, w_vec)
+    status = "deterministic"
+    if mode == "auto":
+        status = "deterministic_fallback"
+        warnings.warn(
+            "asi_route_candidates: dense_scoring='auto' has no configured "
+            "embedding provider; using deterministic fallback.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return scores, vectors, status
+
+
+def _reciprocal_rank_fusion(
+    key: tuple[str, int],
+    rank_maps: Sequence[dict[tuple[str, int], int]],
+    *,
+    k: float = DEFAULT_RRF_K,
+) -> float:
+    total = 0.0
+    for ranks in rank_maps:
+        rank = ranks.get(key)
+        if rank is not None and rank > 0:
+            total += 1.0 / (float(k) + float(rank))
+    return total
+
+
+def _router_utility(
+    *,
+    relevance_score: float,
+    rrf_score: float,
+    freshness_score: float,
+    learned_reward: float,
+    cost_norm: float,
+) -> float:
+    alpha = float(os.environ.get("LAZARUS_ASI_UTILITY_ALPHA", "1.0") or 1.0)
+    beta = float(os.environ.get("LAZARUS_ASI_UTILITY_BETA", "1.0") or 1.0)
+    gamma = float(os.environ.get("LAZARUS_ASI_UTILITY_GAMMA", "0.10") or 0.10)
+    delta = float(os.environ.get("LAZARUS_ASI_UTILITY_DELTA", "0.50") or 0.50)
+    eta = float(os.environ.get("LAZARUS_ASI_UTILITY_ETA", "0.10") or 0.10)
+    return (
+        alpha * float(relevance_score)
+        + beta * float(rrf_score)
+        + gamma * float(freshness_score)
+        + delta * float(learned_reward)
+        - eta * float(cost_norm)
+    )
+
+
+def record_asi_feedback(
+    archive_root: Path,
+    assignments: Sequence[Any],
+    *,
+    reward: float,
+    outcome: str,
+) -> Path:
+    """Persist observed reward for selected ASI candidates.
+
+    The caller owns reward definition. This helper only updates visit counts
+    and incremental mean reward for candidates that were actually selected.
+    """
+    state = load_asi_router_state(Path(archive_root))
+    selected = list(assignments)
+    state.total_selections = int(state.total_selections) + 1
+    for assignment in selected:
+        candidate = getattr(assignment, "candidate", assignment)
+        handle = getattr(candidate, "handle", None)
+        session_id = str(getattr(handle, "session_id", ""))
+        if not session_id:
+            continue
+        window_id = int(getattr(candidate, "window_id"))
+        key = f"{session_id}:{window_id}"
+        old_count = int(state.visit_counts.get(key, 0))
+        old_mean = float(state.mean_rewards.get(key, 0.0))
+        new_count = old_count + 1
+        new_mean = old_mean + (float(reward) - old_mean) / float(new_count)
+        state.visit_counts[key] = int(new_count)
+        state.mean_rewards[key] = float(new_mean)
+        if hasattr(candidate, "island_id"):
+            state.feature_map[key] = int(getattr(candidate, "island_id"))
+    state.islands = [
+        {
+            "outcome": str(outcome),
+            "reward": float(reward),
+            "selected_count": int(len(selected)),
+            "ts": time.time(),
+        },
+        *list(state.islands or [])[:49],
+    ]
+    return save_asi_router_state(Path(archive_root), state)
 
 
 def asi_route_candidates(
@@ -415,6 +765,11 @@ def asi_route_candidates(
     exploitation_ratio: float = 0.3,
     candidate_pool: int = 64,
     archive_root: Path | None = None,
+    dense_scoring: str | None = None,
+    dense_query_vector: Sequence[float] | None = None,
+    dense_window_vectors: Any = None,
+    rrf_k: float = DEFAULT_RRF_K,
+    ranking_policy: str | None = None,
 ) -> list[AsiRouterCandidate]:
     """Return the full ranked list of :class:`AsiRouterCandidate`.
 
@@ -447,6 +802,16 @@ def asi_route_candidates(
     else:
         state = _fresh_state(num_islands, migration_interval, migration_rate)
 
+    dense_mode = str(
+        dense_scoring
+        if dense_scoring is not None
+        else os.environ.get("LAZARUS_ASI_DENSE_SCORING", "off")
+    ).strip().lower()
+    selected_ranking_policy = str(
+        ranking_policy
+        if ranking_policy is not None
+        else os.environ.get("LAZARUS_ASI_SELECTOR_POLICY", "rank-v1")
+    ).strip().lower().replace("_", "-")
     route_query_text = _expand_semantic_route_query(query_text)
     query_ids = _encode_token_ids(tokenizer, route_query_text)
     literal_token_sequences = encode_literal_sequences(tokenizer, route_query_text)
@@ -463,31 +828,104 @@ def asi_route_candidates(
         literal_token_sequences,
         entity_tokens,
         tokenizer,
+        decode_window_text=(
+            dense_mode not in {"", "0", "false", "no", "none", "off"}
+            or selected_ranking_policy in {"utility-v2", "hybrid-v2"}
+        ),
     )
     if not raw_scored:
         return []
 
-    raw_scored.sort(key=lambda item: (-item[0], -item[1], item[2], item[3]))
-    pool = raw_scored[: int(candidate_pool)]
-    raw_values = [item[0] for item in pool]
-    hi, lo = max(raw_values), min(raw_values)
-    if hi == lo:
-        normalised: list[float] = [1.0 for _ in pool]
+    dense_scores, dense_vectors, dense_status = _dense_scores_for_rows(
+        route_query_text,
+        raw_scored,
+        dense_scoring=dense_mode,
+        dense_query_vector=dense_query_vector,
+        dense_window_vectors=dense_window_vectors,
+    )
+    key_seq = [(row.session_id, row.window_id) for row in raw_scored]
+    lexical_scores = {
+        (row.session_id, row.window_id): float(row.raw_tfidf_score)
+        for row in raw_scored
+    }
+    literal_scores_by_key = {
+        (row.session_id, row.window_id): float(row.literal_score)
+        for row in raw_scored
+    }
+    entity_scores_by_key = {
+        (row.session_id, row.window_id): float(row.entity_score)
+        for row in raw_scored
+    }
+    lexical_ranks = _rank_by_score(raw_scored, lexical_scores)
+    literal_ranks = _rank_by_score(raw_scored, literal_scores_by_key)
+    entity_ranks = _rank_by_score(raw_scored, entity_scores_by_key)
+    dense_ranks = _rank_by_score(raw_scored, dense_scores) if dense_scores else {}
+    rank_maps = [lexical_ranks, literal_ranks, entity_ranks]
+    if dense_ranks:
+        rank_maps.append(dense_ranks)
+
+    lexical_norm = dict(zip(key_seq, _normalise([lexical_scores[k] for k in key_seq])))
+    literal_norm = dict(zip(
+        key_seq, _normalise([literal_scores_by_key[k] for k in key_seq])
+    ))
+    entity_norm = dict(zip(
+        key_seq, _normalise([entity_scores_by_key[k] for k in key_seq])
+    ))
+    dense_norm = dict(zip(
+        key_seq, _normalise([dense_scores.get(k, 0.0) for k in key_seq])
+    ))
+    max_cost = max((float(row.estimated_cost) for row in raw_scored), default=1.0)
+    row_metrics: dict[tuple[str, int], dict[str, float]] = {}
+    for row in raw_scored:
+        key = (row.session_id, row.window_id)
+        relevance = (
+            0.50 * float(lexical_norm.get(key, 0.0))
+            + 0.25 * float(dense_norm.get(key, 0.0))
+            + 0.15 * float(literal_norm.get(key, 0.0))
+            + 0.10 * float(entity_norm.get(key, 0.0))
+        )
+        rrf_score = _reciprocal_rank_fusion(key, rank_maps, k=float(rrf_k))
+        learned = float(state.mean_rewards.get(f"{row.session_id}:{row.window_id}", 0.0))
+        cost_norm = float(row.estimated_cost) / max(1.0, max_cost)
+        row_metrics[key] = {
+            "relevance": float(relevance),
+            "rrf": float(rrf_score),
+            "learned": float(learned),
+            "utility": _router_utility(
+                relevance_score=float(relevance),
+                rrf_score=float(rrf_score),
+                freshness_score=float(row.freshness_score),
+                learned_reward=float(learned),
+                cost_norm=float(cost_norm),
+            ),
+        }
+
+    if selected_ranking_policy in {"utility-v2", "hybrid-v2"}:
+        raw_scored.sort(
+            key=lambda row: (
+                -row_metrics[(row.session_id, row.window_id)]["utility"],
+                -row_metrics[(row.session_id, row.window_id)]["rrf"],
+                -row.raw_score,
+                row.session_id,
+                row.window_id,
+            )
+        )
     else:
-        span = hi - lo
-        normalised = [(v - lo) / span for v in raw_values]
+        raw_scored.sort(
+            key=lambda row: (-row.raw_score, -row.raw_tfidf_score, row.session_id, row.window_id)
+        )
+    pool = raw_scored[: int(candidate_pool)]
+    raw_values = [row.raw_score for row in pool]
+    normalised = _normalise(raw_values)
+    if raw_values and max(raw_values) == min(raw_values) and max(raw_values) > 0.0:
+        normalised = [1.0 for _ in pool]
 
     advance_island(state)
 
     candidates: list[AsiRouterCandidate] = []
-    for (
-        raw_score,
-        raw_tfidf_score,
-        session_id,
-        window_id,
-        handle,
-        kc,
-    ), q_w in zip(pool, normalised):
+    for row, q_w in zip(pool, normalised):
+        session_id = row.session_id
+        window_id = int(row.window_id)
         composite_key = f"{session_id}:{window_id}"
         n_w = int(state.visit_counts.get(composite_key, 0))
         if composite_key in state.mean_rewards:
@@ -499,16 +937,38 @@ def asi_route_candidates(
         ucb1_score = compute_ucb1(q_for_ucb, n_w, int(state.total_selections), ucb1_c=ucb1_c)
         island_id = assign_island(
             session_id, int(window_id),
-            keyword_count=int(kc),
-            session_age_seconds=_session_age_seconds(handle),
+            keyword_count=int(row.keyword_count),
+            session_age_seconds=_session_age_seconds(row.handle),
             num_islands=int(num_islands),
         )
+        key = (session_id, window_id)
+        metrics = row_metrics.get(key, {})
         candidates.append(AsiRouterCandidate(
-            handle=handle, window_id=int(window_id),
+            handle=row.handle, window_id=int(window_id),
             ucb1_score=float(ucb1_score), raw_router_score=float(q_w),
             island_id=int(island_id), visit_count=int(n_w),
             mean_reward=float(mean_reward),
-            raw_tfidf_score_pre_normalization=float(raw_tfidf_score),
+            raw_tfidf_score_pre_normalization=float(row.raw_tfidf_score),
+            literal_score=float(row.literal_score),
+            entity_score=float(row.entity_score),
+            dense_score=float(dense_scores.get(key, 0.0)),
+            rrf_score=float(metrics.get("rrf", 0.0)),
+            relevance_score=float(metrics.get("relevance", float(q_w))),
+            freshness_score=float(row.freshness_score),
+            learned_reward=float(metrics.get("learned", mean_reward)),
+            estimated_cost=float(row.estimated_cost),
+            utility_score=float(metrics.get("utility", float(q_w))),
+            lexical_rank=int(lexical_ranks.get(key, 0)),
+            dense_rank=int(dense_ranks.get(key, 0)),
+            literal_rank=int(literal_ranks.get(key, 0)),
+            entity_rank=int(entity_ranks.get(key, 0)),
+            content_fingerprint=str(row.content_fingerprint),
+            dense_vector=tuple(dense_vectors.get(key, ())),
+            selector_telemetry={
+                "dense_status": dense_status,
+                "ranking_policy": selected_ranking_policy,
+                "rrf_k": float(rrf_k),
+            },
         ))
 
     # Primary: ucb1_score desc. At cold start every ucb1_score == +inf so
@@ -519,20 +979,32 @@ def asi_route_candidates(
     # ordering collapses to pure lex on session_id at cold start —
     # defeating the point of the TF-IDF pool.
     # The explicit raw_tfidf tie-break below handles normalised-score ties.
-    candidates.sort(
-        key=lambda c: (
-            -c.ucb1_score,
-            -c.raw_router_score,
-            -c.raw_tfidf_score_pre_normalization,
-            c.handle.session_id,
-            c.window_id,
+    if selected_ranking_policy in {"utility-v2", "hybrid-v2"}:
+        candidates.sort(
+            key=lambda c: (
+                -float(c.utility_score),
+                -float(c.rrf_score),
+                -float(c.relevance_score),
+                str(c.handle.session_id),
+                int(c.window_id),
+            )
         )
-    )
+    else:
+        candidates.sort(
+            key=lambda c: (
+                -c.ucb1_score,
+                -c.raw_router_score,
+                -c.raw_tfidf_score_pre_normalization,
+                c.handle.session_id,
+                c.window_id,
+            )
+        )
     return candidates
 
 
 __all__ = [
     "ASI_ROUTER_STATE_FILENAME", "AsiRouterCandidate", "AsiRouterState",
     "advance_island", "asi_route_candidates", "assign_island",
-    "compute_ucb1", "load_asi_router_state", "save_asi_router_state",
+    "compute_ucb1", "load_asi_router_state", "record_asi_feedback",
+    "save_asi_router_state",
 ]

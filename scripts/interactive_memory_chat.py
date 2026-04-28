@@ -66,7 +66,8 @@ Environment overrides:
   LAZARUS_STORE_DIR          persistent store root (default /tmp/interactive-memory)
   LAZARUS_MODEL              model id/path (default: local Gemma snapshot -> hub id)
   LAZARUS_MAX_NEW_TOKENS     decode length (default 180)
-  LAZARUS_MEMORY_MODE        one of: topical (default) | entity_mention | vec_inject | off
+  LAZARUS_MEMORY_MODE        one of: auto (default) | topical | entity_mention |
+                              kv_direct | off
   LAZARUS_GENERATION_ENGINE  standard (default) | kv_direct | bounded_kv_direct |
                               residual_bounded_kv_direct
   LAZARUS_HOT_BUDGET_MIB     hot KV budget for bounded engines (default 150
@@ -134,7 +135,6 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from chuk_lazarus.memory_config import (
-    MEMORY_MODES,
     MemoryRecallConfig,
     get_memory_profile_names,
     memory_config_env,
@@ -160,6 +160,7 @@ GENERATION_ENGINES = (
     "bounded_kv_direct",
     "residual_bounded_kv_direct",
 )
+SCRIPT_MEMORY_MODES = ("auto", "topical", "entity_mention", "kv_direct", "off")
 KV_QUERY_USAGE = (
     "/kv_query <text> | "
     "/kv_query --insertion-family sliding "
@@ -213,6 +214,30 @@ MAX_TOTAL_INJECT_TOKENS = 4096
 
 class NoRelevantMemory(RuntimeError):
     """Ordinary auto-recall miss, not a diagnostics failure."""
+
+
+def _asi_feedback_reward(
+    strict_assertions: dict[str, Any],
+    evidence_supports: list[Any],
+    *,
+    fallback: bool = False,
+) -> float:
+    """Derive bounded reward only from observable recall outcomes."""
+    reward = 0.0
+    if bool(strict_assertions.get("kv_direct_active", False)):
+        reward += 0.55
+    if evidence_supports:
+        reward += 0.30
+    bool_assertions = [
+        bool(value)
+        for value in strict_assertions.values()
+        if isinstance(value, bool)
+    ]
+    if bool_assertions and not all(bool_assertions):
+        reward -= 0.50
+    if fallback:
+        reward -= 0.10
+    return max(-1.0, min(1.0, float(reward)))
 
 
 def ts() -> str:
@@ -593,6 +618,11 @@ class MemoryChat:
                     "hot_budget_mib": hot_budget_mib,
                 },
             )
+        if memory_config.mode not in SCRIPT_MEMORY_MODES:
+            raise ValueError(
+                f"memory mode {memory_config.mode!r} is not supported by this REPL; "
+                f"supported modes: {', '.join(SCRIPT_MEMORY_MODES)}"
+            )
         self.memory_profile = memory_config.profile
         self.memory_config = memory_config
 
@@ -611,11 +641,6 @@ class MemoryChat:
             )
         )
         self.session_cache_size = session_cache_size
-        self.vec_inject_provider: Any = None  # lazily loaded on first vec_inject turn
-        # axis-BC: set True by save_current_session() when vec_inject.npz is
-        # successfully written; gates the auto-promotion of memory_mode from
-        # 'topical' -> 'kv_direct' inside /save.
-        self.vec_inject_available: bool = False
 
         self.tokenizer: Any = None
         self.model: Any = None
@@ -783,161 +808,6 @@ class MemoryChat:
             f"crystal_layer={self.retriever.crystal_layer} · "
             f"loaded in {time.time() - t0:.1f}s"
         )
-
-    def _get_or_load_vec_inject_provider(self) -> Any:
-        """Lazy-load LocalVecInjectProvider (torch/CUDA) from the first checkpoint.
-
-        Returns the cached provider if already loaded. Returns None when the
-        store is empty — callers must handle this (same contract as
-        maybe_load_retriever).
-        """
-        if self.vec_inject_provider is not None:
-            return self.vec_inject_provider
-        import asyncio
-
-        from chuk_lazarus.inference.context.research.vec_inject.providers._local_file_torch import (
-            LocalVecInjectProvider,
-        )
-        from chuk_lazarus.session_retrieval.enumeration import iter_checkpoint_handles
-
-        handles = list(iter_checkpoint_handles(self.checkpoints_root))
-        if not handles:
-            info(
-                f"vec_inject skipped: store is empty at {self.checkpoints_root} — "
-                f"/save something first"
-            )
-            return None
-
-        ckpt_dir = Path(handles[0].checkpoint_dir)
-        info(f"loading vec_inject provider from {ckpt_dir}")
-        t0 = time.time()
-        provider = asyncio.run(
-            # torch path: pass the raw HF model so the provider uses native forward hooks
-            # (bypasses make_kv_generator which builds an MLX-only GemmaBackboneAdapter)
-            LocalVecInjectProvider.load(ckpt_dir, raw_model=self.model)
-        )
-        info(f"vec_inject provider ready: {provider.n_facts} facts · loaded in {time.time() - t0:.1f}s")
-        self.vec_inject_provider = provider
-        return provider
-
-    def _emit_vec_inject_npz(
-        self,
-        session_root: Path,
-        torch_store_dir: Path,
-    ) -> bool:
-        """axis-BC: emit vec_inject.npz so the next session can KV-inject.
-
-        Reads per-window token sequences from ``torch_store_dir/window_tokens.npz``,
-        derives a KV-share-aware arch config (via ``_derive_arch_config``),
-        and invokes ``extract_vec_inject_index_torch`` to write
-        ``session_root/vec_inject.npz``. Best-effort: returns False on any
-        failure (caller must NOT raise — /save stays non-blocking).
-
-        For Gemma-4-E2B-it the registry-default ``retrieval_layer`` (28) is
-        a KV-consumer layer that lacks ``k_proj`` — projecting through it
-        raises ``AttributeError``. ``_derive_arch_config`` clamps Gemma-4 to
-        producer layers (12, 13); we forward those as explicit overrides so
-        ``extract_vec_inject_index_torch`` projects through layers that
-        actually own ``k_proj`` / ``v_proj``.
-
-        Returns True on success.
-        """
-        import numpy as np
-        from types import SimpleNamespace
-        from chuk_lazarus.inference.context.research.vec_inject.prefill_torch import (
-            extract_vec_inject_index_torch,
-        )
-
-        # 1. Pull per-window token sequences from window_tokens.npz.
-        window_tokens_path = torch_store_dir / "window_tokens.npz"
-        if not window_tokens_path.exists():
-            info(f"  vec_inject skipped: {window_tokens_path} missing")
-            return False
-        with np.load(window_tokens_path) as f:
-            # Keys are stringified window-ids; preserve numeric order.
-            try:
-                wid_keys = sorted(f.files, key=lambda k: int(k))
-            except ValueError:
-                wid_keys = sorted(f.files)
-            windows: list[list[int]] = [
-                [int(t) for t in f[k].tolist()] for k in wid_keys
-            ]
-
-        if not windows:
-            info("  vec_inject skipped: no windows captured")
-            return False
-
-        # 2. Resolve KV-share-aware arch config (matches the live indexer's
-        #    layer picks). _derive_arch_config returns a dict whose values
-        #    extract_vec_inject_index_torch consumes via attribute access; wrap
-        #    in SimpleNamespace.
-        arch_dict, _crystal_layer, _window_size = self._derive_arch_config()
-        arch_config = SimpleNamespace(**arch_dict)
-
-        # 3. Extract → vec_inject.npz at session_root. Call the prefill
-        #    one-window-at-a-time to avoid the cross-window
-        #    boundary_residual prepend (incompatible with Gemma-4's HF
-        #    rotary position embedding which is computed once on the
-        #    original sequence length and would size-mismatch against the
-        #    prepended hidden_states). Each independent call keeps the
-        #    internal boundary_residual=None and lands a partial NPZ; we
-        #    merge per-window arrays into the final session-level NPZ.
-        import tempfile
-        t0 = time.time()
-        merged: dict[str, "np.ndarray"] = {}
-        meta_set = False
-        with tempfile.TemporaryDirectory(prefix="vec_inject_per_win_") as tmpdir:
-            tmp_root = Path(tmpdir)
-            for source_wid, w_tokens in enumerate(windows):
-                if not w_tokens:
-                    continue
-                per_dir = tmp_root / f"w{source_wid:04d}"
-                per_dir.mkdir()
-                try:
-                    extract_vec_inject_index_torch(
-                        model=self.model,
-                        tokenizer=self.tokenizer,
-                        windows=[list(w_tokens)],
-                        output_path=per_dir,
-                        arch_config=arch_config,
-                        retrieval_layer=int(arch_dict["retrieval_layer"]),
-                        query_head=int(arch_dict["query_head"]),
-                        inject_layer=int(arch_dict["injection_layer"]),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    info(
-                        f"  vec_inject window {source_wid} skipped (non-fatal): {exc!r}"
-                    )
-                    continue
-                per_npz = per_dir / "vec_inject.npz"
-                if not per_npz.exists():
-                    continue
-                with np.load(per_npz) as f_per:
-                    for k in f_per.files:
-                        # Per-window keys arrive prefixed with "w0/..."; rewrite
-                        # the wid to source_wid so all windows coexist in the
-                        # merged store. Meta scalars (no "w" prefix) we copy
-                        # once.
-                        if k.startswith("w0/"):
-                            new_k = f"w{source_wid}/" + k[len("w0/"):]
-                            merged[new_k] = f_per[k].copy()
-                        else:
-                            if k not in merged:
-                                merged[k] = f_per[k].copy()
-                                meta_set = True
-
-        dt = time.time() - t0
-        if not merged:
-            info("  vec_inject FAILED: no windows extracted (all skipped)")
-            return False
-        npz_path = session_root / "vec_inject.npz"
-        np.savez(str(npz_path), **merged)
-        n_kept = sum(1 for k in merged if k.endswith("/k_vecs"))
-        info(
-            f"  vec_inject.npz written ({n_kept}/{len(windows)} windows OK) "
-            f"in {dt:.2f}s -> {npz_path} ({npz_path.stat().st_size} bytes)"
-        )
-        return True
 
     def _mark_dirty(self) -> None:
         """axis-3 (Addition 2): mark the store as having unsaved tokens.
@@ -1304,8 +1174,7 @@ class MemoryChat:
         # kv_direct routing short-circuits to KV-direct injection (axis-5).
         # kv_query_turn handles its own session/history bookkeeping (it
         # uses plain_chat_turn on silent-fallback), so rewind here to
-        # avoid double-logging (mirrors vec_inject and except-branch
-        # rewinds below).
+        # avoid double-logging.
         if self.memory_mode in {"auto", "kv_direct"}:
             self.session.turns.pop()
             if self.history.messages:
@@ -1315,16 +1184,6 @@ class MemoryChat:
                 debug_command=False,
                 answer_prefix="gemma",
             )
-
-        # vec_inject routing short-circuits to the dedicated torch stack.
-        # _vec_inject_turn delegates to plain_chat_turn (which re-records the
-        # user turn), so rewind here to avoid double-logging (mirrors the
-        # except-branch rewind below).
-        if self.memory_mode == "vec_inject":
-            self.session.turns.pop()
-            if self.history.messages:
-                self.history.messages.pop()
-            return self._vec_inject_turn(user_text, chat_context)
 
         t_total_start = time.time()
         t_retrieve_start = time.time()
@@ -1460,7 +1319,14 @@ class MemoryChat:
             return tier_assignments
         sorted_assignments = sorted(
             tier_assignments,
-            key=lambda a: float(getattr(a.candidate, "ucb1_score", 0.0)),
+            key=lambda a: float(
+                getattr(
+                    a.candidate,
+                    "utility_score",
+                    getattr(a.candidate, "ucb1_score", 0.0),
+                )
+                or getattr(a.candidate, "ucb1_score", 0.0)
+            ),
             reverse=True,
         )
         cumulative = 0
@@ -1511,15 +1377,23 @@ class MemoryChat:
         from chuk_lazarus.inference.context.knowledge.gemma4_e2b_it_layers import (
             GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS,
         )
-        from chuk_lazarus.session_retrieval import (
-            asi_route_candidates,
-            assign_tiers,
+        session_retrieval = sys.modules.get("chuk_lazarus.session_retrieval")
+        if session_retrieval is None:
+            import chuk_lazarus.session_retrieval as session_retrieval
+
+        POLICY_VERSION_UTILITY_V2 = getattr(
+            session_retrieval,
+            "POLICY_VERSION_UTILITY_V2",
+            "utility-v2",
         )
+        asi_route_candidates = session_retrieval.asi_route_candidates
+        assign_tiers = session_retrieval.assign_tiers
+        record_asi_feedback = getattr(session_retrieval, "record_asi_feedback", None)
 
         # AMD 11: sliding-window-hazard precondition. The recipe-canonical
         # target_layer for KV-direct injection is 29 (Gemma-4-E2B-it global
         # attention). Assert the fixture matches; the actual runtime guard
-        # lives in vec_inject_to_kv_direct.assert_global_attention_layer.
+        # lives in the KV-direct selector validation.
         assert 29 in GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS, (
             "AMD 11 invariant: target_layer=29 must be in "
             f"GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS={sorted(GEMMA4_E2B_IT_GLOBAL_ATTENTION_LAYERS)}"
@@ -1547,13 +1421,28 @@ class MemoryChat:
 
         # Build a meta stub; populate fields as we progress.
         meta = TurnMetadata(mode="kv_direct")
+        tier_assignments: list[Any] = []
+        assignments_for_generation: list[Any] = []
+        feedback_archive_root = getattr(self, "store_root", None)
 
         try:
+            cfg = getattr(getattr(self, "model", None), "config", None)
+            head_dim = int(getattr(cfg, "head_dim", 256) or 256)
+            n_kv_heads = int(getattr(cfg, "num_key_value_heads", 4) or 4)
+            per_fact_cost = max(1, head_dim * n_kv_heads)
+            if str(os.environ.get("LAZARUS_ASI_COST_MODE", "windows")).strip().lower() == "tokens":
+                selector_budget = int(config.max_total_inject_tokens)
+            else:
+                selector_budget = int(config.max_total_inject_tokens) // per_fact_cost
             candidates = asi_route_candidates(
                 self.retriever.handles,
                 query_text,
                 self.retriever.tokenizer,
                 candidate_pool=route_candidate_pool,
+                archive_root=feedback_archive_root,
+                dense_scoring=config.dense_scoring,
+                rrf_k=float(config.rrf_k),
+                ranking_policy=config.selector_policy,
             )
             if bool(config.dedupe_sessions):
                 deduped = []
@@ -1602,6 +1491,10 @@ class MemoryChat:
                 K_HOT=k_hot,
                 K_WARM=k_warm,
                 candidate_pool=candidate_pool,
+                policy_version=config.selector_policy,
+                budget=selector_budget,
+                mmr_lambda=float(config.mmr_lambda),
+                rrf_k=float(config.rrf_k),
             )
             if not tier_assignments:
                 raise NoRelevantMemory("assign_tiers produced zero assignments")
@@ -1619,7 +1512,11 @@ class MemoryChat:
                 raise RuntimeError(
                     "axis-4 token-budget governor truncated all assignments"
                 )
-            if not config.include_cold_in_kv:
+            dynamic_policy_active = any(
+                str(getattr(a, "policy_version", "")) == POLICY_VERSION_UTILITY_V2
+                for a in tier_assignments
+            )
+            if dynamic_policy_active or not config.include_cold_in_kv:
                 assignments_for_generation = [
                     assignment
                     for assignment in assignments_for_generation
@@ -1691,6 +1588,25 @@ class MemoryChat:
                     **selector_kwargs,
                 )
         except (NoRelevantMemory, ValueError, RuntimeError) as exc:
+            if (
+                feedback_archive_root is not None
+                and assignments_for_generation
+                and callable(record_asi_feedback)
+            ):
+                try:
+                    reward = _asi_feedback_reward(
+                        {},
+                        [],
+                        fallback=True,
+                    )
+                    record_asi_feedback(
+                        Path(feedback_archive_root),
+                        assignments_for_generation,
+                        reward=reward,
+                        outcome=f"fallback:{type(exc).__name__}",
+                    )
+                except Exception as feedback_exc:  # noqa: BLE001
+                    info(f"asi feedback persist FAILED (non-fatal): {feedback_exc!r}")
             ordinary_miss = isinstance(exc, NoRelevantMemory)
             if ordinary_miss and not debug_command:
                 info(f"memory recall found no relevant memory: {exc}")
@@ -1763,6 +1679,21 @@ class MemoryChat:
         meta.evidence_support_count = int(
             kv_strict.get("evidence_support_count", len(evidence_supports))
         )
+        if (
+            feedback_archive_root is not None
+            and assignments_for_generation
+            and callable(record_asi_feedback)
+        ):
+            try:
+                reward = _asi_feedback_reward(kv_strict, evidence_supports)
+                record_asi_feedback(
+                    Path(feedback_archive_root),
+                    assignments_for_generation,
+                    reward=reward,
+                    outcome="kv_direct",
+                )
+            except Exception as feedback_exc:  # noqa: BLE001
+                info(f"asi feedback persist FAILED (non-fatal): {feedback_exc!r}")
         # selected_tier: report the highest-priority tier that contributed to
         # this generation. Multi-fact queries can include HOT and WARM slots in
         # one answer, but the selected tier remains the top active tier.
@@ -1851,113 +1782,6 @@ class MemoryChat:
             debug_command=True,
             answer_prefix="kv_direct",
         )
-
-    def _vec_inject_turn(self, user_text: str, chat_context: str) -> TurnMetadata:
-        """Route a turn through the torch vec_inject stack end-to-end.
-
-        1. Retrieve matches via LocalVecInjectProvider.retrieve_sync on CUDA.
-        2. Install forward_pre_hook on model.model.layers[injection_layer] that
-           applies vec_inject_all to the residual h at position -1.
-        3. Generate the reply via plain_chat_turn's streaming path.
-        4. Remove the hook; populate and return TurnMetadata.
-
-        On low-confidence retrieval, zero-match, or any runtime error: emit the
-        axis-6 SILENT FALLBACK WARN and delegate to plain_chat_turn (mirrors the
-        recall_chat_turn / kv_query_turn fallback contract).
-        """
-        import torch
-
-        if not torch.cuda.is_available():
-            raise RuntimeError(
-                "vec_inject memory_mode requires CUDA (Amendment 5, GPU-only)"
-            )
-
-        from chuk_lazarus.inference.context.research.vec_inject.injection_torch import (
-            vec_inject_all,
-        )
-
-        provider = self._get_or_load_vec_inject_provider()
-        if provider is None or provider.n_facts == 0:
-            print(
-                "[WARN] axis-6: SILENT FALLBACK DETECTED — mode=vec_inject "
-                "reason=no_index_or_empty",
-                flush=True,
-            )
-            return self.plain_chat_turn(user_text)
-
-        meta = TurnMetadata(mode="vec_inject")
-        t_total_start = time.time()
-        t_retrieve_start = time.time()
-
-        try:
-            query_ids = self.tokenizer(
-                chat_context, add_special_tokens=False
-            ).input_ids
-            result = provider.retrieve_sync(
-                query_ids=list(query_ids),
-                query_text=chat_context,
-                top_k=5,
-            )
-        except (ValueError, RuntimeError) as exc:
-            print(
-                f"[WARN] axis-6: SILENT FALLBACK DETECTED — mode=vec_inject "
-                f"reason={type(exc).__name__}: {exc}",
-                flush=True,
-            )
-            info(f"vec_inject fallback to plain chat: {exc}")
-            return self.plain_chat_turn(user_text)
-
-        meta.retrieve_time = time.time() - t_retrieve_start
-
-        if not result.routing_confident or not result.matches:
-            print(
-                "[WARN] axis-6: SILENT FALLBACK DETECTED — mode=vec_inject "
-                f"reason=low_confidence top_score={result.top_score}",
-                flush=True,
-            )
-            return self.plain_chat_turn(user_text)
-
-        # Install forward_pre_hook on the injection layer.
-        # The HF Gemma model exposes the decoder stack at self.model.model.layers.
-        embed_matrix = self.model.get_input_embeddings().weight
-        target_layer = self.model.model.layers[result.injection_layer]
-
-        def _pre_hook(module, inputs):
-            # inputs is a tuple; first positional arg is the hidden state (1, T, D).
-            # We modify only the last-position slice to match the MLX reference.
-            if not inputs:
-                return None
-            h = inputs[0]
-            if h is None or not isinstance(h, torch.Tensor):
-                return None
-            h_last = h[:, -1:, :]
-            h_injected = vec_inject_all(h_last, result.matches, embed_matrix)
-            new_h = torch.cat([h[:, :-1, :], h_injected], dim=1)
-            return (new_h,) + tuple(inputs[1:])
-
-        hook_handle = target_layer.register_forward_pre_hook(_pre_hook)
-        try:
-            reply_meta = self.plain_chat_turn(user_text)
-        finally:
-            hook_handle.remove()
-
-        # Populate routing metadata from the vec_inject result.
-        top_match = result.matches[0]
-        meta.routing_mode = result.routing_stage or "vec_inject"
-        meta.source_session = ""  # vec_inject index has no session provenance at retrieval time
-        meta.window_id = top_match.window_id
-        meta.routing_score = top_match.score
-        meta.matched_window_text = ""  # provider does not carry window text
-        meta.window_keywords = []
-        meta.strict_assertions = {}
-        meta.generated_answer = reply_meta.generated_answer
-        meta.generated_tokens = reply_meta.generated_tokens
-        meta.prompt_tokens = reply_meta.prompt_tokens
-        meta.total_time = time.time() - t_total_start
-        meta.generate_time = max(0.0, meta.total_time - meta.retrieve_time)
-        meta.no_silent_fallback = True
-        meta.memory_used = True
-        return meta
 
     def _format_recent_history_for_routing(self, user_text: str, n_recent: int = 4) -> str:
         """Serialize the last n turns + the new user line as the routing query."""
@@ -2132,24 +1956,6 @@ class MemoryChat:
             info(f"  save-state -> {save_state_path}")
         except Exception as exc:  # noqa: BLE001 - additive; never block /save
             info(f"  save-state write FAILED (non-fatal): {exc!r}")
-
-        # 3c. axis-BC: emit vec_inject.npz so the next session's LocalVecInjectProvider
-        #     can load real K/V at retrieval_layer / kv_head with per-fact coefficients.
-        #     Best-effort: a failure here MUST NOT block /save.
-        try:
-            session_root = self.checkpoints_root / sid
-            torch_store_dir = session_root / "torch_store"
-            if self._emit_vec_inject_npz(session_root, torch_store_dir):
-                self.vec_inject_available = True
-        except Exception as exc:  # noqa: BLE001 - additive; never block /save
-            info(f"  vec_inject.npz write FAILED (non-fatal): {exc!r}")
-
-        # 3d. axis-BC auto-route: if vec_inject.npz was just written and the
-        #     user is on the default 'topical' mode, auto-promote to
-        #     'kv_direct' so the next chat turn injects KV memory.
-        if self.vec_inject_available and self.memory_mode == "topical":
-            self.memory_mode = "kv_direct"
-            info("  memory_mode auto-promoted topical -> kv_direct (vec_inject.npz available)")
 
         # 4. Refresh retriever so subsequent turns can see the new session.
         #    First-save path: no retriever exists yet — lazy-load once
@@ -2398,6 +2204,13 @@ class MemoryChat:
                 except ValueError as exc:
                     info(str(exc))
                     return False
+                if config.mode not in SCRIPT_MEMORY_MODES:
+                    info(
+                        f"memory profile {config.profile!r} resolves to unsupported "
+                        f"mode {config.mode!r}; supported modes: "
+                        f"{', '.join(SCRIPT_MEMORY_MODES)}"
+                    )
+                    return False
                 self.memory_profile = config.profile
                 self.memory_config = config
                 self.memory_mode = config.mode
@@ -2405,9 +2218,14 @@ class MemoryChat:
                     "memory_profile = "
                     f"{self.memory_profile}; memory_mode = {self.memory_mode}"
                 )
-            elif memory_arg in MEMORY_MODES:
+            elif memory_arg in SCRIPT_MEMORY_MODES:
                 self.memory_mode = memory_arg
                 info(f"memory_mode = {self.memory_mode}")
+            elif memory_arg:
+                info(
+                    f"memory_mode {memory_arg!r} is not supported by this REPL; "
+                    f"supported modes: {', '.join(SCRIPT_MEMORY_MODES)}"
+                )
             else:
                 self.memory_mode = "off" if self.memory_mode != "off" else "auto"
                 info(f"memory_mode = {self.memory_mode}")
@@ -2490,7 +2308,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--memory-mode",
-        choices=MEMORY_MODES,
+        choices=SCRIPT_MEMORY_MODES,
         default=None,
         help="Recall routing mode for post-save turns.",
     )
@@ -2577,6 +2395,11 @@ def main(argv: list[str] | None = None) -> int:
             "semantic_prefix_tokens": args.memory_semantic_prefix_tokens,
         },
     )
+    if memory_config.mode not in SCRIPT_MEMORY_MODES:
+        parser.error(
+            f"memory mode {memory_config.mode!r} is not supported by this REPL; "
+            f"supported modes: {', '.join(SCRIPT_MEMORY_MODES)}"
+        )
     args.memory_mode = memory_config.mode
     args.generation_engine = memory_config.active_generation_engine
     args.hot_budget_mib = memory_config.hot_budget_mib

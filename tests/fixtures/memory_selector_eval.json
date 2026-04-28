@@ -1,0 +1,146 @@
+{
+  "windows": [
+    {
+      "id": "atlas_current",
+      "session_id": "atlas000000000000000000000000001",
+      "window_id": 0,
+      "text": "Current Atlas pricing decisions: Atlas Pro is $29 per seat monthly, annual discount is 18%, and the trial lasts 14 days.",
+      "cost": 1,
+      "duplicate_group": "atlas_current"
+    },
+    {
+      "id": "atlas_current_dup",
+      "session_id": "atlas000000000000000000000000002",
+      "window_id": 0,
+      "text": "Atlas pricing decisions duplicate note: Pro costs $29 per seat each month, trial is 14 days, annual discount stays 18%.",
+      "cost": 1,
+      "duplicate_group": "atlas_current"
+    },
+    {
+      "id": "atlas_old",
+      "session_id": "atlas000000000000000000000000003",
+      "window_id": 0,
+      "text": "Old superseded Atlas pricing draft: Pro might be $49 monthly and the trial might be 7 days. Do not use this old draft.",
+      "cost": 1,
+      "duplicate_group": "atlas_old"
+    },
+    {
+      "id": "meridian_bug",
+      "session_id": "meridian00000000000000000000001",
+      "window_id": 0,
+      "text": "Meridian checkout bug status: final bug status is fixed, with monitoring kept on for checkout anomalies.",
+      "cost": 1,
+      "duplicate_group": "meridian_bug"
+    },
+    {
+      "id": "palette_final",
+      "session_id": "palette000000000000000000000001",
+      "window_id": 0,
+      "text": "Final website color scheme: warm white backgrounds, graphite headings, sage accents, and amber primary CTAs.",
+      "cost": 1,
+      "duplicate_group": "palette_final"
+    },
+    {
+      "id": "palette_history",
+      "session_id": "palette000000000000000000000002",
+      "window_id": 0,
+      "text": "Website color history: teal felt too cold during review, so sage replaced teal as the accent color.",
+      "cost": 1,
+      "duplicate_group": "palette_history"
+    },
+    {
+      "id": "repair_bill",
+      "session_id": "repair0000000000000000000000001",
+      "window_id": 0,
+      "text": "The car mechanic invoice was approved at $312 after the vehicle service appointment.",
+      "cost": 1,
+      "duplicate_group": "repair_bill"
+    },
+    {
+      "id": "repair_noise",
+      "session_id": "repair0000000000000000000000002",
+      "window_id": 0,
+      "text": "Automobile repair calendar reminder: schedule a service appointment next Friday; no invoice amount was recorded.",
+      "cost": 1,
+      "duplicate_group": "repair_noise"
+    },
+    {
+      "id": "atlas_appendix",
+      "session_id": "atlas000000000000000000000000004",
+      "window_id": 0,
+      "text": "Atlas pricing appendix archive archive archive pricing pricing pricing: meeting log snippets without final decisions.",
+      "cost": 4,
+      "duplicate_group": "atlas_appendix"
+    },
+    {
+      "id": "garden",
+      "session_id": "garden0000000000000000000000001",
+      "window_id": 0,
+      "text": "Garden irrigation note: move the basil planter and check the drip timer on Saturday.",
+      "cost": 1,
+      "duplicate_group": "garden"
+    }
+  ],
+  "queries": [
+    {
+      "id": "exact_atlas_price",
+      "text": "What exact price did we set for Atlas Pro, $29?",
+      "gold_ids": ["atlas_current"],
+      "exact_literal": "$29",
+      "budget": 3,
+      "k_hot": 1,
+      "k_warm": 2
+    },
+    {
+      "id": "paraphrase_repair_bill",
+      "text": "How much was the automobile repair bill?",
+      "gold_ids": ["repair_bill"],
+      "false_support_ids": ["repair_noise"],
+      "budget": 2,
+      "k_hot": 1,
+      "k_warm": 1
+    },
+    {
+      "id": "entity_meridian",
+      "text": "What is the Meridian checkout bug status?",
+      "gold_ids": ["meridian_bug"],
+      "budget": 2,
+      "k_hot": 1,
+      "k_warm": 1
+    },
+    {
+      "id": "multi_palette",
+      "text": "Summarize the final website palette and what color sage replaced.",
+      "gold_ids": ["palette_final", "palette_history"],
+      "budget": 2,
+      "k_hot": 1,
+      "k_warm": 1
+    },
+    {
+      "id": "duplicate_atlas",
+      "text": "List the current Atlas pricing decisions.",
+      "gold_ids": ["atlas_current"],
+      "false_support_ids": ["atlas_old"],
+      "budget": 2,
+      "k_hot": 2,
+      "k_warm": 1
+    },
+    {
+      "id": "budget_pressure",
+      "text": "Under a tight budget, what are the Atlas price and trial decisions?",
+      "gold_ids": ["atlas_current"],
+      "false_support_ids": ["atlas_appendix", "atlas_old"],
+      "budget": 2,
+      "k_hot": 2,
+      "k_warm": 1
+    },
+    {
+      "id": "no_relevant_memory",
+      "text": "What did we decide about the Neptune launch date?",
+      "gold_ids": [],
+      "budget": 2,
+      "k_hot": 1,
+      "k_warm": 1
+    }
+  ]
+}
