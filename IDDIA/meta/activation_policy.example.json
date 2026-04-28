@@ -1,0 +1,5 @@
+{
+  "mode": "every_n",
+  "every_n": 3,
+  "target_score": 4.0
+}

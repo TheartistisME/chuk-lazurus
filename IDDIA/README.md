@@ -87,6 +87,77 @@ python IDDIA/evals/run_brownfield_greenfield.py
 The latest report is written to
 `IDDIA/artifacts/ddia/evals/brownfield-greenfield/latest_report.md`.
 
+## Meta Grading And Improvement Agents
+
+`IDDIA/meta/` is a self-contained meta system for grading IDDIA outputs and
+future tool-output JSON. Runtime state is append-only and local under ignored
+`IDDIA/artifacts/meta/`.
+
+Grade a package or report JSON:
+
+```bash
+python -m IDDIA.meta grade IDDIA/artifacts/ddia/evals/brownfield-greenfield/<run>/packages/<scenario>.json \
+  --expected-concept event-log \
+  --expected-concept materialized-view \
+  --preferred-chapter "Stream Processing"
+```
+
+Each grade writes a structured record under `IDDIA/artifacts/meta/grades/`.
+Default criteria cover expected concept coverage, preferred chapter coverage,
+top-hit relevance, noise flags, explanation coverage, improvement backlog
+clarity, and mandatory handoff/signoff fields. Extra criteria can be added with
+a JSON config containing `criteria` entries of kind `required_terms` or
+`required_fields`.
+
+Activation policies are JSON files. Supported modes are:
+
+```json
+{"mode": "never"}
+{"mode": "always"}
+{"mode": "every_n", "every_n": 3}
+{"mode": "threshold", "target_score": 4.0}
+```
+
+Run grading with an activation policy:
+
+```bash
+python -m IDDIA.meta grade package.json \
+  --policy IDDIA/meta/activation_policy.example.json \
+  --objective "Improve IDDIA retrieval quality"
+```
+
+When activation requests an improvement agent, IDDIA invokes vee through WSL
+using the local vee checkout at `C:\Users\jehma\Desktop\vee` by default. The
+cadence is `vee agent spawn codex --name <worker> --then <prompt>`, then
+`vee agent start <worker>`. If WSL, vee, tmux, or the local checkout is
+unavailable, the spawner writes a pending request and prompt under
+`IDDIA/artifacts/meta/spawn_requests/` instead of failing the grade.
+
+Spawn directly from an existing grade:
+
+```bash
+python -m IDDIA.meta spawn IDDIA/artifacts/meta/grades/<grade>.json \
+  --objective "Patch the weakest IDDIA retrieval criteria"
+```
+
+Agents can inspect durable meta context:
+
+```bash
+python -m IDDIA.meta helper-context
+```
+
+Append durable local meta notes and signoffs:
+
+```bash
+python -m IDDIA.meta changelog append "Tuned concept coverage grading."
+python -m IDDIA.meta signoff append \
+  --file IDDIA/meta/grader.py \
+  --objective "Improve meta grading" \
+  --tldr "Added a custom criterion" \
+  --dependency "stdlib only" \
+  --dependency "vee spawning runs through WSL when available"
+```
+
 ## Commands
 
 Install the optional dependencies:
