@@ -49,6 +49,11 @@ from chuk_lazarus.session_retrieval.tier_policy import (
     tier_assignments_from_json,
     tier_assignments_to_json,
 )
+from chuk_lazarus.session_retrieval.temporal_ordinal import (
+    parse_ordinal_requirement,
+    select_temporal_ordinal,
+    sort_temporally,
+)
 from chuk_lazarus.session_retrieval.topical import route_candidates
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -94,9 +99,12 @@ __all__ = [
     "assign_tiers",
     "compute_ucb1",
     "load_asi_router_state",
+    "parse_ordinal_requirement",
     "record_asi_feedback",
     "route_candidates",
     "save_asi_router_state",
+    "select_temporal_ordinal",
+    "sort_temporally",
     "tier_assignment_from_dict",
     "tier_assignment_to_dict",
     "tier_assignments_from_json",

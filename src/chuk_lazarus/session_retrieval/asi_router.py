@@ -115,6 +115,7 @@ class AsiRouterCandidate:
     dense_rank: int = 0
     literal_rank: int = 0
     entity_rank: int = 0
+    session_turn_index: int = 0
     content_fingerprint: str = ""
     dense_vector: tuple[float, ...] = ()
     selector_telemetry: dict[str, Any] = field(default_factory=dict, compare=False)
@@ -356,6 +357,7 @@ class _WindowScoreRow:
     freshness_score: float
     window_text: str
     content_fingerprint: str
+    session_turn_index: int = 0
     lexical_score: float = 0.0
     activation_score: float = 0.0
 
@@ -513,6 +515,31 @@ def _content_fingerprint(text: str) -> str:
     return hashlib.blake2b(canonical.encode("utf-8"), digest_size=12).hexdigest()
 
 
+def _window_session_turn_index(
+    window_metadata: dict[int, dict[str, Any]],
+    window_id: int,
+) -> int:
+    """Best-effort archival timestamp for temporal co-reference ordering."""
+    metadata = window_metadata.get(int(window_id)) or {}
+    for key in (
+        "session_turn_index",
+        "turn_index",
+        "source_turn_index",
+        "message_index",
+        "msg_index",
+        "ordinal_index",
+        "created_index",
+    ):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return int(window_id)
+
+
 def _freshness_from_age_seconds(age_seconds: float) -> float:
     age_days = max(0.0, float(age_seconds)) / 86_400.0
     return 1.0 / (1.0 + math.log1p(age_days))
@@ -584,6 +611,7 @@ def _score_all_windows(
             )
         router = TFIDFRouter(window_tokens, idf)
         store_keywords: dict[int, list[str]] = getattr(store, "keywords", {}) or {}
+        store_metadata: dict[int, dict[str, Any]] = getattr(store, "window_metadata", {}) or {}
         window_token_lists: dict[int, list[int]] = getattr(store, "window_token_lists", {}) or {}
         literal_scores = literal_match_scores(store, literal_token_sequences)
         num_windows = int(getattr(store, "num_windows", 0) or 0)
@@ -682,6 +710,10 @@ def _score_all_windows(
                     freshness_score=_freshness_from_age_seconds(_session_age_seconds(handle)),
                     window_text=str(window_text),
                     content_fingerprint=_content_fingerprint(str(window_text)),
+                    session_turn_index=_window_session_turn_index(
+                        store_metadata,
+                        int(window_id),
+                    ),
                     lexical_score=float(raw_score),
                 )
             )
@@ -755,6 +787,7 @@ def _score_activation_windows(
         )
 
         store_keywords: dict[int, list[str]] = getattr(store, "keywords", {}) or {}
+        store_metadata: dict[int, dict[str, Any]] = getattr(store, "window_metadata", {}) or {}
         window_token_lists: dict[int, list[int]] = getattr(store, "window_token_lists", {}) or {}
         window_tokens: dict[int, set[int]] = getattr(store, "window_tokens", {}) or {}
         literal_scores = literal_match_scores(store, literal_token_sequences)
@@ -829,6 +862,10 @@ def _score_activation_windows(
                     freshness_score=_freshness_from_age_seconds(_session_age_seconds(handle)),
                     window_text=str(window_text),
                     content_fingerprint=_content_fingerprint(str(window_text)),
+                    session_turn_index=_window_session_turn_index(
+                        store_metadata,
+                        int(window_id),
+                    ),
                     activation_score=float(activation_score),
                 )
             )
@@ -1300,6 +1337,7 @@ def asi_route_candidates(
                 dense_rank=int(dense_ranks.get(key, 0)),
                 literal_rank=int(literal_ranks.get(key, 0)),
                 entity_rank=int(entity_ranks.get(key, 0)),
+                session_turn_index=int(row.session_turn_index),
                 content_fingerprint=str(row.content_fingerprint),
                 dense_vector=tuple(dense_vectors.get(key, ())),
                 selector_telemetry={

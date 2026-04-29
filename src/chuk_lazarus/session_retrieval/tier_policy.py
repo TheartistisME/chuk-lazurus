@@ -441,6 +441,7 @@ def _candidate_to_dict(candidate: AsiRouterCandidate) -> dict[str, Any]:
         "dense_rank": int(getattr(candidate, "dense_rank", 0)),
         "literal_rank": int(getattr(candidate, "literal_rank", 0)),
         "entity_rank": int(getattr(candidate, "entity_rank", 0)),
+        "session_turn_index": int(getattr(candidate, "session_turn_index", 0)),
         "content_fingerprint": str(getattr(candidate, "content_fingerprint", "")),
         "selector_telemetry": dict(getattr(candidate, "selector_telemetry", {}) or {}),
         "handle": _handle_to_dict(candidate.handle),
@@ -481,6 +482,7 @@ def _candidate_from_dict(data: dict[str, Any]) -> AsiRouterCandidate:
         dense_rank=int(data.get("dense_rank", 0)),
         literal_rank=int(data.get("literal_rank", 0)),
         entity_rank=int(data.get("entity_rank", 0)),
+        session_turn_index=int(data.get("session_turn_index", 0)),
         content_fingerprint=str(data.get("content_fingerprint", "")),
         selector_telemetry=dict(data.get("selector_telemetry", {}) or {}),
     )
