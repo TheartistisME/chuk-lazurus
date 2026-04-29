@@ -67,10 +67,11 @@ import re
 import time
 import warnings
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from chuk_lazarus.inference.context.knowledge.activation_routes import activation_topk
 from chuk_lazarus.inference.context.knowledge.route import TFIDFRouter
 from chuk_lazarus.session_retrieval.entity_mention import extract_entity_tokens
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle, load_store
@@ -83,6 +84,9 @@ ASI_ROUTER_STATE_FILENAME: str = "asi_router_state.json"
 _STATE_SCHEMA_VERSION: int = 1
 DEFAULT_RRF_K: float = 60.0
 DEFAULT_DENSE_DIM: int = 64
+DEFAULT_SELECTOR_POLICY: str = "utility-v2"
+DEFAULT_DENSE_SCORING: str = "deterministic"
+DEFAULT_ACTIVATION_GATE_THRESHOLD: float = 0.45
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,7 @@ class AsiRouterCandidate:
     literal_score: float = 0.0
     entity_score: float = 0.0
     dense_score: float = 0.0
+    activation_score: float = 0.0
     rrf_score: float = 0.0
     relevance_score: float = 0.0
     freshness_score: float = 0.0
@@ -299,6 +304,43 @@ def _session_age_seconds(handle: CheckpointHandle) -> float:
 _EXACT_LITERAL_BOOST = 1_000_000.0
 _ENTITY_MENTION_BOOST = 750_000.0
 
+_TOC_INDEX_HEAD_LIMIT = 600
+_TOC_INDEX_PHRASES: tuple[str, ...] = (
+    "this video answers questions like",
+    "video answers questions like",
+)
+_TOC_INDEX_HEADERS: tuple[str, ...] = (
+    "## example queries",
+    "# example queries",
+    "**example queries",
+    "example queries this video",
+)
+
+
+def _is_toc_index_window(text: str) -> bool:
+    """Detect catalog/Example-Queries-style index windows.
+
+    These windows enumerate candidate questions about a topic (e.g.
+    "## Example Queries This video answers questions like: 1. What is...")
+    rather than carrying procedural fault-finding content. They TF-IDF-match
+    keyword-rich queries but inject low-value context into the KV memory and
+    poison memory_on answer quality. Detection is a literal-substring scan of
+    the window head; no regex, no false positives on procedural windows that
+    happen to mention the words "example" or "queries" mid-text.
+    """
+    if not text:
+        return False
+    head = text[:_TOC_INDEX_HEAD_LIMIT].lower()
+    head_stripped = head.lstrip()
+    for header in _TOC_INDEX_HEADERS:
+        if head_stripped.startswith(header):
+            return True
+    if "example queries" in head_stripped[:120]:
+        for phrase in _TOC_INDEX_PHRASES:
+            if phrase in head:
+                return True
+    return False
+
 
 @dataclass(frozen=True)
 class _WindowScoreRow:
@@ -314,6 +356,8 @@ class _WindowScoreRow:
     freshness_score: float
     window_text: str
     content_fingerprint: str
+    lexical_score: float = 0.0
+    activation_score: float = 0.0
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -323,6 +367,47 @@ def _truthy_env(name: str, default: str = "0") -> bool:
         "yes",
         "on",
     }
+
+
+def _activation_gate_threshold() -> float:
+    raw = os.environ.get(
+        "LAZARUS_ASI_ACTIVATION_GATE_THRESHOLD",
+        str(DEFAULT_ACTIVATION_GATE_THRESHOLD),
+    )
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_ACTIVATION_GATE_THRESHOLD)
+
+
+def _hybrid_route_score(
+    *,
+    lexical_score: float,
+    activation_score: float,
+    activation_gate_threshold: float,
+) -> float:
+    semantic_score = (
+        float(activation_score)
+        if float(activation_score) >= float(activation_gate_threshold)
+        else 0.0
+    )
+    if float(lexical_score) > 0.0:
+        return max(float(lexical_score), semantic_score)
+    if semantic_score > 0.0:
+        return semantic_score
+    return float(lexical_score)
+
+
+def _route_source(row: _WindowScoreRow, *, activation_gate_threshold: float) -> str:
+    if float(row.literal_score) > 0.0:
+        return "literal"
+    if float(row.raw_tfidf_score) > 0.0 or float(row.entity_score) > 0.0:
+        return "hybrid" if float(row.activation_score) != 0.0 else "lexical"
+    if float(row.activation_score) >= float(activation_gate_threshold):
+        return "activation"
+    if float(row.activation_score) != 0.0:
+        return "activation_below_gate"
+    return "none"
 
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -475,6 +560,7 @@ def _score_all_windows(
     tokenizer: Any,
     *,
     decode_window_text: bool = False,
+    window_filter_by_session: dict[str, set[int]] | None = None,
 ) -> list[_WindowScoreRow]:
     """Score every window via TFIDFRouter.score_window; no silent fallback."""
     raw: list[_WindowScoreRow] = []
@@ -503,7 +589,15 @@ def _score_all_windows(
         num_windows = int(getattr(store, "num_windows", 0) or 0)
         if num_windows <= 0:
             num_windows = max(window_tokens.keys(), default=-1) + 1
-        for window_id in range(num_windows):
+        allowed_window_ids = None
+        if window_filter_by_session is not None:
+            allowed_window_ids = window_filter_by_session.get(str(handle.session_id), set())
+        window_ids = (
+            sorted(int(window_id) for window_id in allowed_window_ids)
+            if allowed_window_ids is not None
+            else range(num_windows)
+        )
+        for window_id in window_ids:
             if window_id not in window_tokens:
                 continue
             tfidf_score = float(router.score_window(query_ids, int(window_id)))
@@ -553,6 +647,11 @@ def _score_all_windows(
             )
             if archived_cold_penalty > 0.0 and "archived cold" in window_text_lower():
                 raw_score -= archived_cold_penalty
+            toc_index_penalty = float(
+                os.environ.get("LAZARUS_ROUTER_TOC_INDEX_PENALTY", "0") or 0.0
+            )
+            if toc_index_penalty > 0.0 and _is_toc_index_window(window_text_lower()):
+                raw_score -= toc_index_penalty
             token_cost = max(
                 1,
                 len(window_token_lists.get(int(window_id), []))
@@ -583,6 +682,154 @@ def _score_all_windows(
                     freshness_score=_freshness_from_age_seconds(_session_age_seconds(handle)),
                     window_text=str(window_text),
                     content_fingerprint=_content_fingerprint(str(window_text)),
+                    lexical_score=float(raw_score),
+                )
+            )
+    return raw
+
+
+def _literal_window_filter(
+    handles: Sequence[CheckpointHandle],
+    literal_token_sequences: list[list[int]],
+) -> dict[str, set[int]]:
+    if not literal_token_sequences:
+        return {}
+    matches: dict[str, set[int]] = {}
+    for handle in handles:
+        try:
+            store = load_store(handle)
+        except Exception as exc:
+            raise RuntimeError(
+                f"asi_route_candidates: failed to load store for session "
+                f"{handle.session_id!r} at {handle.torch_store_dir}: {exc!r}"
+            ) from exc
+        literal_scores = literal_match_scores(store, literal_token_sequences)
+        if literal_scores:
+            matches[str(handle.session_id)] = {int(window_id) for window_id in literal_scores}
+    return matches
+
+
+def _has_activation_routes(handle: CheckpointHandle) -> bool:
+    activation_meta = (handle.manifest or {}).get("activation_routes")
+    return isinstance(activation_meta, dict) and bool(activation_meta.get("path"))
+
+
+def _score_activation_windows(
+    handles: Sequence[CheckpointHandle],
+    activation_query_vector: Any,
+    literal_token_sequences: list[list[int]],
+    entity_tokens: list[str],
+    tokenizer: Any,
+    *,
+    candidate_pool: int,
+    decode_window_text: bool = False,
+) -> list[_WindowScoreRow]:
+    """Score activation-backed stores via activation_routes.npy cosine top-k."""
+    raw: list[_WindowScoreRow] = []
+    query_entities = tuple(dict.fromkeys(token.lower() for token in entity_tokens if token))
+    cost_mode = str(os.environ.get("LAZARUS_ASI_COST_MODE", "windows")).strip().lower()
+    for handle in handles:
+        try:
+            store = load_store(handle)
+        except Exception as exc:
+            raise RuntimeError(
+                f"asi_route_candidates: failed to load activation store for session "
+                f"{handle.session_id!r} at {handle.torch_store_dir}: {exc!r}"
+            ) from exc
+
+        try:
+            route_matrix = store.load_activation_routes()
+        except Exception as exc:
+            raise RuntimeError(
+                f"asi_route_candidates: failed to load activation_routes for session "
+                f"{handle.session_id!r} at {handle.torch_store_dir}: {exc!r}"
+            ) from exc
+
+        route_count = int(getattr(route_matrix, "shape", [0])[0] or 0)
+        if route_count <= 0:
+            continue
+        indices, values = activation_topk(
+            activation_query_vector,
+            route_matrix,
+            route_count,
+        )
+
+        store_keywords: dict[int, list[str]] = getattr(store, "keywords", {}) or {}
+        window_token_lists: dict[int, list[int]] = getattr(store, "window_token_lists", {}) or {}
+        window_tokens: dict[int, set[int]] = getattr(store, "window_tokens", {}) or {}
+        literal_scores = literal_match_scores(store, literal_token_sequences)
+        num_windows = int(getattr(store, "num_windows", 0) or 0) or route_count
+
+        for idx_obj, value_obj in zip(indices.tolist(), values.tolist()):
+            window_id = int(idx_obj)
+            if window_id < 0 or window_id >= num_windows:
+                continue
+            if window_tokens and window_id not in window_tokens:
+                continue
+
+            activation_score = float(value_obj)
+            literal_score = float(literal_scores.get(window_id, 0.0))
+            kc = len(store_keywords.get(window_id, []))
+            entity_score = 0.0
+            window_text_cache: str | None = None
+
+            def window_text_lower() -> str:
+                nonlocal window_text_cache
+                if window_text_cache is None:
+                    try:
+                        decoded = store.get_window_text(window_id, tokenizer)
+                        window_text_cache = decoded.lower() if isinstance(decoded, str) else ""
+                    except Exception:
+                        window_text_cache = ""
+                return window_text_cache
+
+            if query_entities:
+                keyword_set = {
+                    str(keyword).strip().lower()
+                    for keyword in store_keywords.get(window_id, []) or []
+                }
+                matched_entities = {entity for entity in query_entities if entity in keyword_set}
+                missing_entities = [
+                    entity for entity in query_entities if entity not in matched_entities
+                ]
+                if missing_entities:
+                    window_text = window_text_lower()
+                    for entity in missing_entities:
+                        if re.search(rf"(?<![a-z0-9]){re.escape(entity)}(?![a-z0-9])", window_text):
+                            matched_entities.add(entity)
+                entity_score = float(len(matched_entities))
+
+            token_cost = max(
+                1,
+                len(window_token_lists.get(window_id, []))
+                or len(window_tokens.get(window_id, ()))
+                or 1,
+            )
+            estimated_cost = float(token_cost if cost_mode == "tokens" else 1)
+            window_text = ""
+            if window_text_cache is not None:
+                window_text = str(window_text_cache)
+            elif (
+                decode_window_text
+                or cost_mode == "tokens"
+                or _truthy_env("LAZARUS_ASI_DECODE_FOR_SELECTOR")
+            ):
+                window_text = window_text_lower()
+            raw.append(
+                _WindowScoreRow(
+                    raw_score=float(activation_score),
+                    raw_tfidf_score=0.0,
+                    literal_score=float(literal_score),
+                    entity_score=float(entity_score),
+                    session_id=str(handle.session_id),
+                    window_id=int(window_id),
+                    handle=handle,
+                    keyword_count=int(kc),
+                    estimated_cost=float(estimated_cost),
+                    freshness_score=_freshness_from_age_seconds(_session_age_seconds(handle)),
+                    window_text=str(window_text),
+                    content_fingerprint=_content_fingerprint(str(window_text)),
+                    activation_score=float(activation_score),
                 )
             )
     return raw
@@ -776,6 +1023,7 @@ def asi_route_candidates(
     archive_root: Path | None = None,
     dense_scoring: str | None = None,
     dense_query_vector: Sequence[float] | None = None,
+    activation_query_vector: Any | None = None,
     dense_window_vectors: Any = None,
     rrf_k: float = DEFAULT_RRF_K,
     ranking_policy: str | None = None,
@@ -783,15 +1031,19 @@ def asi_route_candidates(
     """Return the full ranked list of :class:`AsiRouterCandidate`.
 
     Pipeline: (a) load state from ``archive_root`` or fresh defaults;
-    (b) :func:`_score_all_windows`; (c) truncate to top ``candidate_pool``
-    by raw score; (d) min-max-normalise into ``q_w`` (degenerate → 1.0);
-    (e-f) for composite key ``f"{session_id}:{window_id}"`` use
+    (b) :func:`_score_all_windows` for TF-IDF/literal/entity scoring, then
+    merge Layer-13 activation cosine top-k scores when provided; (c) truncate
+    to top ``candidate_pool`` by hybrid raw score; (d) min-max-normalise into
+    ``q_w`` (degenerate → 1.0); (e-f) for composite key
+    ``f"{session_id}:{window_id}"`` use
     ``state.mean_rewards[key]`` as ``q_for_ucb`` if present, else the
     normalised ``q_w``; apply :func:`compute_ucb1`; (g) :func:`advance_island`
     once; ``island_id`` via :func:`assign_island`; (h) sort ucb1_score desc,
-    tie-break ``(session_id, window_id)`` asc; (i) return list. State is NOT
-    persisted here. ``exploration_ratio`` / ``exploitation_ratio`` are
-    retained for signature parity; downstream axes consume them for tiering.
+    tie-break ``(session_id, window_id)`` asc; (i) return list. By default
+    the returned list is re-ranked by ``utility-v2`` using deterministic dense
+    fallback, RRF, freshness, learned reward, and cost. State is NOT persisted
+    here. ``exploration_ratio`` / ``exploitation_ratio`` are retained for
+    signature parity; downstream axes consume them for tiering.
     """
     if ucb1_c < 0.0:
         raise ValueError(f"ucb1_c must be >= 0, got {ucb1_c}")
@@ -815,7 +1067,7 @@ def asi_route_candidates(
         str(
             dense_scoring
             if dense_scoring is not None
-            else os.environ.get("LAZARUS_ASI_DENSE_SCORING", "off")
+            else os.environ.get("LAZARUS_ASI_DENSE_SCORING", DEFAULT_DENSE_SCORING)
         )
         .strip()
         .lower()
@@ -824,7 +1076,7 @@ def asi_route_candidates(
         str(
             ranking_policy
             if ranking_policy is not None
-            else os.environ.get("LAZARUS_ASI_SELECTOR_POLICY", "rank-v1")
+            else os.environ.get("LAZARUS_ASI_SELECTOR_POLICY", DEFAULT_SELECTOR_POLICY)
         )
         .strip()
         .lower()
@@ -848,17 +1100,61 @@ def asi_route_candidates(
             if token not in {"tell", "list", "return", "rank"}
         ]
     )
+    should_decode = (
+        dense_mode not in {"", "0", "false", "no", "none", "off"}
+        or selected_ranking_policy in {"utility-v2", "hybrid-v2"}
+    )
+    literal_fast_path = _truthy_env("LAZARUS_ASI_LITERAL_FAST_PATH", "1")
+    literal_window_filter = (
+        _literal_window_filter(handles, literal_token_sequences)
+        if literal_fast_path and literal_token_sequences
+        else {}
+    )
     raw_scored = _score_all_windows(
         handles,
         query_ids,
         literal_token_sequences,
         entity_tokens,
         tokenizer,
-        decode_window_text=(
-            dense_mode not in {"", "0", "false", "no", "none", "off"}
-            or selected_ranking_policy in {"utility-v2", "hybrid-v2"}
-        ),
+        decode_window_text=should_decode,
+        window_filter_by_session=literal_window_filter or None,
     )
+    activation_gate_threshold = _activation_gate_threshold()
+    activation_handles = [
+        handle
+        for handle in handles
+        if activation_query_vector is not None and _has_activation_routes(handle)
+    ]
+    if activation_handles:
+        activation_rows = _score_activation_windows(
+            activation_handles,
+            activation_query_vector,
+            literal_token_sequences,
+            entity_tokens,
+            tokenizer,
+            candidate_pool=candidate_pool,
+            decode_window_text=should_decode,
+        )
+        activation_scores = {
+            (row.session_id, row.window_id): float(row.activation_score)
+            for row in activation_rows
+        }
+        raw_scored = [
+            replace(
+                row,
+                raw_score=_hybrid_route_score(
+                    lexical_score=float(row.lexical_score),
+                    activation_score=float(
+                        activation_scores.get((row.session_id, row.window_id), 0.0)
+                    ),
+                    activation_gate_threshold=float(activation_gate_threshold),
+                ),
+                activation_score=float(
+                    activation_scores.get((row.session_id, row.window_id), 0.0)
+                ),
+            )
+            for row in raw_scored
+        ]
     if not raw_scored:
         return []
 
@@ -870,6 +1166,9 @@ def asi_route_candidates(
         dense_window_vectors=dense_window_vectors,
     )
     key_seq = [(row.session_id, row.window_id) for row in raw_scored]
+    boosted_scores = {
+        (row.session_id, row.window_id): float(row.raw_score) for row in raw_scored
+    }
     lexical_scores = {
         (row.session_id, row.window_id): float(row.raw_tfidf_score) for row in raw_scored
     }
@@ -879,27 +1178,43 @@ def asi_route_candidates(
     entity_scores_by_key = {
         (row.session_id, row.window_id): float(row.entity_score) for row in raw_scored
     }
+    activation_scores_by_key = {
+        (row.session_id, row.window_id): float(row.activation_score) for row in raw_scored
+    }
     lexical_ranks = _rank_by_score(raw_scored, lexical_scores)
     literal_ranks = _rank_by_score(raw_scored, literal_scores_by_key)
     entity_ranks = _rank_by_score(raw_scored, entity_scores_by_key)
+    activation_ranks = (
+        _rank_by_score(raw_scored, activation_scores_by_key)
+        if any(float(score) != 0.0 for score in activation_scores_by_key.values())
+        else {}
+    )
     dense_ranks = _rank_by_score(raw_scored, dense_scores) if dense_scores else {}
     rank_maps = [lexical_ranks, literal_ranks, entity_ranks]
+    if activation_ranks:
+        rank_maps.append(activation_ranks)
     if dense_ranks:
         rank_maps.append(dense_ranks)
 
+    boosted_norm = dict(zip(key_seq, _normalise([boosted_scores[k] for k in key_seq])))
     lexical_norm = dict(zip(key_seq, _normalise([lexical_scores[k] for k in key_seq])))
     literal_norm = dict(zip(key_seq, _normalise([literal_scores_by_key[k] for k in key_seq])))
     entity_norm = dict(zip(key_seq, _normalise([entity_scores_by_key[k] for k in key_seq])))
+    activation_norm = dict(
+        zip(key_seq, _normalise([activation_scores_by_key[k] for k in key_seq]))
+    )
     dense_norm = dict(zip(key_seq, _normalise([dense_scores.get(k, 0.0) for k in key_seq])))
     max_cost = max((float(row.estimated_cost) for row in raw_scored), default=1.0)
     row_metrics: dict[tuple[str, int], dict[str, float]] = {}
     for row in raw_scored:
         key = (row.session_id, row.window_id)
         relevance = (
-            0.50 * float(lexical_norm.get(key, 0.0))
-            + 0.25 * float(dense_norm.get(key, 0.0))
-            + 0.15 * float(literal_norm.get(key, 0.0))
+            0.30 * float(boosted_norm.get(key, 0.0))
+            + 0.20 * float(dense_norm.get(key, 0.0))
+            + 0.20 * float(literal_norm.get(key, 0.0))
             + 0.10 * float(entity_norm.get(key, 0.0))
+            + 0.05 * float(lexical_norm.get(key, 0.0))
+            + 0.15 * float(activation_norm.get(key, 0.0))
         )
         rrf_score = _reciprocal_rank_fusion(key, rank_maps, k=float(rrf_k))
         learned = float(state.mean_rewards.get(f"{row.session_id}:{row.window_id}", 0.0))
@@ -974,6 +1289,7 @@ def asi_route_candidates(
                 literal_score=float(row.literal_score),
                 entity_score=float(row.entity_score),
                 dense_score=float(dense_scores.get(key, 0.0)),
+                activation_score=float(row.activation_score),
                 rrf_score=float(metrics.get("rrf", 0.0)),
                 relevance_score=float(metrics.get("relevance", float(q_w))),
                 freshness_score=float(row.freshness_score),
@@ -990,6 +1306,20 @@ def asi_route_candidates(
                     "dense_status": dense_status,
                     "ranking_policy": selected_ranking_policy,
                     "rrf_k": float(rrf_k),
+                    "lexical_score": float(row.lexical_score),
+                    "raw_tfidf_score": float(row.raw_tfidf_score),
+                    "literal_score": float(row.literal_score),
+                    "literal_fast_path": bool(literal_window_filter),
+                    "activation_score": float(row.activation_score),
+                    "activation_gate_threshold": float(activation_gate_threshold),
+                    "activation_passed_gate": bool(
+                        float(row.activation_score) >= float(activation_gate_threshold)
+                    ),
+                    "activation_rank": int(activation_ranks.get(key, 0)),
+                    "route_source": _route_source(
+                        row,
+                        activation_gate_threshold=float(activation_gate_threshold),
+                    ),
                 },
             )
         )
@@ -1029,6 +1359,9 @@ __all__ = [
     "ASI_ROUTER_STATE_FILENAME",
     "AsiRouterCandidate",
     "AsiRouterState",
+    "DEFAULT_ACTIVATION_GATE_THRESHOLD",
+    "DEFAULT_DENSE_SCORING",
+    "DEFAULT_SELECTOR_POLICY",
     "advance_island",
     "asi_route_candidates",
     "assign_island",

@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 _LITERAL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{5,}")
+_TOKEN_INDEX_CACHE: dict[int, tuple[int, dict[int, list[tuple[int, list[int]]]]]] = {}
 
 
 def extract_high_entropy_literals(query_text: str) -> list[str]:
@@ -71,19 +72,31 @@ def literal_match_scores(
     if not isinstance(token_lists, dict) or not token_lists:
         return {}
 
+    cache_key = id(token_lists)
+    cached = _TOKEN_INDEX_CACHE.get(cache_key)
+    if cached is None or cached[0] != len(token_lists):
+        first_token_index: dict[int, list[tuple[int, list[int]]]] = {}
+        for raw_window_id, raw_tokens in token_lists.items():
+            try:
+                window_id = int(raw_window_id)
+                window_tokens = [int(token_id) for token_id in raw_tokens]
+            except (TypeError, ValueError):
+                continue
+            for token_id in set(window_tokens):
+                first_token_index.setdefault(int(token_id), []).append(
+                    (window_id, window_tokens)
+                )
+        cached = (len(token_lists), first_token_index)
+        _TOKEN_INDEX_CACHE[cache_key] = cached
+    first_token_index = cached[1]
+
     scores: dict[int, float] = {}
-    for raw_window_id, raw_tokens in token_lists.items():
-        try:
-            window_id = int(raw_window_id)
-            window_tokens = [int(token_id) for token_id in raw_tokens]
-        except (TypeError, ValueError):
+    for sequence in literal_token_sequences:
+        if not sequence:
             continue
-        score = 0.0
-        for sequence in literal_token_sequences:
+        for window_id, window_tokens in first_token_index.get(int(sequence[0]), []):
             if contains_token_subsequence(window_tokens, sequence):
-                score += float(len(sequence))
-        if score > 0.0:
-            scores[window_id] = score
+                scores[window_id] = scores.get(window_id, 0.0) + float(len(sequence))
     return scores
 
 

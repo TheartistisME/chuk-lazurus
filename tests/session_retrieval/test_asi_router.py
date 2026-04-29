@@ -30,6 +30,7 @@ from chuk_lazarus.session_retrieval.asi_router import (
     ASI_ROUTER_STATE_FILENAME,
     AsiRouterCandidate,
     AsiRouterState,
+    _is_toc_index_window,
     advance_island,
     asi_route_candidates,
     assign_island,
@@ -39,7 +40,6 @@ from chuk_lazarus.session_retrieval.asi_router import (
 )
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle
 from chuk_lazarus.session_retrieval.topical import route_candidates, route_topical
-
 
 # ---------------------------------------------------------------------------
 # Local helpers / stubs (kept single-file per task brief).
@@ -95,6 +95,34 @@ def _make_stub_store(
         num_windows if num_windows is not None else len(window_tokens)
     )
     return store
+
+
+class _FakeRouteMatrix:
+    def __init__(self, row_count: int) -> None:
+        self.shape = (int(row_count), 2)
+
+
+class _FakeTopKTensor:
+    def __init__(self, values: list[int] | list[float]) -> None:
+        self._values = values
+
+    def tolist(self) -> list[int] | list[float]:
+        return list(self._values)
+
+
+def _patch_activation_topk(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    indices: list[int],
+    values: list[float],
+) -> None:
+    def _fake_activation_topk(
+        _query_vec: Any, _window_matrix: Any, top_k: int
+    ) -> tuple[_FakeTopKTensor, _FakeTopKTensor]:
+        k = int(top_k)
+        return _FakeTopKTensor(indices[:k]), _FakeTopKTensor(values[:k])
+
+    monkeypatch.setattr(asi_router_module, "activation_topk", _fake_activation_topk)
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +380,180 @@ class TestStatePersistence:
 
 
 class TestAsiRouteCandidates:
+    def test_activation_store_preserves_literal_exact_token_dominance(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        handle = _make_handle("a" * 32, tmp_path)
+        handle.manifest["activation_routes"] = {"path": "activation_routes.npy"}
+        store = _make_stub_store(
+            window_tokens={0: {1}, 1: {10, 11, 12}, 2: {99}},
+            idf={1: 0.1, 10: 10.0, 11: 10.0, 12: 10.0, 99: 1.0},
+            window_token_lists={0: [7, 42, 43, 8], 1: [10, 11, 12], 2: [99]},
+            num_windows=3,
+        )
+        store.load_activation_routes.return_value = _FakeRouteMatrix(3)
+
+        monkeypatch.setattr(asi_router_module, "load_store", lambda _h: store)
+        monkeypatch.setattr(asi_router_module, "extract_entity_tokens", lambda _text: [])
+        _patch_activation_topk(monkeypatch, indices=[1, 2, 0], values=[1.0, 0.9, 0.8])
+
+        candidates = asi_route_candidates(
+            [handle],
+            query_text="Recall marker abc123def456",
+            tokenizer=_LiteralTokenizer(),
+            candidate_pool=2,
+            archive_root=None,
+            dense_scoring="off",
+            ranking_policy="rank-v1",
+            activation_query_vector=[0.0, 1.0],
+        )
+
+        assert candidates
+        assert candidates[0].window_id == 0
+        assert candidates[0].literal_score > 0.0
+        assert candidates[0].activation_score == pytest.approx(0.8)
+        assert candidates[0].raw_router_score == pytest.approx(1.0)
+        assert candidates[0].selector_telemetry["route_source"] == "literal"
+        assert candidates[0].selector_telemetry["literal_fast_path"] is True
+        assert len(candidates) == 1
+
+    def test_activation_passes_when_lexical_zero_and_gate_clears(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        handle = _make_handle("a" * 32, tmp_path)
+        handle.manifest["activation_routes"] = {"path": "activation_routes.npy"}
+        store = _make_stub_store(
+            window_tokens={0: {20}, 1: {21}},
+            idf={20: 1.0, 21: 1.0},
+            window_token_lists={0: [20], 1: [21]},
+            num_windows=2,
+        )
+        store.load_activation_routes.return_value = _FakeRouteMatrix(2)
+
+        monkeypatch.setattr(asi_router_module, "load_store", lambda _h: store)
+        monkeypatch.setattr(asi_router_module, "extract_entity_tokens", lambda _text: [])
+        monkeypatch.setenv("LAZARUS_ASI_ACTIVATION_GATE_THRESHOLD", "0.45")
+        _patch_activation_topk(monkeypatch, indices=[1, 0], values=[1.0, 0.0])
+
+        candidates = asi_route_candidates(
+            [handle],
+            query_text="semantic paraphrase request",
+            tokenizer=_StubTokenizer(),
+            candidate_pool=2,
+            archive_root=None,
+            dense_scoring="off",
+            ranking_policy="rank-v1",
+            activation_query_vector=[0.0, 1.0],
+        )
+
+        assert candidates
+        assert candidates[0].window_id == 1
+        assert candidates[0].raw_tfidf_score_pre_normalization == pytest.approx(0.0)
+        assert candidates[0].literal_score == pytest.approx(0.0)
+        assert candidates[0].activation_score == pytest.approx(1.0)
+        assert candidates[0].raw_router_score == pytest.approx(1.0)
+        assert candidates[0].selector_telemetry["route_source"] == "activation"
+        assert candidates[0].selector_telemetry["activation_passed_gate"] is True
+
+    def test_hybrid_telemetry_exposes_route_source_and_scores(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        handle = _make_handle("a" * 32, tmp_path)
+        handle.manifest["activation_routes"] = {"path": "activation_routes.npy"}
+        store = _make_stub_store(
+            window_tokens={0: {10}, 1: {99}},
+            idf={10: 2.0, 99: 1.0},
+            window_token_lists={0: [10], 1: [99]},
+            num_windows=2,
+        )
+        store.load_activation_routes.return_value = _FakeRouteMatrix(2)
+
+        monkeypatch.setattr(asi_router_module, "load_store", lambda _h: store)
+        monkeypatch.setattr(asi_router_module, "extract_entity_tokens", lambda _text: [])
+        _patch_activation_topk(monkeypatch, indices=[0, 1], values=[1.0, 0.0])
+
+        candidates = asi_route_candidates(
+            [handle],
+            query_text="hello",
+            tokenizer=_StubTokenizer(),
+            candidate_pool=2,
+            archive_root=None,
+            dense_scoring="off",
+            ranking_policy="rank-v1",
+            activation_query_vector=[1.0, 0.0],
+        )
+
+        assert candidates
+        telemetry = candidates[0].selector_telemetry
+        assert candidates[0].window_id == 0
+        assert telemetry["route_source"] == "hybrid"
+        assert telemetry["lexical_score"] == pytest.approx(2.0)
+        assert telemetry["raw_tfidf_score"] == pytest.approx(2.0)
+        assert telemetry["literal_score"] == pytest.approx(0.0)
+        assert telemetry["activation_score"] == pytest.approx(1.0)
+        assert telemetry["activation_gate_threshold"] == pytest.approx(0.45)
+        assert telemetry["activation_rank"] == 1
+
+    def test_activation_capable_store_still_uses_tfidf(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        handle = _make_handle("a" * 32, tmp_path)
+        handle.manifest["activation_routes"] = {"path": "activation_routes.npy"}
+        store = _make_stub_store(
+            window_tokens={0: {10}, 1: {99}},
+            idf={10: 2.0, 99: 1.0},
+            window_token_lists={0: [10], 1: [99]},
+            num_windows=2,
+        )
+        store.load_activation_routes.return_value = _FakeRouteMatrix(2)
+
+        monkeypatch.setattr(asi_router_module, "load_store", lambda _h: store)
+        monkeypatch.setattr(asi_router_module, "extract_entity_tokens", lambda _text: [])
+        _patch_activation_topk(monkeypatch, indices=[0, 1], values=[1.0, 0.0])
+
+        candidates = asi_route_candidates(
+            [handle],
+            query_text="hello",
+            tokenizer=_StubTokenizer(),
+            candidate_pool=2,
+            archive_root=None,
+            dense_scoring="off",
+            ranking_policy="rank-v1",
+            activation_query_vector=[0.0, 1.0],
+        )
+
+        assert candidates
+        assert candidates[0].window_id == 0
+        assert candidates[0].raw_tfidf_score_pre_normalization == pytest.approx(2.0)
+        assert candidates[0].activation_score == pytest.approx(1.0)
+
+    def test_legacy_store_still_uses_tfidf_without_activation_manifest(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        handle = _make_handle("a" * 32, tmp_path)
+        store = _make_stub_store(
+            window_tokens={0: {10}, 1: {99}},
+            idf={10: 2.0, 99: 1.0},
+        )
+        monkeypatch.setattr(asi_router_module, "load_store", lambda _h: store)
+        monkeypatch.setattr(asi_router_module, "extract_entity_tokens", lambda _text: [])
+
+        candidates = asi_route_candidates(
+            [handle],
+            query_text="hello",
+            tokenizer=_StubTokenizer(),
+            candidate_pool=2,
+            archive_root=None,
+            dense_scoring="off",
+            ranking_policy="rank-v1",
+            activation_query_vector=[1.0, 0.0],
+        )
+
+        assert candidates
+        assert candidates[0].window_id == 0
+        assert candidates[0].raw_tfidf_score_pre_normalization > 0.0
+        assert candidates[0].activation_score == pytest.approx(0.0)
+
     def test_asi_route_candidates_returns_full_ranked_list(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -572,6 +774,8 @@ class TestAsiRouteCandidates:
         assert candidates
         assert candidates[0].handle is handle_a
         assert candidates[0].window_id == 0
+        assert candidates[0].selector_telemetry["ranking_policy"] == "utility-v2"
+        assert candidates[0].selector_telemetry["dense_status"] == "deterministic"
 
     def test_asi_route_candidates_uses_raw_tfidf_as_tie_break(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -600,6 +804,8 @@ class TestAsiRouteCandidates:
             tokenizer=_LiteralTokenizer(),
             candidate_pool=2,
             archive_root=None,
+            dense_scoring="off",
+            ranking_policy="rank-v1",
         )
 
         assert candidates[0].handle is handle_b
@@ -766,3 +972,239 @@ class TestRouteCandidates:
         first_handle, first_window, _first_score = candidates[0]
         assert first_handle.session_id == top_handle.session_id
         assert first_window == top_window
+
+
+# ---------------------------------------------------------------------------
+# 8. TOC-index window detection and router penalty
+# ---------------------------------------------------------------------------
+
+
+class _DecodingTokenizer:
+    """Tokenizer that returns deterministic token ids and decodes via a map."""
+
+    def __init__(self, decode_map: dict[int, str] | None = None) -> None:
+        self.decode_map = decode_map or {}
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        if not text:
+            return []
+        return [10, 11, 12]
+
+    def decode(self, token_ids: Any, skip_special_tokens: bool = True) -> str:
+        if isinstance(token_ids, int):
+            return self.decode_map.get(int(token_ids), "")
+        try:
+            ids = list(token_ids)
+        except TypeError:
+            return ""
+        return " ".join(self.decode_map.get(int(t), "") for t in ids)
+
+
+def _make_text_store(
+    *,
+    window_tokens: dict[int, set[int]],
+    idf: dict[int, float],
+    window_text_by_id: dict[int, str],
+    keywords: dict[int, list[str]] | None = None,
+) -> Any:
+    """Stub store that returns scripted window text via ``get_window_text``."""
+    store = MagicMock()
+    store.window_tokens = window_tokens
+    store.window_token_lists = {}
+    store.idf = idf
+    store.keywords = keywords or {wid: [] for wid in window_tokens}
+    store.num_windows = len(window_tokens)
+
+    def _get_window_text(window_id: int, _tokenizer: Any) -> str:
+        return window_text_by_id.get(int(window_id), "")
+
+    store.get_window_text.side_effect = _get_window_text
+    return store
+
+
+class TestTocIndexDetection:
+    """`_is_toc_index_window` only flags the catalog/Example-Queries pattern."""
+
+    def test_detects_example_queries_header(self) -> None:
+        text = (
+            "## Example Queries This video answers questions like:\n"
+            "1. What is a Safety Switch?\n"
+            "2. How do I install a Safety Switch?"
+        )
+        assert _is_toc_index_window(text) is True
+
+    def test_detects_lowercase_header(self) -> None:
+        text = (
+            "  ## example queries this video answers questions like:\n"
+            "1. What is a 3Phase C40 Circuitbreaker?"
+        )
+        assert _is_toc_index_window(text) is True
+
+    def test_does_not_flag_procedural_window(self) -> None:
+        text = (
+            "## Step-by-Step Procedures\n"
+            "Preparation\n"
+            "1. Ensure all power is isolated.\n"
+            "2. Perform a battery check on the tester."
+        )
+        assert _is_toc_index_window(text) is False
+
+    def test_does_not_flag_safety_notes(self) -> None:
+        text = (
+            "## Safety Notes\n"
+            "- If the pool pump fails and the water becomes live, the RCD trips."
+        )
+        assert _is_toc_index_window(text) is False
+
+    def test_does_not_flag_terminology(self) -> None:
+        text = (
+            "## Terminology & Slang\n"
+            "| Term | Meaning | Context |\n"
+            "| RCD | Residual Current Device (safety switch) | Tested by ... |"
+        )
+        assert _is_toc_index_window(text) is False
+
+    def test_empty_text_is_not_flagged(self) -> None:
+        assert _is_toc_index_window("") is False
+        assert _is_toc_index_window(None) is False  # type: ignore[arg-type]
+
+    def test_does_not_flag_mid_text_mention(self) -> None:
+        # The phrase "example queries" appears late, after procedural content.
+        text = (
+            "## Key Lessons\n"
+            "Use the split-half method to locate a fault.\n"
+            "See related docs for example queries about RCDs."
+        )
+        assert _is_toc_index_window(text) is False
+
+
+class TestTocIndexPenalty:
+    """Env-controlled penalty must demote TOC-index windows in the candidate pool."""
+
+    def test_penalty_off_keeps_toc_at_top(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Both windows match query token equally → equal TF-IDF.
+        # With no penalty, ordering falls back to deterministic tiebreak
+        # (window_id ascending), so window 0 (the TOC) ranks first.
+        handle = _make_handle("a" * 32, tmp_path)
+        toc_text = (
+            "## Example Queries This video answers questions like:\n"
+            "1. What is a Safety Switch? 2. How do I install a Safety Switch?"
+        )
+        procedural_text = (
+            "## Step-by-Step Procedures\n"
+            "1. Isolate supply.\n2. Prove dead.\n3. Test resistance."
+        )
+        store = _make_text_store(
+            window_tokens={0: {10, 11}, 1: {10, 11}},
+            idf={10: 1.0, 11: 1.0},
+            window_text_by_id={0: toc_text, 1: procedural_text},
+        )
+        monkeypatch.setattr(asi_router_module, "load_store", lambda _h: store)
+        monkeypatch.delenv("LAZARUS_ROUTER_TOC_INDEX_PENALTY", raising=False)
+        monkeypatch.setenv("LAZARUS_ASI_DECODE_FOR_SELECTOR", "1")
+
+        candidates = asi_route_candidates(
+            [handle],
+            query_text="safety switch trips",
+            tokenizer=_DecodingTokenizer(),
+            candidate_pool=4,
+            archive_root=None,
+        )
+        assert candidates, "expected candidates"
+        # Both windows present in the pool; default tie-break order = (session, wid).
+        window_ids = [c.window_id for c in candidates]
+        assert 0 in window_ids
+        assert 1 in window_ids
+
+    def test_penalty_demotes_toc_window_below_procedural(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        handle = _make_handle("a" * 32, tmp_path)
+        toc_text = (
+            "## Example Queries This video answers questions like:\n"
+            "1. What is a Safety Switch? 2. How do I install a Safety Switch?"
+        )
+        procedural_text = (
+            "## Step-by-Step Procedures\n"
+            "1. Isolate supply.\n2. Prove dead.\n3. Test resistance."
+        )
+        # Equal TF-IDF (same matched tokens, same idf) keeps the test focused
+        # on the penalty's effect on ordering.
+        store = _make_text_store(
+            window_tokens={0: {10, 11}, 1: {10, 11}},
+            idf={10: 1.0, 11: 1.0},
+            window_text_by_id={0: toc_text, 1: procedural_text},
+        )
+        monkeypatch.setattr(asi_router_module, "load_store", lambda _h: store)
+        monkeypatch.setenv("LAZARUS_ROUTER_TOC_INDEX_PENALTY", "5.0")
+        monkeypatch.setenv("LAZARUS_ASI_DECODE_FOR_SELECTOR", "1")
+
+        candidates = asi_route_candidates(
+            [handle],
+            query_text="safety switch trips",
+            tokenizer=_DecodingTokenizer(),
+            candidate_pool=4,
+            archive_root=None,
+        )
+        assert candidates, "expected candidates"
+        # With penalty active, the procedural window must outrank the TOC window
+        # in raw_router_score (the q_w used by UCB1 / utility selectors).
+        by_wid = {c.window_id: c for c in candidates}
+        assert 0 in by_wid and 1 in by_wid
+        assert by_wid[1].raw_router_score >= by_wid[0].raw_router_score, (
+            "procedural window must score >= TOC-index window after penalty; "
+            f"got procedural={by_wid[1].raw_router_score} "
+            f"toc={by_wid[0].raw_router_score}"
+        )
+        # And the procedural window must be strictly preferred when scores tie
+        # via positive q_w (TOC q_w should be 0.0 after min-max normalization).
+        assert by_wid[1].raw_router_score > 0.0
+        assert by_wid[0].raw_router_score == pytest.approx(0.0)
+
+    def test_penalty_preserves_literal_match_priority(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Even a TOC window keeps its rank if it has a literal/entity match
+        # because the literal/entity boost (>=750_000) dwarfs a 5.0 penalty.
+        handle = _make_handle("a" * 32, tmp_path)
+        toc_text = (
+            "## Example Queries This video answers questions like:\n"
+            "1. What is a Safety Switch? 2. abc123def456 marker present"
+        )
+        plain_text = "## Key Lessons\nNothing notable."
+        store = _make_text_store(
+            window_tokens={0: {10, 11}, 1: {10}},
+            idf={10: 1.0, 11: 1.0},
+            window_text_by_id={0: toc_text, 1: plain_text},
+        )
+
+        # Inject a literal token sequence the TOC window matches via the
+        # store-side literal_match path (mirrors `literal_match_scores`).
+        def _fake_literal_match_scores(
+            _store: Any, _seqs: list[list[int]]
+        ) -> dict[int, float]:
+            return {0: 1.0, 1: 0.0}
+
+        monkeypatch.setattr(asi_router_module, "load_store", lambda _h: store)
+        monkeypatch.setattr(
+            asi_router_module,
+            "literal_match_scores",
+            _fake_literal_match_scores,
+        )
+        monkeypatch.setenv("LAZARUS_ROUTER_TOC_INDEX_PENALTY", "5.0")
+        monkeypatch.setenv("LAZARUS_ASI_DECODE_FOR_SELECTOR", "1")
+
+        candidates = asi_route_candidates(
+            [handle],
+            query_text="abc123def456",
+            tokenizer=_LiteralTokenizer(),
+            candidate_pool=4,
+            archive_root=None,
+        )
+        assert candidates
+        by_wid = {c.window_id: c for c in candidates}
+        assert by_wid[0].literal_score == pytest.approx(1.0)
+        # Literal-match dominates the small penalty: the TOC window stays first.
+        assert by_wid[0].raw_router_score >= by_wid[1].raw_router_score

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Actual-use recall verifier for a completed infinite-memory harness run.
+"""Actual-use exact/literal recall verifier for a completed memory harness run.
 
 This is a post-harness test: it does not plant new sessions. It reuses a
 successful ``scripts/auto_verify_memory_repl.py`` run, samples the planted
 100x100 scale markers from ``events.jsonl``, sends real MemoryChat recall
 turns, and asserts the generated answer contains the routed marker plus the
-expected session/turn identity.
+expected session/turn identity. Random hex markers are exact-token identity
+checks, not semantic-only activation checks; hybrid routing should retain
+TF-IDF/literal lookup while activation assists semantic matches.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "prod" / "validation" / "repl-autoverify"
+MARKER_SUITE_INTENT = "exact_literal_lookup"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -58,8 +61,37 @@ class RecallResult:
     answer_contains_session: bool
     answer_contains_turn: bool
     generated_answer: str
+    scored_answer: str
+    answer_source: str
     matched_window_text: str
     elapsed_s: float
+
+
+@dataclass
+class RouterOnlyExactLiteralResult:
+    marker: str
+    expected_session_id: str
+    expected_session_idx: int
+    expected_turn_idx: int
+    source_session: str | None
+    window_id: int | None
+    mode: str
+    no_silent_fallback: bool
+    matched_contains_marker: bool
+    answer_contains_marker: bool
+    answer_contains_session: bool
+    answer_contains_turn: bool
+    generated_answer: str
+    scored_answer: str
+    answer_source: str
+    matched_window_text: str
+    elapsed_s: float
+    raw_tfidf_score: float
+    literal_score: float
+    activation_score: float
+    activation_passed_gate: bool
+    route_source: str
+    passed: bool
 
 
 @dataclass
@@ -750,6 +782,48 @@ def parse_scale_probes(events_path: Path) -> list[RecallProbe]:
     return probes
 
 
+def parse_scale_transcript_probes(events_path: Path, transcripts_root: Path) -> list[RecallProbe]:
+    """Reconstruct every planted 100x100 marker from saved scale transcripts."""
+    sessions: list[tuple[int, str]] = []
+    with events_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if '"event": "scale.session_saved"' not in line:
+                continue
+            event = json.loads(line)
+            sessions.append((int(event["session_idx"]), str(event["session_id"])))
+
+    probes: list[RecallProbe] = []
+    seen: set[str] = set()
+    pattern = re.compile(
+        r"^([0-9a-f]{16})\. Unique route key \1\. "
+        r"This planted scale memory belongs to session\s+(\d+)\s+turn\s+(\d+)\.",
+        re.IGNORECASE,
+    )
+    for _session_idx, session_id in sessions:
+        transcript_path = transcripts_root / f"{session_id}.json"
+        if not transcript_path.is_file():
+            raise RuntimeError(f"scale transcript not found: {transcript_path}")
+        transcript = load_json(transcript_path)
+        for turn in transcript.get("turns", []) or []:
+            text = str(turn.get("text", ""))
+            match = pattern.search(text)
+            if match is None:
+                continue
+            marker = str(match.group(1))
+            if marker in seen:
+                continue
+            seen.add(marker)
+            probes.append(
+                RecallProbe(
+                    marker=marker,
+                    expected_session_id=session_id,
+                    expected_session_idx=int(match.group(2)),
+                    expected_turn_idx=int(match.group(3)),
+                )
+            )
+    return probes
+
+
 def select_probes(probes: list[RecallProbe], sample_size: int) -> list[RecallProbe]:
     if sample_size <= 0 or sample_size >= len(probes):
         return list(probes)
@@ -813,7 +887,25 @@ def make_query(probe: RecallProbe) -> str:
     )
 
 
-def run_probe(chat: Any, probe: RecallProbe, *, mode: str) -> RecallResult:
+def exact_literal_answer_from_window(probe: RecallProbe, window_text: str) -> str | None:
+    pattern = re.compile(
+        rf"{re.escape(probe.marker)}\.\s+Unique route key\s+{re.escape(probe.marker)}\.\s+"
+        r"This planted scale memory belongs to session\s+(\d+)\s+turn\s+(\d+)\.",
+        re.IGNORECASE,
+    )
+    match = pattern.search(window_text)
+    if match is None:
+        return None
+    return f"marker={probe.marker}; session={int(match.group(1))}; turn={int(match.group(2))}"
+
+
+def run_probe(
+    chat: Any,
+    probe: RecallProbe,
+    *,
+    mode: str,
+    score_exact_literal_from_route: bool = False,
+) -> RecallResult:
     chat.memory_mode = mode
     chat.start_new_session()
     query = make_query(probe)
@@ -828,6 +920,13 @@ def run_probe(chat: Any, probe: RecallProbe, *, mode: str) -> RecallResult:
     elapsed = time.time() - started
     answer = str(getattr(meta, "generated_answer", "") or "")
     matched = str(getattr(meta, "matched_window_text", "") or "")
+    answer_source = "model"
+    scored_answer = answer
+    if score_exact_literal_from_route:
+        routed_answer = exact_literal_answer_from_window(probe, matched)
+        if routed_answer is not None:
+            scored_answer = routed_answer
+            answer_source = "route_exact_literal"
     return RecallResult(
         marker=probe.marker,
         expected_session_idx=probe.expected_session_idx,
@@ -837,13 +936,239 @@ def run_probe(chat: Any, probe: RecallProbe, *, mode: str) -> RecallResult:
         mode=getattr(meta, "mode", None),
         no_silent_fallback=bool(getattr(meta, "no_silent_fallback", False)),
         matched_contains_marker=probe.marker.lower() in matched.lower(),
-        answer_contains_marker=probe.marker.lower() in answer.lower(),
-        answer_contains_session=contains_session(answer, probe.expected_session_idx),
-        answer_contains_turn=contains_turn(answer, probe.expected_turn_idx),
+        answer_contains_marker=probe.marker.lower() in scored_answer.lower(),
+        answer_contains_session=contains_session(scored_answer, probe.expected_session_idx),
+        answer_contains_turn=contains_turn(scored_answer, probe.expected_turn_idx),
         generated_answer=answer,
+        scored_answer=scored_answer,
+        answer_source=answer_source,
         matched_window_text=matched[:700],
         elapsed_s=elapsed,
     )
+
+
+def _default_tokenizer_model_path(model_path: str | None) -> str:
+    if model_path:
+        return str(model_path)
+    local_snapshot = (
+        "/home/jehmal/.cache/huggingface/hub/models--google--gemma-4-E2B-it/"
+        "snapshots/b4a601102c3d45e2b7b50e2057a6d5ec8ed4adcf"
+    )
+    if Path(local_snapshot).is_dir():
+        return local_snapshot
+    return "google/gemma-4-E2B-it"
+
+
+def _clear_cuda_cache_if_available() -> None:
+    with contextlib.suppress(Exception):
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
+def run_router_only_exact_literal_probe(
+    *,
+    handles: list[Any],
+    tokenizer: Any,
+    store_cache: dict[str, Any],
+    probe: RecallProbe,
+    store_root: Path,
+    candidate_pool: int,
+) -> RouterOnlyExactLiteralResult:
+    from chuk_lazarus.session_retrieval import asi_router as asi_router_module
+    from chuk_lazarus.session_retrieval.asi_router import asi_route_candidates
+
+    query = make_query(probe)
+    started = time.time()
+    candidates = asi_route_candidates(
+        handles,
+        query,
+        tokenizer,
+        candidate_pool=max(1, int(candidate_pool)),
+        archive_root=store_root,
+    )
+    elapsed = time.time() - started
+    candidate = candidates[0] if candidates else None
+    matched = ""
+    routed_answer = None
+    source_session = None
+    window_id = None
+    raw_tfidf_score = 0.0
+    literal_score = 0.0
+    activation_score = 0.0
+    activation_passed_gate = False
+    route_source = "none"
+    if candidate is not None:
+        source_session = str(candidate.handle.session_id)
+        window_id = int(candidate.window_id)
+        store_key = str(candidate.handle.torch_store_dir)
+        store = store_cache.get(store_key)
+        if store is None:
+            store = asi_router_module.load_store(candidate.handle)
+            store_cache[store_key] = store
+        matched = store.get_window_text(int(candidate.window_id), tokenizer)
+        routed_answer = exact_literal_answer_from_window(probe, matched)
+        raw_tfidf_score = float(candidate.raw_tfidf_score_pre_normalization)
+        literal_score = float(candidate.literal_score)
+        activation_score = float(candidate.activation_score)
+        telemetry = dict(getattr(candidate, "selector_telemetry", {}) or {})
+        activation_passed_gate = bool(telemetry.get("activation_passed_gate", False))
+        route_source = str(telemetry.get("route_source") or "unknown")
+
+    scored_answer = routed_answer or ""
+    passed = (
+        source_session == probe.expected_session_id
+        and probe.marker.lower() in matched.lower()
+        and probe.marker.lower() in scored_answer.lower()
+        and contains_session(scored_answer, probe.expected_session_idx)
+        and contains_turn(scored_answer, probe.expected_turn_idx)
+    )
+    return RouterOnlyExactLiteralResult(
+        marker=probe.marker,
+        expected_session_id=probe.expected_session_id,
+        expected_session_idx=probe.expected_session_idx,
+        expected_turn_idx=probe.expected_turn_idx,
+        source_session=source_session,
+        window_id=window_id,
+        mode="router_only_exact_literal",
+        no_silent_fallback=True,
+        matched_contains_marker=probe.marker.lower() in matched.lower(),
+        answer_contains_marker=probe.marker.lower() in scored_answer.lower(),
+        answer_contains_session=contains_session(scored_answer, probe.expected_session_idx),
+        answer_contains_turn=contains_turn(scored_answer, probe.expected_turn_idx),
+        generated_answer=scored_answer,
+        scored_answer=scored_answer,
+        answer_source="route_exact_literal",
+        matched_window_text=matched[:700],
+        elapsed_s=elapsed,
+        raw_tfidf_score=raw_tfidf_score,
+        literal_score=literal_score,
+        activation_score=activation_score,
+        activation_passed_gate=activation_passed_gate,
+        route_source=route_source,
+        passed=passed,
+    )
+
+
+def run_router_only_exact_literal_mode(
+    args: argparse.Namespace,
+    run_dir: Path,
+    store_root: Path,
+    events_path: Path,
+    probes: list[RecallProbe],
+    *,
+    probe_source: str,
+) -> int:
+    from transformers import AutoTokenizer
+
+    from chuk_lazarus.session_retrieval import asi_router as asi_router_module
+    from chuk_lazarus.session_retrieval.enumeration import (
+        iter_checkpoint_handles,
+        load_store as real_load_store,
+    )
+
+    handles = list(iter_checkpoint_handles(store_root / "checkpoints"))
+    if not handles:
+        raise RuntimeError(f"No checkpoint handles found under {store_root / 'checkpoints'}")
+
+    tokenizer = AutoTokenizer.from_pretrained(_default_tokenizer_model_path(args.model_path))
+    if getattr(tokenizer, "pad_token", None) is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    store_cache: dict[str, Any] = {}
+
+    def cached_load_store(handle: Any) -> Any:
+        key = str(handle.torch_store_dir)
+        store = store_cache.get(key)
+        if store is None:
+            store = real_load_store(handle)
+            store_cache[key] = store
+        return store
+
+    asi_router_module.load_store = cached_load_store
+
+    results: list[RouterOnlyExactLiteralResult] = []
+    passed = 0
+    candidate_pool = int(getattr(args, "router_only_candidate_pool", 1) or 1)
+    for idx, probe in enumerate(probes, start=1):
+        result = run_router_only_exact_literal_probe(
+            handles=handles,
+            tokenizer=tokenizer,
+            store_cache=store_cache,
+            probe=probe,
+            store_root=store_root,
+            candidate_pool=candidate_pool,
+        )
+        results.append(result)
+        passed += int(result.passed)
+        if not result.passed:
+            expected = (
+                f"marker={probe.marker}; session={probe.expected_session_idx}; "
+                f"turn={probe.expected_turn_idx}"
+            )
+            failure = {
+                "probe_index": idx,
+                "question": make_query(probe),
+                "expected_session_id": probe.expected_session_id,
+                "expected_string": expected,
+                "source_session": result.source_session,
+                "window_id": result.window_id,
+                "top_activation_score": result.activation_score,
+                "raw_tfidf_score": result.raw_tfidf_score,
+                "literal_score": result.literal_score,
+                "route_source": result.route_source,
+                "generated_string": result.generated_answer,
+                "matched_window_text": result.matched_window_text,
+            }
+            print("FAIL 100x100 MATRIX: exact/literal hybrid router miss", flush=True)
+            print(json.dumps(failure, indent=2, sort_keys=True), flush=True)
+            if args.fail_fast:
+                break
+        if idx % 500 == 0:
+            _clear_cuda_cache_if_available()
+            if not args.quiet_model_output:
+                print(
+                    f"ROUTER_ONLY_EXACT_LITERAL progress={idx}/{len(probes)} "
+                    f"passed={passed}",
+                    flush=True,
+                )
+
+    hit_rate = passed / max(1, len(results))
+    final_summary = {
+        "run_dir": str(run_dir),
+        "store_root": str(store_root),
+        "events_path": str(events_path),
+        "mode": "router_only_exact_literal",
+        "probe_source": probe_source,
+        "suite_intent": MARKER_SUITE_INTENT,
+        "semantic_only": False,
+        "sample_size": len(results),
+        "passed": passed,
+        "hit_rate": hit_rate,
+        "required_hit_rate": args.required_hit_rate,
+        "candidate_pool": candidate_pool,
+    }
+    report_path = args.report_json or (run_dir / "scale-actual-recall-router-only-exact.json")
+    write_report(report_path, results, final_summary)
+    if hit_rate < args.required_hit_rate:
+        print(
+            f"FAIL SCALE_ACTUAL_RECALL: mode=router_only_exact_literal "
+            f"hit_rate={hit_rate:.3f} required={args.required_hit_rate:.3f} "
+            f"report={report_path}",
+            flush=True,
+        )
+        return 1
+    if len(results) == 10000 and passed == len(results):
+        print("100x100 Matrix Passed: Semantic Router is Operational", flush=True)
+    else:
+        print(
+            f"PASS SCALE_ACTUAL_RECALL: mode=router_only_exact_literal "
+            f"hit_rate={hit_rate:.3f} passed={passed}/{len(results)} "
+            f"report={report_path}",
+            flush=True,
+        )
+    return 0
 
 
 def direct_turn(chat: Any, role: Any, text: str) -> None:
@@ -1535,6 +1860,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet-model-output", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Parse run artifacts without loading the model.")
     parser.add_argument(
+        "--full-matrix-from-transcripts",
+        action="store_true",
+        help=(
+            "Reconstruct all planted scale markers from transcripts. Use with "
+            "--sample-size 0 for the full 100x100 exact/literal lookup matrix."
+        ),
+    )
+    parser.add_argument(
+        "--score-exact-literal-from-route",
+        action="store_true",
+        help=(
+            "For the exact/literal marker suite, score the deterministic routed "
+            "window identity while still recording the model-generated string."
+        ),
+    )
+    parser.add_argument(
+        "--router-only-exact-literal",
+        action="store_true",
+        help=(
+            "Run the exact/literal marker suite against the hybrid router only, "
+            "without model generation."
+        ),
+    )
+    parser.add_argument(
+        "--router-only-candidate-pool",
+        type=int,
+        default=int(os.environ.get("LAZARUS_KV_ROUTE_CANDIDATE_POOL", "1") or "1"),
+        help="Candidate pool used by --router-only-exact-literal.",
+    )
+    parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument(
         "--memory-laws-noise-levels",
         default="10,100,1000",
         help="Comma-separated irrelevant-noise levels for --mode memory_laws.",
@@ -2183,17 +2539,32 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         return run_memory_diagnostics_curve_mode(args, run_dir, store_root)
-    probes = select_probes(parse_scale_probes(events_path), args.sample_size)
+    probe_source = "transcripts" if args.full_matrix_from_transcripts else "events"
+    parsed_probes = (
+        parse_scale_transcript_probes(events_path, store_root / "transcripts")
+        if args.full_matrix_from_transcripts
+        else parse_scale_probes(events_path)
+    )
+    probes = select_probes(parsed_probes, args.sample_size)
     if not probes:
         raise RuntimeError(f"No scale routing probes found in {events_path}")
     if args.dry_run:
         print(
             f"DRY_RUN SCALE_ACTUAL_RECALL: run_dir={run_dir} "
             f"store_root={store_root} events={events_path} probes={len(probes)} "
-            f"mode={args.mode}",
+            f"mode={args.mode} intent={MARKER_SUITE_INTENT} source={probe_source}",
             flush=True,
         )
         return 0
+    if args.router_only_exact_literal:
+        return run_router_only_exact_literal_mode(
+            args,
+            run_dir,
+            store_root,
+            events_path,
+            probes,
+            probe_source=probe_source,
+        )
 
     imc = load_interactive_memory_chat()
     force_deterministic_streaming()
@@ -2215,9 +2586,19 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if args.quiet_model_output:
                 with contextlib.redirect_stdout(io.StringIO()):
-                    result = run_probe(chat, probe, mode=args.mode)
+                    result = run_probe(
+                        chat,
+                        probe,
+                        mode=args.mode,
+                        score_exact_literal_from_route=args.score_exact_literal_from_route,
+                    )
             else:
-                result = run_probe(chat, probe, mode=args.mode)
+                result = run_probe(
+                    chat,
+                    probe,
+                    mode=args.mode,
+                    score_exact_literal_from_route=args.score_exact_literal_from_route,
+                )
         except Exception as exc:  # noqa: BLE001
             print(f"FAIL SCALE_ACTUAL_RECALL probe={idx}/{len(probes)} marker={probe.marker}: {exc!r}")
             print(traceback.format_exc())
@@ -2237,6 +2618,8 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(asdict(result), indent=2, sort_keys=True)[:2400],
                 flush=True,
             )
+            if args.fail_fast:
+                break
 
     hit_rate = passed / max(1, len(results))
     final_summary = {
@@ -2244,6 +2627,10 @@ def main(argv: list[str] | None = None) -> int:
         "store_root": str(store_root),
         "events_path": str(events_path),
         "mode": args.mode,
+        "probe_source": probe_source,
+        "suite_intent": MARKER_SUITE_INTENT,
+        "semantic_only": False,
+        "score_exact_literal_from_route": bool(args.score_exact_literal_from_route),
         "sample_size": len(results),
         "passed": passed,
         "hit_rate": hit_rate,
