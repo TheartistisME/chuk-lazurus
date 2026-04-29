@@ -6,6 +6,7 @@ are the source of truth; any memory index built from them is derived state.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -16,7 +17,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 TOOL_SYSTEM_PROMPT = """You can request local coding tools when you need repository context or edits.
 Emit one or more tool calls, then wait for TOOL_RESULT before answering normally.
 Use either:
@@ -25,7 +25,8 @@ or a fenced block:
 ```tool_call
 {"name":"read_file","arguments":{"path":"README.md"}}
 ```
-Available tools: list_dir, read_file, search, shell, apply_patch.
+Available tools: list_dir, read_file, write_file, search, shell, apply_patch.
+write_file creates new files by default; set overwrite=true or append=true for existing files.
 Tool JSON must contain only JSON, with no prose inside it. Use "arguments" or "args"."""
 
 
@@ -205,6 +206,76 @@ class LocalCodingToolRunner:
             "total_lines": len(lines),
         }
 
+    def _write_file(self, call: ToolCall) -> tuple[bool, str, str, dict[str, Any]]:
+        raw_path = call.arguments.get("path")
+        if raw_path in (None, ""):
+            return False, "", "write_file requires a path", {}
+        if "content" not in call.arguments:
+            return False, "", "write_file requires content", {}
+
+        path = self._resolve_inside_workspace(raw_path)
+        content = str(call.arguments.get("content", ""))
+        encoding = str(call.arguments.get("encoding", "utf-8") or "utf-8")
+        overwrite = bool(call.arguments.get("overwrite", False))
+        append = bool(call.arguments.get("append", False))
+        make_dirs = bool(call.arguments.get("make_dirs", False))
+        expected_sha256 = call.arguments.get("expected_sha256")
+        if overwrite and append:
+            return False, "", "write_file cannot use both overwrite and append", {}
+        if expected_sha256 is not None:
+            expected_sha256 = str(expected_sha256).strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+                return False, "", "expected_sha256 must be a 64-character hex digest", {}
+
+        parent = path.parent
+        try:
+            parent.relative_to(self.workspace_root)
+        except ValueError:
+            return False, "", f"path parent is outside workspace: {raw_path}", {}
+        if not parent.exists():
+            if make_dirs:
+                parent.mkdir(parents=True, exist_ok=True)
+            else:
+                return False, "", f"parent directory does not exist: {parent}", {}
+        if not parent.is_dir():
+            return False, "", f"path parent is not a directory: {parent}", {}
+
+        existed = path.exists()
+        if existed and not path.is_file():
+            return False, "", f"path is not a file: {path}", {}
+        if existed and not overwrite and not append:
+            return False, "", "path exists; set overwrite=true or append=true", {}
+        if expected_sha256 is not None:
+            if not existed:
+                return False, "", "expected_sha256 was provided but file does not exist", {}
+            actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+            if actual_sha256 != expected_sha256:
+                return False, "", "expected_sha256 did not match current file", {
+                    "actual_sha256": actual_sha256,
+                }
+
+        mode = "append" if append else ("overwrite" if existed else "create")
+        write_content = content
+        if append and existed:
+            write_content = path.read_text(encoding=encoding, errors="replace") + content
+
+        tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp_path.write_text(write_content, encoding=encoding)
+            tmp_path.replace(path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+        written_bytes = len(content.encode(encoding))
+        return True, f"wrote {written_bytes} bytes to {path.relative_to(self.workspace_root)}", "", {
+            "path": str(path),
+            "mode": mode,
+            "existed": existed,
+            "bytes_written": written_bytes,
+            "encoding": encoding,
+        }
+
     def _search(self, call: ToolCall) -> tuple[bool, str, str, dict[str, Any]]:
         pattern = str(call.arguments.get("pattern", ""))
         if not pattern:
@@ -354,6 +425,8 @@ class LocalCodingToolRunner:
             return self._list_dir(call)
         if call.name == "read_file":
             return self._read_file(call)
+        if call.name == "write_file":
+            return self._write_file(call)
         if call.name == "search":
             return self._search(call)
         if call.name == "shell":

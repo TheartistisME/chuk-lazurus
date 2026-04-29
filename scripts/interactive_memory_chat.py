@@ -203,9 +203,10 @@ Commands:
   /quit                         save if needed and exit
 
 When coding-agent tools are enabled, the model may emit tool_call JSON for
-list_dir, read_file, search, shell, or apply_patch. Tool outputs are appended as
-synthetic TOOL_RESULT user turns, bounded by the max tool-step setting, so the
-transcript/tool traces are durable source-of-truth events and memory is derived.
+list_dir, read_file, write_file, search, shell, or apply_patch. Tool outputs are
+appended as synthetic TOOL_RESULT user turns, bounded by the max tool-step
+setting, so the transcript/tool traces are durable source-of-truth events and
+memory is derived.
 
 Power-user /ask-memory options:
   /ask-memory --insertion-family sliding --sliding-layer-indices 13,15
