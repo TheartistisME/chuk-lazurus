@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -25,9 +27,30 @@ or a fenced block:
 ```tool_call
 {"name":"read_file","arguments":{"path":"README.md"}}
 ```
-Available tools: list_dir, read_file, write_file, search, shell, apply_patch.
+Available tools: list_dir, read_file, write_file, save_custom_tool,
+read_custom_tool, list_custom_tools, search, shell, apply_patch, plus loaded
+custom tools.
 write_file creates new files by default; set overwrite=true or append=true for existing files.
+save_custom_tool persists a Python or bash tool for this and future runs. The
+script receives tool arguments as JSON on stdin, runs from the workspace root,
+prints useful output to stdout, and should exit nonzero on failure.
 Tool JSON must contain only JSON, with no prose inside it. Use "arguments" or "args"."""
+
+_BUILTIN_TOOL_NAMES = frozenset(
+    {
+        "list_dir",
+        "read_file",
+        "write_file",
+        "save_custom_tool",
+        "read_custom_tool",
+        "list_custom_tools",
+        "search",
+        "shell",
+        "apply_patch",
+    }
+)
+_CUSTOM_TOOL_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_CUSTOM_TOOL_RUNTIMES = frozenset({"python", "bash"})
 
 
 @dataclass
@@ -50,6 +73,17 @@ class ToolResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class CustomTool:
+    name: str
+    description: str
+    runtime: str
+    entrypoint: str
+    input_schema: dict[str, Any]
+    manifest_path: Path
+    script_path: Path
+
+
 _XML_TOOL_RE = re.compile(r"<tool_call\b[^>]*>(.*?)</tool_call>", re.IGNORECASE | re.DOTALL)
 _FENCED_RE = re.compile(r"```([^\n`]*)\n(.*?)```", re.IGNORECASE | re.DOTALL)
 
@@ -63,6 +97,16 @@ def _bounded(text: Any, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[:limit] + f"\n[truncated {len(value) - limit} chars]"
+
+
+def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp_path.write_text(content, encoding=encoding)
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def _coerce_tool_call(obj: Any) -> list[ToolCall]:
@@ -125,13 +169,106 @@ class LocalCodingToolRunner:
         timeout_seconds: int = 30,
         max_output_chars: int = 12000,
         allow_shell: bool = True,
+        custom_tools_root: Path | None = None,
+        allow_custom_tools: bool = True,
     ) -> None:
         self.workspace_root = Path(workspace_root).resolve()
         self.trace_root = Path(trace_root).resolve()
         self.timeout_seconds = int(timeout_seconds)
         self.max_output_chars = int(max_output_chars)
         self.allow_shell = bool(allow_shell)
+        self.custom_tools_root = Path(
+            custom_tools_root or self.trace_root.parent / "custom_tools"
+        ).resolve()
+        self.allow_custom_tools = bool(allow_custom_tools)
+        self.custom_tools: dict[str, CustomTool] = {}
         self.trace_root.mkdir(parents=True, exist_ok=True)
+        if self.allow_custom_tools:
+            self.custom_tools_root.mkdir(parents=True, exist_ok=True)
+            self.reload_custom_tools()
+
+    def _normalize_custom_tool_name(self, raw_name: Any) -> str:
+        name = str(raw_name or "").strip()
+        if not _CUSTOM_TOOL_NAME_RE.fullmatch(name):
+            raise ValueError(
+                "custom tool name must match [A-Za-z_][A-Za-z0-9_]{0,63}"
+            )
+        return name
+
+    def _resolve_inside_custom_tools(self, raw_path: Any) -> Path:
+        candidate = Path(str(raw_path))
+        if not candidate.is_absolute():
+            candidate = self.custom_tools_root / candidate
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(self.custom_tools_root)
+        except ValueError as exc:
+            raise ValueError(f"path is outside custom tools root: {raw_path}") from exc
+        return resolved
+
+    def reload_custom_tools(self) -> dict[str, CustomTool]:
+        self.custom_tools = {}
+        if not self.allow_custom_tools or not self.custom_tools_root.exists():
+            return self.custom_tools
+        for manifest_path in sorted(self.custom_tools_root.glob("*.json")):
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                name = self._normalize_custom_tool_name(data.get("name"))
+                if name in _BUILTIN_TOOL_NAMES:
+                    continue
+                runtime = str(data.get("runtime", "")).strip().lower()
+                if runtime not in _CUSTOM_TOOL_RUNTIMES:
+                    continue
+                entrypoint = str(data.get("entrypoint", "")).strip()
+                if not entrypoint:
+                    continue
+                script_path = self._resolve_inside_custom_tools(entrypoint)
+                if not script_path.is_file():
+                    continue
+                input_schema = data.get("input_schema", {})
+                if not isinstance(input_schema, dict):
+                    input_schema = {}
+                self.custom_tools[name] = CustomTool(
+                    name=name,
+                    description=str(data.get("description", "")).strip(),
+                    runtime=runtime,
+                    entrypoint=entrypoint,
+                    input_schema=input_schema,
+                    manifest_path=manifest_path,
+                    script_path=script_path,
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+        return self.custom_tools
+
+    def available_tool_names(self) -> list[str]:
+        self.reload_custom_tools()
+        return sorted(_BUILTIN_TOOL_NAMES | set(self.custom_tools))
+
+    def tool_system_prompt(self) -> str:
+        self.reload_custom_tools()
+        prompt = TOOL_SYSTEM_PROMPT + f"\nCustom tool storage: {self.custom_tools_root}"
+        if not self.custom_tools:
+            return prompt + "\nLoaded custom tools: none."
+        lines = ["Loaded custom tools:"]
+        for tool in sorted(self.custom_tools.values(), key=lambda item: item.name)[:50]:
+            desc = _bounded(tool.description, 220).replace("\n", " ")
+            lines.append(f"- {tool.name} ({tool.runtime}): {desc or 'no description'}")
+        if len(self.custom_tools) > 50:
+            lines.append(f"- [truncated {len(self.custom_tools) - 50} custom tools]")
+        return prompt + "\n" + "\n".join(lines)
+
+    def describe_custom_tools(self) -> str:
+        self.reload_custom_tools()
+        lines = [f"custom tool storage: {self.custom_tools_root}"]
+        if not self.custom_tools:
+            lines.append("(no custom tools installed)")
+        for tool in sorted(self.custom_tools.values(), key=lambda item: item.name):
+            lines.append(
+                f"- {tool.name} ({tool.runtime}): "
+                f"{_bounded(tool.description, 300).replace(chr(10), ' ')}"
+            )
+        return "\n".join(lines)
 
     def _resolve_inside_workspace(self, raw_path: Any = ".") -> Path:
         path_text = "." if raw_path in (None, "") else str(raw_path)
@@ -259,13 +396,7 @@ class LocalCodingToolRunner:
         if append and existed:
             write_content = path.read_text(encoding=encoding, errors="replace") + content
 
-        tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            tmp_path.write_text(write_content, encoding=encoding)
-            tmp_path.replace(path)
-        finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
+        _atomic_write_text(path, write_content, encoding=encoding)
 
         written_bytes = len(content.encode(encoding))
         return True, f"wrote {written_bytes} bytes to {path.relative_to(self.workspace_root)}", "", {
@@ -274,6 +405,155 @@ class LocalCodingToolRunner:
             "existed": existed,
             "bytes_written": written_bytes,
             "encoding": encoding,
+        }
+
+    def _custom_tool_manifest(self, tool: CustomTool) -> dict[str, Any]:
+        return {
+            "name": tool.name,
+            "description": tool.description,
+            "runtime": tool.runtime,
+            "entrypoint": tool.entrypoint,
+            "input_schema": tool.input_schema,
+        }
+
+    def _save_custom_tool(self, call: ToolCall) -> tuple[bool, str, str, dict[str, Any]]:
+        if not self.allow_custom_tools:
+            return False, "", "custom tools are disabled", {}
+        try:
+            name = self._normalize_custom_tool_name(call.arguments.get("name"))
+        except ValueError as exc:
+            return False, "", str(exc), {}
+        if name in _BUILTIN_TOOL_NAMES:
+            return False, "", f"custom tool cannot shadow built-in tool: {name}", {}
+        runtime = str(call.arguments.get("runtime", "python") or "python").strip().lower()
+        if runtime not in _CUSTOM_TOOL_RUNTIMES:
+            return False, "", "custom tool runtime must be one of: bash, python", {}
+        if "content" not in call.arguments:
+            return False, "", "save_custom_tool requires content", {}
+        description = str(call.arguments.get("description", "")).strip()
+        if not description:
+            return False, "", "save_custom_tool requires description", {}
+        input_schema = call.arguments.get("input_schema", {})
+        if input_schema is None:
+            input_schema = {}
+        if not isinstance(input_schema, dict):
+            return False, "", "input_schema must be a JSON object", {}
+
+        overwrite = bool(call.arguments.get("overwrite", False))
+        extension = ".py" if runtime == "python" else ".sh"
+        entrypoint = f"{name}{extension}"
+        script_path = self.custom_tools_root / entrypoint
+        manifest_path = self.custom_tools_root / f"{name}.json"
+        if (script_path.exists() or manifest_path.exists()) and not overwrite:
+            return False, "", "custom tool exists; set overwrite=true to replace it", {}
+
+        self.custom_tools_root.mkdir(parents=True, exist_ok=True)
+        content = str(call.arguments.get("content", ""))
+        _atomic_write_text(script_path, content)
+        if runtime == "bash":
+            script_path.chmod(script_path.stat().st_mode | 0o700)
+        manifest = {
+            "name": name,
+            "description": description,
+            "runtime": runtime,
+            "entrypoint": entrypoint,
+            "input_schema": input_schema,
+        }
+        _atomic_write_text(
+            manifest_path,
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        )
+        self.reload_custom_tools()
+        return True, f"saved custom tool {name}; call it as tool name {name}", "", {
+            "custom_tool": True,
+            "name": name,
+            "runtime": runtime,
+            "manifest_path": str(manifest_path),
+            "script_path": str(script_path),
+        }
+
+    def _read_custom_tool(self, call: ToolCall) -> tuple[bool, str, str, dict[str, Any]]:
+        if not self.allow_custom_tools:
+            return False, "", "custom tools are disabled", {}
+        try:
+            name = self._normalize_custom_tool_name(call.arguments.get("name"))
+        except ValueError as exc:
+            return False, "", str(exc), {}
+        self.reload_custom_tools()
+        tool = self.custom_tools.get(name)
+        if tool is None:
+            return False, "", f"custom tool not found: {name}", {}
+        payload = {
+            "manifest": self._custom_tool_manifest(tool),
+            "content": tool.script_path.read_text(encoding="utf-8", errors="replace"),
+        }
+        return True, json.dumps(payload, indent=2, sort_keys=True), "", {
+            "custom_tool": True,
+            "name": name,
+            "script_path": str(tool.script_path),
+        }
+
+    def _list_custom_tools(self, call: ToolCall) -> tuple[bool, str, str, dict[str, Any]]:
+        del call
+        if not self.allow_custom_tools:
+            return False, "", "custom tools are disabled", {}
+        output = self.describe_custom_tools()
+        return True, output, "", {
+            "custom_tool_count": len(self.custom_tools),
+            "custom_tools_root": str(self.custom_tools_root),
+            "custom_tool_names": sorted(self.custom_tools),
+        }
+
+    def _run_custom_tool(self, call: ToolCall) -> tuple[bool, str, str, dict[str, Any]]:
+        if not self.allow_custom_tools:
+            return False, "", "custom tools are disabled", {}
+        self.reload_custom_tools()
+        tool = self.custom_tools.get(call.name)
+        if tool is None:
+            return False, "", f"custom tool not found: {call.name}", {}
+        if tool.runtime == "python":
+            command = [sys.executable, str(tool.script_path)]
+        elif tool.runtime == "bash":
+            command = ["bash", str(tool.script_path)]
+        else:
+            return False, "", f"unsupported custom tool runtime: {tool.runtime}", {}
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "CUSTOM_TOOL_DIR": str(self.custom_tools_root),
+                "CUSTOM_TOOL_NAME": tool.name,
+                "WORKSPACE_ROOT": str(self.workspace_root),
+            }
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                input=json.dumps(call.arguments, separators=(",", ":")),
+                cwd=self.workspace_root,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+            return False, str(stdout), f"custom tool timed out\n{stderr}", {
+                "custom_tool": True,
+                "name": tool.name,
+                "timeout_seconds": self.timeout_seconds,
+            }
+        error = completed.stderr
+        if completed.returncode != 0:
+            error = (error + f"\nexit_code={completed.returncode}").strip()
+        return completed.returncode == 0, completed.stdout, error, {
+            "custom_tool": True,
+            "name": tool.name,
+            "runtime": tool.runtime,
+            "exit_code": completed.returncode,
+            "script_path": str(tool.script_path),
         }
 
     def _search(self, call: ToolCall) -> tuple[bool, str, str, dict[str, Any]]:
@@ -427,13 +707,22 @@ class LocalCodingToolRunner:
             return self._read_file(call)
         if call.name == "write_file":
             return self._write_file(call)
+        if call.name == "save_custom_tool":
+            return self._save_custom_tool(call)
+        if call.name == "read_custom_tool":
+            return self._read_custom_tool(call)
+        if call.name == "list_custom_tools":
+            return self._list_custom_tools(call)
         if call.name == "search":
             return self._search(call)
         if call.name == "shell":
             return self._shell(call)
         if call.name == "apply_patch":
             return self._apply_patch(call)
-        return False, "", f"unknown tool: {call.name}", {}
+        self.reload_custom_tools()
+        if call.name in self.custom_tools:
+            return self._run_custom_tool(call)
+        return False, "", f"unknown tool: {call.name}; available: {self.available_tool_names()}", {}
 
     def execute(
         self,

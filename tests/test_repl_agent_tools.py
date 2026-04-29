@@ -158,6 +158,104 @@ def test_write_file_rejects_bad_hash_and_path_escape(tmp_path) -> None:
     assert "outside workspace" in escape_result.error
 
 
+def test_custom_tool_can_be_saved_used_and_loaded_by_later_runner(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    trace_root = tmp_path / "traces"
+    custom_root = tmp_path / "custom_tools"
+    workspace.mkdir()
+    runner = LocalCodingToolRunner(workspace, trace_root, custom_tools_root=custom_root)
+    content = (
+        "import json\n"
+        "import sys\n"
+        "args = json.load(sys.stdin)\n"
+        "city = args.get('city', 'unknown')\n"
+        "print(f'weather for {city}: sunny')\n"
+    )
+
+    saved = runner.execute(
+        ToolCall(
+            "save_custom_tool",
+            {
+                "name": "weather",
+                "description": "Return a toy weather forecast for a city.",
+                "runtime": "python",
+                "content": content,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+            },
+        )
+    )
+    used = runner.execute(ToolCall("weather", {"city": "Perth"}))
+    later_runner = LocalCodingToolRunner(workspace, trace_root, custom_tools_root=custom_root)
+    used_later = later_runner.execute(ToolCall("weather", {"city": "Tokyo"}))
+
+    assert saved.ok, saved.error
+    assert (custom_root / "weather.json").exists()
+    assert (custom_root / "weather.py").exists()
+    assert used.ok, used.error
+    assert used.output.strip() == "weather for Perth: sunny"
+    assert used.metadata["custom_tool"] is True
+    assert used_later.ok, used_later.error
+    assert used_later.output.strip() == "weather for Tokyo: sunny"
+
+
+def test_custom_tool_management_lists_reads_and_rejects_shadowing(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = LocalCodingToolRunner(
+        workspace,
+        tmp_path / "traces",
+        custom_tools_root=tmp_path / "custom_tools",
+    )
+    content = "import json, sys\nprint(json.load(sys.stdin).get('value', ''))\n"
+
+    shadowed = runner.execute(
+        ToolCall(
+            "save_custom_tool",
+            {
+                "name": "read_file",
+                "description": "Should not be allowed.",
+                "content": content,
+            },
+        )
+    )
+    created = runner.execute(
+        ToolCall(
+            "save_custom_tool",
+            {
+                "name": "echo_value",
+                "description": "Echo the value argument.",
+                "content": content,
+            },
+        )
+    )
+    duplicate = runner.execute(
+        ToolCall(
+            "save_custom_tool",
+            {
+                "name": "echo_value",
+                "description": "Echo again.",
+                "content": content,
+            },
+        )
+    )
+    listed = runner.execute(ToolCall("list_custom_tools", {}))
+    read = runner.execute(ToolCall("read_custom_tool", {"name": "echo_value"}))
+
+    assert not shadowed.ok
+    assert "cannot shadow built-in" in shadowed.error
+    assert created.ok, created.error
+    assert not duplicate.ok
+    assert "overwrite=true" in duplicate.error
+    assert listed.ok
+    assert "echo_value" in listed.output
+    assert read.ok, read.error
+    assert "Echo the value argument" in read.output
+    assert "json.load" in read.output
+
+
 def test_search_prefers_or_falls_back(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

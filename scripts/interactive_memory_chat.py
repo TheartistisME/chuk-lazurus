@@ -141,7 +141,6 @@ from chuk_lazarus.memory_config import (
     resolve_memory_config,
 )
 from chuk_lazarus.repl_agent_tools import (
-    TOOL_SYSTEM_PROMPT,
     LocalCodingToolRunner,
     extract_tool_calls,
     format_tool_results,
@@ -198,15 +197,17 @@ Commands:
   /memory config                show resolved memory configuration
   /tools status                 show coding-agent tool status
   /tools schema                 show model tool-call instructions
+  /tools reload                 reload custom tools from disk
   /tools on                     enable coding-agent tool execution for future turns
   /tools off                    disable coding-agent tool execution
   /quit                         save if needed and exit
 
 When coding-agent tools are enabled, the model may emit tool_call JSON for
-list_dir, read_file, write_file, search, shell, or apply_patch. Tool outputs are
-appended as synthetic TOOL_RESULT user turns, bounded by the max tool-step
-setting, so the transcript/tool traces are durable source-of-truth events and
-memory is derived.
+list_dir, read_file, write_file, save_custom_tool, read_custom_tool,
+list_custom_tools, search, shell, apply_patch, or any loaded custom tool. Tool
+outputs are appended as synthetic TOOL_RESULT user turns, bounded by the max
+tool-step setting, so the transcript/tool traces are durable source-of-truth
+events and memory is derived.
 
 Power-user /ask-memory options:
   /ask-memory --insertion-family sliding --sliding-layer-indices 13,15
@@ -601,6 +602,7 @@ class MemoryChat:
         agent_tools_workspace: Path | None = None,
         agent_tools_timeout: int = 30,
         agent_tools_max_steps: int = 4,
+        agent_tools_custom_dir: Path | None = None,
     ) -> None:
         self.store_root = Path(store_root)
         self.inputs_root = self.store_root / "inputs"
@@ -646,6 +648,9 @@ class MemoryChat:
         self.session_cache_size = session_cache_size
         self.agent_tools_enabled = bool(agent_tools_enabled)
         self.agent_tools_workspace = Path(agent_tools_workspace or Path.cwd()).resolve()
+        self.agent_tools_custom_dir = Path(
+            agent_tools_custom_dir or self.store_root / "custom_tools"
+        ).resolve()
         self.agent_tools_timeout = int(agent_tools_timeout)
         self.agent_tools_max_steps = int(agent_tools_max_steps)
         self.agent_tool_runner: LocalCodingToolRunner | None = None
@@ -655,6 +660,7 @@ class MemoryChat:
                 workspace_root=self.agent_tools_workspace,
                 trace_root=self.tool_traces_root,
                 timeout_seconds=self.agent_tools_timeout,
+                custom_tools_root=self.agent_tools_custom_dir,
             )
 
         self.tokenizer: Any = None
@@ -687,7 +693,9 @@ class MemoryChat:
         return resolve_memory_config(base=base, overrides=merged_overrides)
 
     def _agent_tool_system_prompt(self) -> str | None:
-        return TOOL_SYSTEM_PROMPT if self.agent_tools_enabled else None
+        if not self.agent_tools_enabled:
+            return None
+        return self._ensure_agent_tool_runner().tool_system_prompt()
 
     def _ensure_agent_tool_runner(self) -> LocalCodingToolRunner:
         if self.agent_tool_runner is None:
@@ -695,6 +703,7 @@ class MemoryChat:
                 workspace_root=self.agent_tools_workspace,
                 trace_root=self.tool_traces_root,
                 timeout_seconds=self.agent_tools_timeout,
+                custom_tools_root=self.agent_tools_custom_dir,
             )
         return self.agent_tool_runner
 
@@ -2093,10 +2102,16 @@ class MemoryChat:
     # ── coding-agent tool loop ────────────────────────────────────────────
 
     def _print_agent_tools_status(self) -> None:
+        runner = self.agent_tool_runner
+        custom_names: list[str] = []
+        if runner is not None:
+            custom_names = sorted(runner.reload_custom_tools())
         section("CODING-AGENT TOOLS")
         print(f"  enabled     : {self.agent_tools_enabled}")
         print(f"  workspace   : {self.agent_tools_workspace}")
         print(f"  trace_root  : {self.tool_traces_root}")
+        print(f"  custom_dir  : {self.agent_tools_custom_dir}")
+        print(f"  custom_tools: {', '.join(custom_names) if custom_names else 'none'}")
         print(f"  timeout_s   : {self.agent_tools_timeout}")
         print(f"  max_steps   : {self.agent_tools_max_steps}")
         print("=" * HEADER_W)
@@ -2215,7 +2230,11 @@ class MemoryChat:
             if tools_arg == "status":
                 self._print_agent_tools_status()
             elif tools_arg == "schema":
-                print(TOOL_SYSTEM_PROMPT)
+                print(self._ensure_agent_tool_runner().tool_system_prompt())
+            elif tools_arg == "reload":
+                runner = self._ensure_agent_tool_runner()
+                runner.reload_custom_tools()
+                print(runner.describe_custom_tools())
             elif tools_arg == "on":
                 self.agent_tools_enabled = True
                 self._ensure_agent_tool_runner()
@@ -2226,7 +2245,7 @@ class MemoryChat:
                 self.agent_tools_enabled = False
                 info("coding-agent tool execution disabled")
             else:
-                info("usage: /tools status|schema|on|off")
+                info("usage: /tools status|schema|reload|on|off")
             return False
 
         if head in ("/save", "/save-memory"):
@@ -2468,6 +2487,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum tool-result feedback turns per user turn.",
     )
     parser.add_argument(
+        "--agent-tools-custom-dir",
+        type=Path,
+        default=(
+            Path(os.environ["LAZARUS_AGENT_TOOLS_CUSTOM_DIR"])
+            if "LAZARUS_AGENT_TOOLS_CUSTOM_DIR" in os.environ
+            else None
+        ),
+        help="Persistent directory for model-authored custom tools.",
+    )
+    parser.add_argument(
         "--device",
         default="cuda",
         help="Torch device (default cuda).",
@@ -2514,6 +2543,7 @@ def main(argv: list[str] | None = None) -> int:
         agent_tools_workspace=args.agent_tools_workspace,
         agent_tools_timeout=args.agent_tools_timeout,
         agent_tools_max_steps=args.agent_tools_max_steps,
+        agent_tools_custom_dir=args.agent_tools_custom_dir,
     )
 
     try:
