@@ -32,6 +32,8 @@ KEYWORDS_FILE = "keywords.json"
 WINDOW_METADATA_FILE = "window_metadata.json"
 BOUNDARIES_DIR = "boundaries"
 RESIDUAL_STREAMS_DIR = "residual_streams"
+ACTIVATION_ROUTES_DIR = "activation_routes"
+ACTIVATION_ROUTES_FILE = "activation_routes.npy"
 STORE_VERSION = 12
 
 
@@ -119,6 +121,7 @@ class TorchKnowledgeStore:
     keywords: dict[int, list[str]]
     config: ArchitectureConfig
     window_metadata: dict[int, dict[str, Any]] = field(default_factory=dict)
+    activation_routes_metadata: dict[str, Any] | None = None
     num_windows: int = 0
     num_tokens: int = 0
     _store_path: Path | None = field(default=None, repr=False)
@@ -149,6 +152,9 @@ class TorchKnowledgeStore:
         if not window_metadata_path.is_absolute():
             window_metadata_path = path / window_metadata_path
         window_metadata = _load_window_metadata_map(window_metadata_path)
+        activation_routes_metadata = manifest.get("activation_routes")
+        if activation_routes_metadata is not None and not isinstance(activation_routes_metadata, dict):
+            activation_routes_metadata = None
 
         num_windows = int(manifest.get("num_windows", max(window_tokens.keys(), default=-1) + 1))
         if num_windows == 0 and window_token_lists:
@@ -171,6 +177,7 @@ class TorchKnowledgeStore:
             keywords=keywords,
             config=config,
             window_metadata=window_metadata,
+            activation_routes_metadata=activation_routes_metadata,
             num_windows=num_windows,
             num_tokens=num_tokens,
         )
@@ -299,6 +306,28 @@ class TorchKnowledgeStore:
         stream_2d = stream_np.reshape(-1, stream_np.shape[-1])
         return torch.from_numpy(stream_2d).to(device=device)
 
+    def load_activation_routes(self, device: str | Any = "cpu"):
+        """Load the mean-pooled activation route matrix, if present."""
+        if torch is None:  # pragma: no cover - local safety net
+            raise RuntimeError("TorchKnowledgeStore requires torch to load activation routes")
+        if self._store_path is None:
+            raise ValueError("No store path available for activation route loading")
+
+        route_path = self._store_path / ACTIVATION_ROUTES_FILE
+        if self.activation_routes_metadata:
+            manifest_path = self.activation_routes_metadata.get("path")
+            if isinstance(manifest_path, str) and manifest_path:
+                route_path = Path(manifest_path)
+                if not route_path.is_absolute():
+                    route_path = self._store_path / route_path
+
+        if not route_path.exists():
+            raise FileNotFoundError(f"Activation routes not found: {route_path}")
+
+        routes_np = np.array(np.load(str(route_path), allow_pickle=False), dtype=np.float16)
+        routes_2d = routes_np.reshape(-1, routes_np.shape[-1])
+        return torch.from_numpy(routes_2d).to(device=device)
+
     def log_stats(self, file=sys.stderr) -> None:
         window_token_bytes = sum(len(tokens) * 2 for tokens in self.window_tokens.values())
         window_list_bytes = sum(len(tokens) * 4 for tokens in self.window_token_lists.values())
@@ -421,4 +450,9 @@ class TorchKnowledgeStore:
         return self._clause_router
 
 
-__all__ = ["TorchKnowledgeStore", "STORE_VERSION"]
+__all__ = [
+    "ACTIVATION_ROUTES_DIR",
+    "ACTIVATION_ROUTES_FILE",
+    "TorchKnowledgeStore",
+    "STORE_VERSION",
+]

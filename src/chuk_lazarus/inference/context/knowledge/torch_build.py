@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,10 +10,11 @@ from typing import Any
 
 import numpy as np
 
+from .activation_routes import mean_pool_hidden
 from .config import ArchitectureConfig
 from .route import TFIDFRouter, extract_window_keywords
 from .torch_capture import capture_window_boundaries
-from .torch_store import TorchKnowledgeStore
+from .torch_store import ACTIVATION_ROUTES_DIR, ACTIVATION_ROUTES_FILE, TorchKnowledgeStore
 
 STORE_VERSION = 12
 MANIFEST_FILE = "manifest.json"
@@ -167,6 +167,77 @@ def _model_device(model: Any):
             continue
         return item.device
     return None
+
+
+def _model_id_from_model(model: Any) -> str:
+    config = getattr(model, "config", None)
+    for source in (config, model):
+        for attr in ("_name_or_path", "name_or_path", "model_id"):
+            value = getattr(source, attr, None)
+            if value:
+                return str(value)
+    return "unknown"
+
+
+def _write_activation_routes(
+    output_path: Path,
+    residual_streams: dict[int, Any],
+    *,
+    num_windows: int,
+    layer: int,
+    model_id: str,
+) -> dict[str, Any] | None:
+    if not residual_streams:
+        return None
+
+    try:
+        import torch
+    except Exception:  # pragma: no cover - torch required for stream capture
+        return None
+
+    route_dir = output_path / ACTIVATION_ROUTES_DIR
+    route_dir.mkdir(exist_ok=True)
+
+    vectors_by_wid: dict[int, np.ndarray] = {}
+    hidden_dim: int | None = None
+    for wid, stream in sorted(residual_streams.items()):
+        seq_len = int(stream.shape[-2])
+        device = stream.device if torch.is_tensor(stream) else torch.device("cpu")
+        attention_mask = torch.ones(seq_len, dtype=torch.long, device=device)
+        pooled = mean_pool_hidden(
+            stream,
+            attention_mask,
+            normalize=True,
+            out_dtype=torch.float16,
+        )
+        vector = pooled.squeeze(0).detach().to("cpu", dtype=torch.float16).numpy()
+        hidden_dim = int(vector.shape[0]) if hidden_dim is None else hidden_dim
+        if int(vector.shape[0]) != hidden_dim:
+            raise RuntimeError(
+                "build_knowledge_store_torch: inconsistent activation route dimensions "
+                f"({vector.shape[0]} != {hidden_dim})"
+            )
+        vectors_by_wid[int(wid)] = np.asarray(vector, dtype=np.float16)
+        np.save(str(route_dir / f"window_{int(wid):03d}.npy"), vectors_by_wid[int(wid)])
+
+    if not vectors_by_wid or hidden_dim is None:
+        return None
+
+    matrix_rows = max(int(num_windows), max(vectors_by_wid) + 1)
+    matrix = np.zeros((matrix_rows, hidden_dim), dtype=np.float16)
+    for wid, vector in vectors_by_wid.items():
+        matrix[wid] = vector
+    np.save(str(output_path / ACTIVATION_ROUTES_FILE), matrix)
+    return {
+        "path": ACTIVATION_ROUTES_FILE,
+        "layer": int(layer),
+        "pooling": "mean_hidden_attention_mask",
+        "normalized": True,
+        "dtype": "float16",
+        "shape": [int(dim) for dim in matrix.shape],
+        "model_id": model_id,
+        "count": int(len(vectors_by_wid)),
+    }
 
 
 def _next_token_logits(model: Any, input_ids, attention_mask):
@@ -426,6 +497,14 @@ def build_knowledge_store_torch(
             stream_np = np.asarray(stream, dtype=np.float32)
             np.save(str(stream_dir / f"window_{wid:03d}.npy"), stream_np)
 
+    activation_routes_meta = _write_activation_routes(
+        output_path,
+        residual_streams,
+        num_windows=num_windows,
+        layer=config.crystal_layer,
+        model_id=_model_id_from_model(model),
+    )
+
     if final_boundary is not None:
         final_np = np.asarray(final_boundary, dtype=np.float32).reshape(1, 1, -1)
         np.save(str(output_path / BOUNDARY_RESIDUAL_FILE), final_np)
@@ -443,6 +522,8 @@ def build_knowledge_store_torch(
         "has_residual_streams": bool(residual_streams),
         "residual_stream_count": len(residual_streams),
     }
+    if activation_routes_meta is not None:
+        manifest["activation_routes"] = activation_routes_meta
     (output_path / MANIFEST_FILE).write_text(json.dumps(manifest, indent=2) + "\n")
 
     return TorchKnowledgeStore.load(output_path)

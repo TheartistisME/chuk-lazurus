@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -184,15 +183,24 @@ def test_build_knowledge_store_torch_writes_v12_layout_and_loads(tmp_path):
     assert expected_files.issubset({path.name for path in output.iterdir() if path.is_file()})
     assert (output / "boundaries" / "window_000.npy").exists()
     assert (output / "boundaries" / "window_001.npy").exists()
+    assert (output / "activation_routes.npy").exists()
 
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["version"] == 12
     assert manifest["num_windows"] == 3
     assert manifest["arch_config"]["crystal_layer"] == 2
+    assert manifest["activation_routes"]["path"] == "activation_routes.npy"
+    assert manifest["activation_routes"]["layer"] == 2
+    assert manifest["activation_routes"]["shape"] == [3, 8]
+    assert manifest["activation_routes"]["count"] == 3
 
     boundary_disk = np.load(str(output / "boundaries" / "window_000.npy"), allow_pickle=False)
     assert boundary_disk.dtype == np.float32
     assert boundary_disk.shape == (8,)
+
+    routes_disk = np.load(str(output / "activation_routes.npy"), allow_pickle=False)
+    assert routes_disk.dtype == np.float16
+    assert routes_disk.shape == (3, 8)
 
 
 def test_generate_topic_expansion_ids_uses_model_logits():
@@ -242,9 +250,12 @@ def test_build_knowledge_store_torch_expands_routing_terms(tmp_path, monkeypatch
         window_size=2,
         entries_per_window=1,
     )
+    def _expand_booster_for_second_window(_model, _tokenizer, window_token_ids, **_kwargs):
+        return [5] if list(window_token_ids) == [3, 4] else []
+
     monkeypatch.setattr(
         "chuk_lazarus.inference.context.knowledge.torch_build._generate_topic_expansion_ids",
-        lambda *args, **kwargs: [5],
+        _expand_booster_for_second_window,
     )
 
     store = build_knowledge_store_torch(
@@ -257,7 +268,7 @@ def test_build_knowledge_store_torch_expands_routing_terms(tmp_path, monkeypatch
 
     assert store.route("booster", tokenizer=tokenizer, method="tfidf") == 1
     assert store.route("booster", method="keyword") == 1
-    assert store.idf[5] == pytest.approx(0.0)
+    assert store.idf[5] == pytest.approx(0.6931471805599453)
 
 
 def test_build_knowledge_store_torch_can_use_max_tokens(tmp_path):

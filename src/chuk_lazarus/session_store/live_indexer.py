@@ -101,10 +101,13 @@ try:  # Torch is needed for capture, but keep module import-safe on CPU-only hos
 except Exception:  # pragma: no cover - torch is a core dep elsewhere
     torch = None  # type: ignore[assignment]
 
+from chuk_lazarus.inference.context.knowledge.activation_routes import mean_pool_hidden
 from chuk_lazarus.inference.context.knowledge.torch_capture import (
     capture_post_crystal_boundary,
 )
 from chuk_lazarus.inference.context.knowledge.torch_store import (
+    ACTIVATION_ROUTES_DIR,
+    ACTIVATION_ROUTES_FILE,
     BOUNDARIES_DIR,
     IDF_FILE,
     KEYWORDS_FILE,
@@ -226,12 +229,17 @@ def _atomic_write_text_via_tmp(final_path: Path, text: str) -> None:
 
 def _atomic_save_npy(final_path: Path, array: np.ndarray) -> None:
     """Atomically persist a numpy array to ``final_path`` (``.npy``)."""
+    _atomic_save_npy_as(final_path, np.asarray(array, dtype=np.float32))
+
+
+def _atomic_save_npy_as(final_path: Path, array: np.ndarray) -> None:
+    """Atomically persist a numpy array to ``final_path`` preserving dtype."""
     tmp_path = final_path.with_name(final_path.name + ".tmp")
     # ``np.save`` adds the ``.npy`` suffix unless it's already present; our
     # tmp name does not end in ``.npy`` so we pass ``allow_pickle=False`` and
     # rely on file-handle form to avoid any auto-suffixing.
     with open(tmp_path, "wb") as fh:
-        np.save(fh, np.asarray(array, dtype=np.float32), allow_pickle=False)
+        np.save(fh, np.asarray(array), allow_pickle=False)
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp_path, final_path)
@@ -314,6 +322,17 @@ def _compute_idf_fallback(
         return {}
 
 
+def _model_id_from_model(model: Any) -> str:
+    """Best-effort model identifier for archival metadata."""
+    config = getattr(model, "config", None)
+    for source in (config, model):
+        for attr in ("_name_or_path", "name_or_path", "model_id"):
+            value = getattr(source, attr, None)
+            if value:
+                return str(value)
+    return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # LiveIndexer.
 # ---------------------------------------------------------------------------
@@ -344,6 +363,7 @@ class LiveIndexer:
         self._validate_arch_config(arch_config)
 
         self._model = model
+        self._model_id: str = _model_id_from_model(model)
         self._tokenizer = tokenizer
         self._checkpoint_dir: Path = Path(checkpoint_dir)
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -351,6 +371,7 @@ class LiveIndexer:
         (self._checkpoint_dir / RESIDUAL_STREAMS_DIR).mkdir(
             parents=True, exist_ok=True
         )
+        (self._checkpoint_dir / ACTIVATION_ROUTES_DIR).mkdir(parents=True, exist_ok=True)
         (self._checkpoint_dir / _SHARDS_DIRNAME).mkdir(parents=True, exist_ok=True)
         # axis-1 (asi-kv-direct-chat): per-window selection-ready RS descriptor
         # dir. Created here so _process_one's best-effort write does not have
@@ -595,6 +616,7 @@ class LiveIndexer:
         )
         if stream_tensor is not None:
             self._write_residual_stream(stream_path, stream_tensor)
+            self._write_activation_route(window_id=int(window_id), stream_tensor=stream_tensor)
 
         # 4. Append shards (tokens / keywords / metadata).
         shard_dir = self._checkpoint_dir / _SHARDS_DIRNAME
@@ -665,6 +687,32 @@ class LiveIndexer:
         else:
             array = np.asarray(tensor, dtype=np.float32)
         _atomic_save_npy(path, np.asarray(array, dtype=np.float32))
+
+    def _write_activation_route(self, *, window_id: int, stream_tensor: Any) -> None:
+        if torch is None:  # pragma: no cover - stream capture requires torch
+            raise RuntimeError("Torch is required to write activation routes")
+
+        if torch.is_tensor(stream_tensor):
+            seq_len = int(stream_tensor.shape[-2])
+            attention_mask = torch.ones(seq_len, dtype=torch.long, device=stream_tensor.device)
+        else:
+            stream_array = np.asarray(stream_tensor)
+            seq_len = int(stream_array.shape[-2])
+            attention_mask = torch.ones(seq_len, dtype=torch.long)
+
+        pooled = mean_pool_hidden(
+            stream_tensor,
+            attention_mask,
+            normalize=True,
+            out_dtype=torch.float16,
+        )
+        vector = pooled.squeeze(0).detach().to("cpu", dtype=torch.float16).numpy()
+        route_path = (
+            self._checkpoint_dir
+            / ACTIVATION_ROUTES_DIR
+            / f"window_{int(window_id):03d}.npy"
+        )
+        _atomic_save_npy_as(route_path, np.asarray(vector, dtype=np.float16))
 
     def _should_flush(self) -> bool:
         if self._adapter is not None:
@@ -913,6 +961,7 @@ class LiveIndexer:
             residual_stream_count = sum(
                 1 for _ in residual_stream_dir.glob("window_*.npy")
             )
+        activation_routes_meta = self._compact_activation_routes(num_windows=num_windows)
         manifest: dict[str, Any] = {
             "store_version": STORE_VERSION,
             "clause_aligned": True,
@@ -924,12 +973,56 @@ class LiveIndexer:
             "has_residual_streams": residual_stream_count > 0,
             "residual_stream_count": int(residual_stream_count),
         }
+        if activation_routes_meta is not None:
+            manifest["activation_routes"] = activation_routes_meta
         _atomic_write_text_via_tmp(
             self._checkpoint_dir / MANIFEST_FILE,
             json.dumps(manifest, indent=2),
         )
         with self._state_lock:
             self._manifest_dirty = False
+
+    def _compact_activation_routes(self, *, num_windows: int) -> dict[str, Any] | None:
+        route_dir = self._checkpoint_dir / ACTIVATION_ROUTES_DIR
+        if not route_dir.exists():
+            return None
+
+        vectors_by_wid: dict[int, np.ndarray] = {}
+        hidden_dim: int | None = None
+        for route_file in sorted(route_dir.glob("window_*.npy")):
+            try:
+                wid = int(route_file.stem.split("_")[-1])
+            except ValueError:
+                continue
+            vector = np.asarray(np.load(str(route_file), allow_pickle=False), dtype=np.float16).reshape(-1)
+            if hidden_dim is None:
+                hidden_dim = int(vector.shape[0])
+            elif int(vector.shape[0]) != hidden_dim:
+                raise RuntimeError(
+                    "LiveIndexer._compact_activation_routes: inconsistent hidden dimensions "
+                    f"({vector.shape[0]} != {hidden_dim})"
+                )
+            vectors_by_wid[wid] = vector
+
+        if not vectors_by_wid or hidden_dim is None:
+            return None
+
+        matrix_rows = max(int(num_windows), max(vectors_by_wid) + 1)
+        matrix = np.zeros((matrix_rows, hidden_dim), dtype=np.float16)
+        for wid, vector in vectors_by_wid.items():
+            matrix[int(wid)] = vector
+
+        _atomic_save_npy_as(self._checkpoint_dir / ACTIVATION_ROUTES_FILE, matrix)
+        return {
+            "path": ACTIVATION_ROUTES_FILE,
+            "layer": int(self._crystal_layer),
+            "pooling": "mean_hidden_attention_mask",
+            "normalized": True,
+            "dtype": "float16",
+            "shape": [int(dim) for dim in matrix.shape],
+            "model_id": self._model_id,
+            "count": int(len(vectors_by_wid)),
+        }
 
     # ------------------------------------------------------------------
     # Misc.

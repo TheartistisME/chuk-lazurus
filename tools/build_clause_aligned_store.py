@@ -32,12 +32,15 @@ from chuk_lazarus.cli.commands.context.prefill._torch_sidecar import (
 )
 from chuk_lazarus.inference.context.knowledge.route import TFIDFRouter, _extract_keywords_from_text
 from chuk_lazarus.inference.context.knowledge.torch_build import (
+    ACTIVATION_ROUTES_DIR,
+    ACTIVATION_ROUTES_FILE,
     BOUNDARIES_DIR,
     BOUNDARY_RESIDUAL_FILE,
     ENTRIES_FILE,
     IDF_FILE,
     KEYWORDS_FILE,
     MANIFEST_FILE,
+    RESIDUAL_STREAMS_DIR,
     STORE_VERSION,
     WINDOW_TOKEN_LISTS_FILE,
     WINDOW_TOKENS_FILE,
@@ -45,8 +48,10 @@ from chuk_lazarus.inference.context.knowledge.torch_build import (
     _entries_to_numpy,
     _entry_coefficient,
     _encode_token_ids,
+    _model_id_from_model,
     _save_npz_mapping,
     _select_targets,
+    _write_activation_routes,
 )
 from chuk_lazarus.inference.context.knowledge.torch_capture import capture_window_boundaries
 from chuk_lazarus.inference.context.knowledge.torch_store import TorchKnowledgeStore
@@ -545,10 +550,11 @@ def build_store(
             )
             fact_id += 1
 
-    boundaries, final_boundary = capture_window_boundaries(
+    boundaries, final_boundary, residual_streams = capture_window_boundaries(
         model,
         token_windows,
         crystal_layer=arch_config.crystal_layer,
+        return_streams=True,
     )
 
     record_lookup = {record.clause_id: record for record in records}
@@ -602,6 +608,21 @@ def build_store(
             boundary_np = np.asarray(boundary, dtype=np.float32).reshape(-1)
             np.save(str(boundary_dir / f"window_{wid:03d}.npy"), boundary_np)
 
+    if residual_streams:
+        stream_dir = output_path / RESIDUAL_STREAMS_DIR
+        stream_dir.mkdir(exist_ok=True)
+        for wid, stream in residual_streams.items():
+            stream_np = np.asarray(stream, dtype=np.float32)
+            np.save(str(stream_dir / f"window_{wid:03d}.npy"), stream_np)
+
+    activation_routes_meta = _write_activation_routes(
+        output_path,
+        residual_streams,
+        num_windows=num_windows,
+        layer=arch_config.crystal_layer,
+        model_id=_model_id_from_model(model),
+    )
+
     if final_boundary is not None:
         final_np = np.asarray(final_boundary, dtype=np.float32).reshape(1, 1, -1)
         np.save(str(output_path / BOUNDARY_RESIDUAL_FILE), final_np)
@@ -629,9 +650,13 @@ def build_store(
         "window_size": arch_config.window_size,
         "arch_config": arch_config.to_dict(),
         "has_residuals": False,
+        "has_residual_streams": bool(residual_streams),
+        "residual_stream_count": len(residual_streams),
         "window_metadata": WINDOW_METADATA_FILE,
         "clause_aligned": True,
     }
+    if activation_routes_meta is not None:
+        manifest["activation_routes"] = activation_routes_meta
     (output_path / MANIFEST_FILE).write_text(json.dumps(manifest, indent=2) + "\n")
 
     return TorchKnowledgeStore.load(output_path), windows, len(entries)
@@ -703,6 +728,9 @@ def build_prefill_metadata(
             "idf": f"{TORCH_STORE_DIR}/{IDF_FILE}",
             "keywords": f"{TORCH_STORE_DIR}/{KEYWORDS_FILE}",
             "boundaries_dir": f"{TORCH_STORE_DIR}/{BOUNDARIES_DIR}",
+            "residual_streams_dir": f"{TORCH_STORE_DIR}/{RESIDUAL_STREAMS_DIR}",
+            "activation_routes": f"{TORCH_STORE_DIR}/{ACTIVATION_ROUTES_FILE}",
+            "activation_routes_dir": f"{TORCH_STORE_DIR}/{ACTIVATION_ROUTES_DIR}",
             "boundary_residual": f"{TORCH_STORE_DIR}/{BOUNDARY_RESIDUAL_FILE}",
             "window_metadata": f"{TORCH_STORE_DIR}/{WINDOW_METADATA_FILE}",
         },

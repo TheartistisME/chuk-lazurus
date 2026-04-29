@@ -2,9 +2,9 @@
 ArchitectureConfig — per-model routing and injection parameters.
 
 These values are DISCOVERED empirically, not formula-derived:
-  retrieval_layer  — the layer whose H4 copy head routes facts (e.g. 29 for Gemma 4B)
-  query_head       — the copy head index within that layer (e.g. 4 for Gemma 4B)
-  injection_layer  — the layer where 1D subspace injection is applied (e.g. 30 for Gemma 4B)
+  retrieval_layer  — the layer whose H4 copy head routes facts (e.g. 29 for Gemma 3 4B)
+  query_head       — the copy head index within that layer (e.g. 4 for Gemma 3 4B)
+  injection_layer  — the layer where 1D subspace injection is applied (e.g. 30 for Gemma 3 4B)
 
 Discovery method: SVD of W_q @ W_k^T per layer/head reveals the copy head as the
 head with a near-rank-1 W_q@W_k^T (entity copying pattern). This is the same
@@ -202,7 +202,7 @@ class ArchitectureConfig:
     def discover(cls, backbone, verbose: bool = False) -> ArchitectureConfig:
         """Discover retrieval_layer, query_head, injection_layer via behavioral analysis.
 
-        The copy head (e.g. L29 H4 for Gemma 4B) is a BEHAVIORAL property — it is
+        The copy head (e.g. L29 H4 for Gemma 3 4B) is a BEHAVIORAL property — it is
         the head whose attention output at entity token positions most closely matches
         the entity's embedding direction. This cannot be found from weight matrices
         alone (W_q@W_k^T SVD finds structurally low-rank heads, not copy heads).
@@ -214,7 +214,7 @@ class ArchitectureConfig:
         4. The head with highest correlation is the copy head
 
         This is the approach used in experiment a9704704 to identify L29 H4 for
-        Gemma 4B. The full procedure will be implemented as:
+        Gemma 3 4B. The full procedure will be implemented as:
             lazarus context calibrate-arch --model <model_id> --examples <file>
 
         Raises
@@ -373,19 +373,18 @@ ArchitectureConfig._KNOWN[("gemma", 26)] = ArchitectureConfig(
 )
 
 
-# Gemma 4 E2B-IT (35 layers, gemma4_text family) — discovered via
-# calibrate_arch_torch.py on CUDA (2026-04-16).
+# Gemma 4 E2B-IT (35 layers, gemma4_text family) — native activation
+# similarity defaults for mean-pooled Layer 13 archival routes.
 # Wrapper config model_type="gemma4" with nested text_config model_type="gemma4_text".
-# L28 H7 is the copy head (score=+0.138, mean Δ=+0.229, 60% coverage across usable probes).
-# Per-probe deltas at L28 H7: [Voltara +0.31, Cerulion +0.01, Dravenport +0.22, Solmere +0.59, endorse +0.01].
-# Injection at L29 (retrieval_layer + 1). crystal_layer defaults to injection_layer=29.
-# AUS3000 demo (examples/inference/demo_clause_aligned_strict.py) confirmed
-# L29 boundary injection produces coherent grounded output on Gemma-4-E2B-it.
+# Capture retrieval at L12 and archive/inject crystallised residuals at L13.
+# The target runtime layer is L14, the full-attention KV master that consumes
+# these vectors; do not regress this entry to stale Layer 29 semantics.
 # Gemma 4 deliberately gets its own registry bucket — it is NOT aliased to Gemma 3 calibration.
 ArchitectureConfig._KNOWN[("gemma4", 35)] = ArchitectureConfig(
-    retrieval_layer=28,
+    retrieval_layer=12,
     query_head=7,
-    injection_layer=29,
+    injection_layer=13,
+    crystal_layer=13,
 )
 
 

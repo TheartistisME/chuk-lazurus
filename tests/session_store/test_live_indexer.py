@@ -29,7 +29,6 @@ from chuk_lazarus.session_store import live_indexer as _live_indexer_mod
 from chuk_lazarus.session_store.live_indexer import (
     Adapter,
     LiveIndexer,
-    STORE_VERSION,
 )
 
 
@@ -40,12 +39,12 @@ from chuk_lazarus.session_store.live_indexer import (
 HIDDEN_SIZE: int = 1536
 
 ARCH_CONFIG_E2B: dict[str, Any] = {
-    "retrieval_layer": 28,
+    "retrieval_layer": 12,
     "query_head": 7,
-    "injection_layer": 29,
+    "injection_layer": 13,
     "hidden_dim": 1536,
     "head_dim": 256,
-    "crystal_layer": 29,
+    "crystal_layer": 13,
     "window_size": 512,
 }
 
@@ -68,6 +67,31 @@ def _fake_capture_factory(constant: float = 0.0):
     return _fake_capture
 
 
+def _fake_capture_with_stream_factory(constant: float = 0.0):
+    """Build a capture stand-in returning both boundary and stream tensors."""
+
+    def _fake_capture(
+        model,
+        token_ids,
+        *,
+        crystal_layer,
+        device=None,
+        initial_residual=None,
+        return_stream: bool = False,
+    ):
+        stream = torch.full(
+            (len(token_ids), HIDDEN_SIZE),
+            float(constant),
+            dtype=torch.float32,
+        )
+        boundary = stream[-1].clone()
+        if return_stream:
+            return boundary, stream
+        return boundary
+
+    return _fake_capture
+
+
 def _patch_capture(monkeypatch: pytest.MonkeyPatch, fn=None) -> None:
     """Monkeypatch the *locally-bound* capture reference inside live_indexer."""
     monkeypatch.setattr(
@@ -83,7 +107,7 @@ def make_indexer(tmp_path: Path, **overrides: Any) -> LiveIndexer:
         model=object(),  # sentinel; capture is monkeypatched so model is never used
         tokenizer=object(),
         checkpoint_dir=store_dir,
-        crystal_layer=29,
+        crystal_layer=13,
         window_size=512,
         arch_config=ARCH_CONFIG_E2B,
     )
@@ -172,7 +196,7 @@ def test_arch_config_validation_rejects_missing_keys(
             model=object(),
             tokenizer=object(),
             checkpoint_dir=tmp_path / "store",
-            crystal_layer=29,
+            crystal_layer=13,
             window_size=512,
             arch_config=bad_cfg,
         )
@@ -272,6 +296,37 @@ def test_flush_and_close_produces_TorchKnowledgeStore_loadable_store(
     # TorchKnowledgeStore.load must accept the directory.
     store = TorchKnowledgeStore.load(store_dir)
     assert store.num_windows == 3
+
+
+def test_flush_and_close_writes_activation_routes_when_streams_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stream capture produces per-window route vectors and final route matrix."""
+    _patch_capture(monkeypatch, _fake_capture_with_stream_factory(0.5))
+    indexer = make_indexer(tmp_path)
+    for wid in range(2):
+        indexer.enqueue(wid, [10 + wid, 11 + wid], [f"kw{wid}"], {"clause_id": f"x.{wid}.0"})
+    indexer.flush_and_close()
+
+    store_dir = tmp_path / "store"
+    manifest = json.loads((store_dir / "manifest.json").read_text("utf-8"))
+    route_meta = manifest["activation_routes"]
+    assert route_meta["path"] == "activation_routes.npy"
+    assert route_meta["layer"] == 13
+    assert route_meta["pooling"] == "mean_hidden_attention_mask"
+    assert route_meta["normalized"] is True
+    assert route_meta["dtype"] == "float16"
+    assert route_meta["shape"] == [2, HIDDEN_SIZE]
+    assert route_meta["count"] == 2
+
+    route_matrix = np.load(store_dir / "activation_routes.npy")
+    assert route_matrix.shape == (2, HIDDEN_SIZE)
+    assert route_matrix.dtype == np.float16
+    assert (store_dir / "activation_routes" / "window_000.npy").exists()
+
+    store = TorchKnowledgeStore.load(store_dir)
+    loaded_routes = store.load_activation_routes()
+    assert loaded_routes.shape == (2, HIDDEN_SIZE)
 
 
 # ---------------------------------------------------------------------------

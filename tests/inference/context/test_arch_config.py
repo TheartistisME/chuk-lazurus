@@ -17,7 +17,7 @@ class TestKnownRegistry:
     """Validated configs for known models."""
 
     def test_gemma_4b_known(self):
-        """Gemma 4B (34 layers) should resolve to L29 H4."""
+        """Gemma 3 4B (34 layers) should resolve to L29 H4."""
         config = _fake_config("gemma3", 34)
         ac = ArchitectureConfig.from_model_config(config)
         assert ac.retrieval_layer == 29
@@ -47,21 +47,23 @@ class TestKnownRegistry:
         assert ac.injection_layer == 30
 
     def test_gemma4_text_35_layers_known(self):
-        """Gemma 4 E2B (35 layers) resolves to validated L28 H7 via text_config."""
+        """Gemma 4 E2B (35 layers) resolves to native L13 activation defaults."""
         config = _fake_config("gemma4_text", 35)
         ac = ArchitectureConfig.from_model_config(config)
-        assert ac.retrieval_layer == 28
+        assert ac.retrieval_layer == 12
         assert ac.query_head == 7
-        assert ac.injection_layer == 29
+        assert ac.injection_layer == 13
+        assert ac.crystal_layer == 13
 
     def test_gemma4_wrapper_uses_nested_text_config(self):
         """Gemma 4 wrapper config (model_type=gemma4 with nested gemma4_text)
         resolves via the nested text_config, not the outer wrapper."""
         config = _fake_wrapper_config("gemma4", "gemma4_text", 35)
         ac = ArchitectureConfig.from_model_config(config)
-        assert ac.retrieval_layer == 28
+        assert ac.retrieval_layer == 12
         assert ac.query_head == 7
-        assert ac.injection_layer == 29
+        assert ac.injection_layer == 13
+        assert ac.crystal_layer == 13
 
     def test_gemma4_does_not_alias_to_gemma3(self):
         """Gemma 4 values must NOT match any Gemma 3 calibration — per
@@ -370,9 +372,10 @@ class TestUserConfigFile:
         ):
             config = _fake_wrapper_config("gemma4", "gemma4_text", 35)
             ac = ArchitectureConfig.from_model_config(config)
-            assert ac.retrieval_layer == 28
+            assert ac.retrieval_layer == 12
             assert ac.query_head == 7
-            assert ac.injection_layer == 29
+            assert ac.injection_layer == 13
+            assert ac.crystal_layer == 13
 
     def test_save_merges_with_existing(self, tmp_path):
         config_file = tmp_path / "arch_configs.json"
