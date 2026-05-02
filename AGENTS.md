@@ -12,6 +12,16 @@ bd close <id>         # Complete work
 bd sync               # Sync with git
 ```
 
+## Windows / WSL Tool Access
+
+If a project tool is not visible from PowerShell, invoke it through the default WSL login shell from the repo root:
+
+```bash
+wsl --cd /mnt/c/Users/jehma/Desktop/lazarus/chuk-lazurus -- bash -lc '<command>'
+```
+
+This is the expected path for tools installed in WSL, such as `bd` under `~/.local/bin`. Do not force a specific distro unless you have verified its PATH. For TinyTool/tinydex, use `/mnt/c/Users/jehma/Desktop/TinyTool/bin/tinydex`.
+
 ## Filedex / Tinydex Cadence
 
 All agents must use tinydex/filedex as a tiny file-memory ritual:
