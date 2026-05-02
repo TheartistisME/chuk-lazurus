@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+import argparse
 import importlib.util
 import inspect
 import json
@@ -1191,7 +1192,7 @@ def _run_one(module: Any, router: Any, row: RowFixture) -> dict[str, Any]:
     }
 
 
-def run_validation() -> tuple[int, dict[str, Any]]:
+def run_validation(row_filter: str | None = None) -> tuple[int, dict[str, Any]]:
     try:
         module = _load_router_module()
         router = _make_router(module)
@@ -1210,9 +1211,24 @@ def run_validation() -> tuple[int, dict[str, Any]]:
             "rows": [],
         }
 
+    wanted = str(row_filter or "").strip().lower()
+    fixtures = [
+        row
+        for row in _fixtures()
+        if not wanted
+        or wanted in {row.name.lower(), row.benchmark.lower(), row.capability.lower()}
+    ]
+    if wanted and not fixtures:
+        return 2, {
+            "status": "row_not_found",
+            "message": f"no validation row matched {row_filter!r}",
+            "assumptions": list(ASSUMPTIONS),
+            "rows": [],
+        }
+
     rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    for row in _fixtures():
+    for row in fixtures:
         try:
             rows.append(_run_one(module, router, row))
         except (RouterContractError, ValidationFailure, AssertionError) as exc:
@@ -1235,7 +1251,18 @@ def run_validation() -> tuple[int, dict[str, Any]]:
 
 
 def main() -> int:
-    exit_code, report = run_validation()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--row",
+        default="",
+        help=(
+            "Optional single-row filter. Accepts row name, benchmark, or "
+            "capability, for example MRCR, ruler, loco, swe, chat, or "
+            "temporal_ordinal."
+        ),
+    )
+    args = parser.parse_args()
+    exit_code, report = run_validation(row_filter=args.row)
     print(json.dumps(report, indent=2, sort_keys=True, default=_json_default))
     return exit_code
 
