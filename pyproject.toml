@@ -60,6 +60,7 @@ server = [
 [project.scripts]
 chuk-lazarus = "chuk_lazarus.cli:main"
 lazarus = "chuk_lazarus.cli:main"
+david = "chuk_lazarus.david.cli:main"
 lazarus-serve = "chuk_lazarus.server.cli:main"
 circuit = "chuk_lazarus.introspection.circuit.cli:main"
 

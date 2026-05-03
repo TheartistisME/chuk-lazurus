@@ -17,12 +17,16 @@ def test_missing_index_requires_jit_plan(tmp_path: Path) -> None:
 
 
 def test_repo_patch_routing_and_task_writeback(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "example.py"
+    source.parent.mkdir()
+    source.write_text("def broken_session():\n    return None\n", encoding="utf-8")
     runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
 
     result = runtime.run_once("Fix the repo bug by patching src/example.py")
 
     assert result.method == "repo_patch"
     assert result.route.memory_family == "task"
+    assert any(item.get("path") == "src/example.py" for item in result.route.evidence)
     assert "patch_compatible_edits" in result.decoder.constraints["bias"]
     assert result.writeback["family"] == "task"
     assert (tmp_path / "state" / "memory" / "task-default.jsonl").exists()
@@ -40,3 +44,14 @@ def test_verification_command_behavior(tmp_path: Path) -> None:
     assert result.verification.command_result["returncode"] == 0
     assert "ok" in result.verification.command_result["stdout"]
 
+
+def test_runtime_status_and_shell_commands_are_available_to_tui(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    readiness = runtime.readiness()
+    shell = runtime.run_shell("python -c \"print('hello')\"")
+
+    assert readiness["model validation"].startswith("ready")
+    assert "index" in readiness
+    assert "rc=0" in shell
+    assert "hello" in shell
