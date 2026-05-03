@@ -1,0 +1,55 @@
+"""Production harness boot-session schemas."""
+
+from .boot import boot_harness
+from .model_config import (
+    AdapterBootMetadata,
+    ModelBootMetadata,
+    ModelConfigReportError,
+    boot_metadata_from_file,
+    boot_metadata_from_validation_report,
+    can_auto_load,
+    parse_model_validation_report,
+    require_boot_safe,
+)
+from .session import (
+    DecoderPriorScope,
+    FailClosedWarning,
+    HarnessSession,
+    IndexReadinessMetadata,
+    MaterializationCompatibilityMetadata,
+    MaterializationStrategy,
+    MemoryFamily,
+    ModelAdapterMetadata,
+    Provenance,
+    ReadinessState,
+    ReviewStatus,
+    TaskMemoryStatusMetadata,
+    UserMemoryStatusMetadata,
+    WarningSeverity,
+)
+
+__all__ = [
+    "AdapterBootMetadata",
+    "DecoderPriorScope",
+    "FailClosedWarning",
+    "HarnessSession",
+    "IndexReadinessMetadata",
+    "MaterializationCompatibilityMetadata",
+    "MaterializationStrategy",
+    "MemoryFamily",
+    "ModelBootMetadata",
+    "ModelAdapterMetadata",
+    "ModelConfigReportError",
+    "Provenance",
+    "ReadinessState",
+    "ReviewStatus",
+    "TaskMemoryStatusMetadata",
+    "UserMemoryStatusMetadata",
+    "WarningSeverity",
+    "boot_harness",
+    "boot_metadata_from_file",
+    "boot_metadata_from_validation_report",
+    "can_auto_load",
+    "parse_model_validation_report",
+    "require_boot_safe",
+]
