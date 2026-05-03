@@ -258,7 +258,7 @@ class HarnessSession:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def blocking_warnings(self) -> tuple[FailClosedWarning, ...]:
+    def fail_closed_warnings(self) -> tuple[FailClosedWarning, ...]:
         warnings = list(self.warnings)
         for component in (
             self.model_adapter,
@@ -270,7 +270,11 @@ class HarnessSession:
         ):
             if component is not None:
                 warnings.extend(component.warnings)
-        return tuple(warning for warning in warnings if warning.is_blocking)
+        return tuple(warnings)
+
+    @property
+    def blocking_warnings(self) -> tuple[FailClosedWarning, ...]:
+        return tuple(warning for warning in self.fail_closed_warnings if warning.is_blocking)
 
     @property
     def can_auto_load(self) -> bool:
@@ -282,7 +286,14 @@ class HarnessSession:
         }
 
     def to_dict(self) -> dict[str, Any]:
-        return _serialize(asdict(self))
+        data = _serialize(asdict(self))
+        data["fail_closed_warnings"] = _serialize(
+            tuple(asdict(warning) for warning in self.fail_closed_warnings)
+        )
+        data["blocking_warnings"] = _serialize(
+            tuple(asdict(warning) for warning in self.blocking_warnings)
+        )
+        return data
 
 
 def _serialize(value: Any) -> Any:

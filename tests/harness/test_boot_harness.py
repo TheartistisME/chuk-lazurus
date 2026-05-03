@@ -143,6 +143,11 @@ def test_accepted_validation_report_populates_harness_session(
     assert session.index_readiness is not None
     assert session.user_memory is not None
     assert session.task_memory is not None
+    assert session.provenance is not None
+    assert session.provenance.source == "chuk_lazarus.harness.boot"
+    assert hasattr(session, "fail_closed_warnings")
+    assert session.fail_closed_warnings == ()
+    assert "fail_closed_warnings" in session.to_dict()
 
 
 @pytest.mark.parametrize("status", ["rejected", "review_required"])
@@ -233,6 +238,8 @@ def test_missing_or_mismatched_workspace_index_requires_jit_with_planned_actions
     assert session.index_readiness.state is ReadinessState.NEEDS_JIT
     assert session.metadata["jit_required"] is True
     assert expected_action in session.metadata["planned_actions"]
+    assert expected_action in session.index_readiness.missing_reasons
+    assert expected_action in session.provenance.evidence
 
 
 def test_user_memory_and_task_workspace_memory_statuses_are_separate(
