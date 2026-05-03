@@ -21,8 +21,11 @@ from run_swebench_pro_parity import (  # noqa: E402
     RULER_JIT_INDEXING_COMPAT_SIGNAL,
     RULER_JIT_INDEXING_IMPLEMENTATION,
     SWEBenchProCase,
+    decoder_dialect_prior_plan,
+    new_decoder_dialect_prior_state,
     ruler_jit_case_metadata,
     swe_ruler_jit_benchmark_slug,
+    update_decoder_dialect_prior_from_result,
 )
 
 
@@ -121,3 +124,41 @@ def test_swe_ruler_jit_metadata_uses_selected_row_cache_scope() -> None:
     assert metadata["signal"] == RULER_JIT_INDEXING_COMPAT_SIGNAL
     assert metadata["implementation"] == RULER_JIT_INDEXING_IMPLEMENTATION
     assert metadata["case_index_in_jit_corpus"] == 0
+
+
+def test_swe_decoder_dialect_prior_carries_same_language_seed() -> None:
+    args = argparse.Namespace(_decoder_dialect_prior=new_decoder_dialect_prior_state())
+    dialect_plan = {
+        "paths": {
+            "src/app.js": {"target_dialect": "javascript"},
+            "src/routes.js": {"target_dialect": "javascript"},
+        }
+    }
+    result = {
+        "row_index": 0,
+        "pass_at_1": True,
+        "dependency_constraint_pass": True,
+        "swebench_pro": {
+            "repo": "NodeBB/NodeBB",
+            "instance_id": "nodebb-row0",
+        },
+        "dependency_logits_processor": {
+            "dynamic_dialect_switching": dialect_plan,
+            "runtime_context_whitelist": {
+                "decoder_dialect_steering": {
+                    "hard_masked_candidate_count": 1000,
+                    "masked_but_not_tempting_count": 998,
+                    "alpha": {"peak_by_family": {"python": 0.8, "go": 0.0}},
+                    "events": [{"offense_family": "python"}],
+                }
+            },
+        },
+    }
+
+    update_decoder_dialect_prior_from_result(args, result)
+    next_plan = decoder_dialect_prior_plan(args._decoder_dialect_prior, dialect_plan)
+
+    assert next_plan["active"] is True
+    assert next_plan["matched_dialects"] == ["javascript"]
+    assert next_plan["seed_alpha_by_family"]["python"] == 0.18
+    assert "go" not in next_plan["seed_alpha_by_family"]

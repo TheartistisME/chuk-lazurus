@@ -18,7 +18,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 try:
     import torch
 
@@ -29,11 +28,10 @@ except Exception:
 
 def _load_interactive_memory_chat():
     """Load ``scripts/interactive_memory_chat.py`` as a module."""
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "scripts"
-        / "interactive_memory_chat.py"
-    )
+    scripts_root = Path(__file__).resolve().parents[2] / "scripts"
+    if str(scripts_root) not in sys.path:
+        sys.path.insert(0, str(scripts_root))
+    path = scripts_root / "interactive_memory_chat.py"
     spec = importlib.util.spec_from_file_location(
         "interactive_memory_chat", path
     )
@@ -107,6 +105,38 @@ def test_kv_query_command_parses_explicit_sliding_selector() -> None:
         },
     }
     assert chat.last_meta is meta
+
+
+def test_activation_gate_allows_high_cosine_with_zero_tfidf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _imc = _load_interactive_memory_chat()
+    monkeypatch.setenv("LAZARUS_ASI_ACTIVATION_GATE_THRESHOLD", "0.45")
+
+    candidates = [
+        SimpleNamespace(
+            raw_tfidf_score_pre_normalization=0.0,
+            activation_score=0.72,
+        )
+    ]
+
+    assert _imc._routing_gate_allows_candidates(candidates) is True
+
+
+def test_activation_gate_preserves_legacy_no_relevant_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _imc = _load_interactive_memory_chat()
+    monkeypatch.setenv("LAZARUS_ASI_ACTIVATION_GATE_THRESHOLD", "0.45")
+
+    candidates = [
+        SimpleNamespace(
+            raw_tfidf_score_pre_normalization=0.0,
+            activation_score=0.12,
+        )
+    ]
+
+    assert _imc._routing_gate_allows_candidates(candidates) is False
 
 
 def test_kv_query_command_rejects_sliding_indices_without_sliding_family(
@@ -244,10 +274,17 @@ def test_kv_query_turn_propagates_selector_kwargs_to_retriever(
 
     import chuk_lazarus.session_retrieval as session_retrieval
 
+    seen_router_kwargs: dict[str, object] = {}
+
+    def _fake_asi_route_candidates(*_args, **kwargs):
+        seen_router_kwargs.update(kwargs)
+        return [candidate]
+
+    monkeypatch.setattr(_imc, "_build_activation_query_vector", lambda *_a, **_kw: [0.0, 1.0])
     monkeypatch.setattr(
         session_retrieval,
         "asi_route_candidates",
-        lambda *_args, **_kwargs: [candidate],
+        _fake_asi_route_candidates,
     )
     monkeypatch.setattr(
         session_retrieval,
@@ -277,6 +314,7 @@ def test_kv_query_turn_propagates_selector_kwargs_to_retriever(
     assert meta.selected_tier == "hot"
     assert meta.no_silent_fallback is True
     assert meta.kv_direct_active is True
+    assert seen_router_kwargs["activation_query_vector"] == [0.0, 1.0]
 
 
 def test_kv_query_turn_preserves_cross_session_assignments(
@@ -408,6 +446,235 @@ def test_kv_query_turn_preserves_cross_session_assignments(
     assert meta.semantic_prefix_active is True
     assert meta.evidence_support_count == 1
     assert meta.evidence_supports[0]["fact_keys_detected"] == ["atlas_pro_price"]
+
+
+def test_kv_query_turn_central_backend_preserves_asi_metadata_and_assignments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("torch")
+
+    _imc = _load_interactive_memory_chat()
+    MemoryChat = _imc.MemoryChat
+
+    handle_a = SimpleNamespace(session_id="central-a")
+    handle_b = SimpleNamespace(session_id="central-b")
+
+    class CentralAwareRetriever:
+        def __init__(self) -> None:
+            self.handles = [handle_a, handle_b]
+            self.tokenizer = object()
+            self.system_prompt = "system prompt"
+            self.captured_assignments: list[tuple[str, int]] | None = None
+
+        def answer_with_kv_direct_multi(
+            self,
+            query_text,
+            tier_assignments,
+            *,
+            hot_budget_mib,
+            warm_config,
+            generation_config,
+            warm_scores=None,
+            query_id=None,
+            insertion_family="full_attention",
+            sliding_layer_indices=None,
+            sliding_head_indices=None,
+        ):
+            del (
+                query_text,
+                hot_budget_mib,
+                warm_config,
+                generation_config,
+                warm_scores,
+                query_id,
+                insertion_family,
+                sliding_layer_indices,
+                sliding_head_indices,
+            )
+            self.captured_assignments = [
+                (
+                    assignment.candidate.handle.session_id,
+                    int(assignment.candidate.window_id),
+                )
+                for assignment in tier_assignments
+            ]
+            return SimpleNamespace(
+                strict_assertions={
+                    "kv_direct_active": True,
+                    "mask_penalty_applied": True,
+                    "vram_peak_mib": 12,
+                    "vram_delta_mib": 4,
+                    "multi_session_count": 2,
+                    "semantic_prefix_active": True,
+                    "semantic_prefix_tokens": 24,
+                },
+                routing_mode="kv_direct",
+                source_session="central-b",
+                window_id=7,
+                routing_score=0.99,
+                matched_window_text="central ordered window",
+                window_keywords=["central"],
+                generated_answer="central retrieved answer",
+            )
+
+        def answer_with_kv_direct(self, *_args, **_kwargs):
+            raise AssertionError("single-handle fallback must not run")
+
+    class FakeStore:
+        def get_window_text(self, window_id, tokenizer):
+            del tokenizer
+            return f"central window {window_id}"
+
+    class StubTokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            del text, add_special_tokens
+            return SimpleNamespace(input_ids=[1, 2, 3])
+
+    retriever = CentralAwareRetriever()
+    chat = MemoryChat.__new__(MemoryChat)
+    chat.retriever = retriever
+    chat.tokenizer = StubTokenizer()
+    chat.model = SimpleNamespace(config=SimpleNamespace(head_dim=1, num_key_value_heads=1))
+    chat.max_new_tokens = 32
+    chat.memory_router_backend = "central"
+    chat.plain_chat_turn = lambda _text: _imc.TurnMetadata(mode="plain")  # type: ignore[assignment]
+
+    candidates = [
+        SimpleNamespace(
+            handle=handle_a,
+            window_id=3,
+            ucb1_score=0.1,
+            raw_router_score=0.2,
+            raw_tfidf_score_pre_normalization=1.0,
+            literal_score=0.1,
+            entity_score=0.2,
+            dense_score=0.3,
+            activation_score=0.4,
+            rrf_score=0.05,
+            relevance_score=0.6,
+            freshness_score=0.7,
+            learned_reward=0.8,
+            estimated_cost=0.9,
+            utility_score=0.1,
+            lexical_rank=2,
+            dense_rank=2,
+            literal_rank=2,
+            entity_rank=2,
+            activation_rank=2,
+            session_turn_index=13,
+            content_fingerprint="fp-a",
+            dense_vector=(0.1, 0.2),
+            selector_telemetry={"apollo": "a", "activation_rank": 2},
+        ),
+        SimpleNamespace(
+            handle=handle_b,
+            window_id=7,
+            ucb1_score=0.2,
+            raw_router_score=0.3,
+            raw_tfidf_score_pre_normalization=1.5,
+            literal_score=0.2,
+            entity_score=0.3,
+            dense_score=0.4,
+            activation_score=0.9,
+            rrf_score=0.15,
+            relevance_score=0.8,
+            freshness_score=0.9,
+            learned_reward=0.4,
+            estimated_cost=0.2,
+            utility_score=0.95,
+            lexical_rank=1,
+            dense_rank=1,
+            literal_rank=1,
+            entity_rank=1,
+            activation_rank=1,
+            session_turn_index=17,
+            content_fingerprint="fp-b",
+            dense_vector=(0.3, 0.4),
+            selector_telemetry={"apollo": "b", "activation_rank": 1},
+        ),
+    ]
+    captured_route: dict[str, object] = {}
+    captured_assign_candidates: list[tuple[str, int]] = []
+
+    def _fake_central_route_chat_windows(query_text, route_windows, **kwargs):
+        captured_route["query_text"] = query_text
+        captured_route["route_windows"] = route_windows
+        captured_route["kwargs"] = kwargs
+        ordered_windows = sorted(
+            route_windows,
+            key=lambda window: float(window["metadata"]["utility_score"]),
+            reverse=True,
+        )
+        return SimpleNamespace(
+            candidates=[
+                SimpleNamespace(window_id=window["window_id"])
+                for window in ordered_windows
+            ]
+        )
+
+    def _fake_assign_tiers(ordered_candidates, **_kwargs):
+        captured_assign_candidates.extend(
+            (candidate.handle.session_id, int(candidate.window_id))
+            for candidate in ordered_candidates
+        )
+        return [
+            SimpleNamespace(
+                candidate=candidate,
+                tier=SimpleNamespace(value="hot" if idx == 0 else "warm"),
+                rank=idx,
+            )
+            for idx, candidate in enumerate(ordered_candidates)
+        ]
+
+    import chuk_lazarus.session_retrieval as session_retrieval
+    import chuk_lazarus.session_retrieval.enumeration as enumeration
+
+    monkeypatch.setattr(_imc, "_build_activation_query_vector", lambda *_a, **_kw: [0.0, 1.0])
+    monkeypatch.setattr(enumeration, "load_store", lambda _handle: FakeStore())
+    monkeypatch.setattr(_imc, "central_route_chat_windows", _fake_central_route_chat_windows)
+    monkeypatch.setattr(
+        session_retrieval,
+        "asi_route_candidates",
+        lambda *_args, **_kwargs: candidates,
+    )
+    monkeypatch.setattr(session_retrieval, "assign_tiers", _fake_assign_tiers)
+
+    meta = chat.kv_query_turn("central route the memory facts")
+
+    route_windows = captured_route["route_windows"]
+    assert captured_route["kwargs"]["activation_query_vector"] == [0.0, 1.0]
+    assert captured_route["kwargs"]["ranking_policy"] == "utility-v2"
+    assert captured_route["kwargs"]["rrf_k"] == 60.0
+    assert captured_route["kwargs"]["candidate_pool"] == 12
+    assert route_windows[1]["metadata"]["session_id"] == "central-b"
+    assert route_windows[1]["metadata"]["original_window_id"] == 7
+    assert route_windows[1]["metadata"]["raw_router_score"] == 0.3
+    assert route_windows[1]["metadata"]["raw_tfidf_score_pre_normalization"] == 1.5
+    assert route_windows[1]["metadata"]["literal_score"] == 0.2
+    assert route_windows[1]["metadata"]["entity_score"] == 0.3
+    assert route_windows[1]["metadata"]["dense_score"] == 0.4
+    assert route_windows[1]["metadata"]["activation_score"] == 0.9
+    assert route_windows[1]["metadata"]["rrf_score"] == 0.15
+    assert route_windows[1]["metadata"]["relevance_score"] == 0.8
+    assert route_windows[1]["metadata"]["freshness_score"] == 0.9
+    assert route_windows[1]["metadata"]["learned_reward"] == 0.4
+    assert route_windows[1]["metadata"]["estimated_cost"] == 0.2
+    assert route_windows[1]["metadata"]["utility_score"] == 0.95
+    assert route_windows[1]["metadata"]["lexical_rank"] == 1
+    assert route_windows[1]["metadata"]["dense_rank"] == 1
+    assert route_windows[1]["metadata"]["literal_rank"] == 1
+    assert route_windows[1]["metadata"]["entity_rank"] == 1
+    assert route_windows[1]["metadata"]["activation_rank"] == 1
+    assert route_windows[1]["metadata"]["content_fingerprint"] == "fp-b"
+    assert route_windows[1]["metadata"]["selector_telemetry"] == {
+        "apollo": "b",
+        "activation_rank": 1,
+    }
+    assert captured_assign_candidates == [("central-b", 7), ("central-a", 3)]
+    assert retriever.captured_assignments == [("central-b", 7), ("central-a", 3)]
+    assert meta.mode == "kv_direct"
+    assert meta.selected_tier == "hot"
+    assert meta.no_silent_fallback is True
 
 
 def test_kv_query_turn_preserves_natural_multi_session_assignments(

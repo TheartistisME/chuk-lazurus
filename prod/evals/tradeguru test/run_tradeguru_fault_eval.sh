@@ -24,6 +24,50 @@ HOT_BUDGET_MIB="${TRADEGURU_HOT_BUDGET_MIB:-512}"
 CANDIDATE_POOL="${TRADEGURU_CANDIDATE_POOL:-32}"
 K_HOT="${TRADEGURU_K_HOT:-4}"
 K_WARM="${TRADEGURU_K_WARM:-8}"
+SELECTOR_POLICY="${TRADEGURU_SELECTOR_POLICY:-utility-v2}"
+DENSE_SCORING="${TRADEGURU_DENSE_SCORING:-deterministic}"
+RRF_K="${TRADEGURU_RRF_K:-60}"
+MMR_LAMBDA="${TRADEGURU_MMR_LAMBDA:-0.75}"
+SELECTOR_BUDGET="${TRADEGURU_SELECTOR_BUDGET:-$((K_HOT + K_WARM))}"
+
+# Router penalty for catalog/"Example Queries" TOC-index windows. These match
+# keyword-rich queries via TF-IDF but inject low-value context into KV memory.
+# Penalising them surfaces procedural windows ("Step-by-Step", "Key Lessons",
+# "Safety Notes", "Pro Tips") instead. Override to 0 to disable. Default ON
+# because the 20260428T092804Z eval showed top-rank TOC-index hits driving
+# memory_on regression vs memory_off.
+TRADEGURU_TOC_INDEX_PENALTY="${TRADEGURU_TOC_INDEX_PENALTY:-5.0}"
+export LAZARUS_ROUTER_TOC_INDEX_PENALTY="${LAZARUS_ROUTER_TOC_INDEX_PENALTY:-${TRADEGURU_TOC_INDEX_PENALTY}}"
+# TOC-index detection requires decoded window text during scoring; force decode
+# so the penalty applies before tier assignment.
+export LAZARUS_ASI_DECODE_FOR_SELECTOR="${LAZARUS_ASI_DECODE_FOR_SELECTOR:-1}"
+# When KV-direct memory_on falls through the synthesise_* paths (no color/value
+# extraction match), the retriever's _generate_with_semantic_token_prefix path
+# defaults to a hardcoded "be concise" system prompt that was authored for
+# value-extraction tests. For procedural / safety-critical electrical
+# fault-finding answers this destroys ordered test sequences and skips safety
+# preambles, regressing memory_on vs memory_off. Honour the caller-supplied
+# system prompt (passed by scripts/evaluate_tradeguru_fault_memory.py via
+# SessionRetriever.system_prompt = SYSTEM_PROMPT) so the safety-first task
+# semantics survive into the prefix decode. Diagnosis: grade
+# 20260428T115132Z showed memory_on correct_test_order=1/8 and
+# safety_controls_present=2/8 while memory_off was 6/8 and 8/8 with the same
+# question set. Override to 0 to restore the legacy "be concise" prefix prompt.
+export LAZARUS_KV_SEMANTIC_PREFIX_USE_CALLER_SYSTEM_PROMPT="${LAZARUS_KV_SEMANTIC_PREFIX_USE_CALLER_SYSTEM_PROMPT:-1}"
+# Iteration-2 honoured the caller's safety-first system prompt on the prefix
+# decode path, but iteration-3 grade 20260428T124342Z showed memory_on still
+# trailing memory_off (-0.25 lift) because the model was spending the entire
+# max_new_tokens=240 budget on a verbose 4-bullet safety preamble (PPE / LOTO
+# / isolate / prove dead) and never reaching the diagnostic content. All
+# memory_on answers truncated mid-sentence in the "Phase 1" header,
+# regressing both correct_test_order (5/8) and uses_document_specific_details
+# (6/8) versus memory_off (6/8 and 7/8). Prepend a short RAG directive to the
+# caller-supplied prompt that asks the model to ground in document
+# terminology and keep any preamble brief (1-2 sentences). The directive is
+# task-agnostic (no rubric vocabulary), preserves the caller's safety
+# semantics verbatim, and is opt-in via env flag. Override to 0 to restore
+# the iteration-2 behaviour (caller prompt verbatim with no directive).
+export LAZARUS_KV_SEMANTIC_PREFIX_GROUND_IN_DOCUMENT="${LAZARUS_KV_SEMANTIC_PREFIX_GROUND_IN_DOCUMENT:-1}"
 
 usage() {
   cat <<'USAGE'
@@ -40,6 +84,9 @@ Environment overrides:
   TRADEGURU_MODEL              HF model id or local model path.
   TRADEGURU_DEVICE             auto, cuda, or cpu.
   TRADEGURU_IMPORT_MODE        append (default) or force.
+  TRADEGURU_SELECTOR_POLICY    utility-v2 (default), rank-v1, or hybrid-v2.
+  TRADEGURU_DENSE_SCORING      deterministic (default), off, auto, or provided.
+  TRADEGURU_SELECTOR_BUDGET    Active HOT/WARM selector budget, default K_HOT+K_WARM.
   TRADEGURU_EXTRA_SOURCE       Optional fourth source directory for noise builds.
 USAGE
 }
@@ -126,7 +173,12 @@ eval_store() {
       --hot-budget-mib "${HOT_BUDGET_MIB}" \
       --candidate-pool "${CANDIDATE_POOL}" \
       --k-hot "${K_HOT}" \
-      --k-warm "${K_WARM}"
+      --k-warm "${K_WARM}" \
+      --selector-policy "${SELECTOR_POLICY}" \
+      --dense-scoring "${DENSE_SCORING}" \
+      --rrf-k "${RRF_K}" \
+      --mmr-lambda "${MMR_LAMBDA}" \
+      --selector-budget "${SELECTOR_BUDGET}"
   ) 2>&1 | tee "${LOG_ROOT}/eval_${stamp}.log"
 }
 
@@ -147,7 +199,12 @@ dry_run() {
     uv run --extra dev python scripts/evaluate_tradeguru_fault_memory.py \
       --dry-run \
       --store-root "${STORE_ROOT}" \
-      --conditions "${CONDITIONS}"
+      --conditions "${CONDITIONS}" \
+      --selector-policy "${SELECTOR_POLICY}" \
+      --dense-scoring "${DENSE_SCORING}" \
+      --rrf-k "${RRF_K}" \
+      --mmr-lambda "${MMR_LAMBDA}" \
+      --selector-budget "${SELECTOR_BUDGET}"
   )
 }
 
@@ -156,6 +213,7 @@ inspect_store() {
   echo "[tradeguru] store root   : ${STORE_ROOT}"
   echo "[tradeguru] results root : ${RESULTS_ROOT}"
   echo "[tradeguru] logs root    : ${LOG_ROOT}"
+  echo "[tradeguru] selector     : ${SELECTOR_POLICY} dense=${DENSE_SCORING} budget=${SELECTOR_BUDGET}"
   if [[ -d "${STORE_ROOT}" ]]; then
     echo "[tradeguru] store size   : $(du -sh "${STORE_ROOT}" | awk '{print $1}')"
     echo "[tradeguru] sessions     : $(find "${STORE_ROOT}" -path '*/torch_store/manifest.json' | wc -l)"

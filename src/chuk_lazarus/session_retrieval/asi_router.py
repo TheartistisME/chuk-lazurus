@@ -746,6 +746,75 @@ def _has_activation_routes(handle: CheckpointHandle) -> bool:
     return isinstance(activation_meta, dict) and bool(activation_meta.get("path"))
 
 
+def _flatten_activation_vector(value: Any) -> list[float]:
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if (
+        isinstance(value, (list, tuple))
+        and len(value) == 1
+        and isinstance(value[0], (list, tuple))
+    ):
+        value = value[0]
+    return [float(item) for item in value]
+
+
+def _blend_activation_query_vector(query_vec: Any, window_vec: Any) -> Any:
+    """Blend query and first-hop route vectors without changing top-k mechanics."""
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - activation_topk itself requires torch
+        query = _flatten_activation_vector(query_vec)
+        window = _flatten_activation_vector(window_vec)
+        if len(query) != len(window):
+            raise ValueError(
+                "recursive activation query/window dimensions differ: "
+                f"query={len(query)} window={len(window)}"
+            ) from exc
+        return [(q + w) / 2.0 for q, w in zip(query, window)]
+
+    query = query_vec if torch.is_tensor(query_vec) else torch.as_tensor(query_vec)
+    window = window_vec if torch.is_tensor(window_vec) else torch.as_tensor(window_vec)
+    if query.ndim == 2 and int(query.shape[0]) == 1:
+        query = query.squeeze(0)
+    if window.ndim == 2 and int(window.shape[0]) == 1:
+        window = window.squeeze(0)
+    if query.ndim != 1:
+        raise ValueError(f"query_vec must be rank 1 after squeeze, got {tuple(query.shape)}")
+    if window.ndim != 1:
+        raise ValueError(f"window_vec must be rank 1 after squeeze, got {tuple(window.shape)}")
+    if int(query.shape[0]) != int(window.shape[0]):
+        raise ValueError(
+            "recursive activation query/window dimensions differ: "
+            f"query={int(query.shape[0])} window={int(window.shape[0])}"
+        )
+    query = query.to(device=window.device, dtype=torch.float32)
+    window = window.to(dtype=torch.float32)
+    return (query + window) / 2.0
+
+
+def _recursive_activation_topk(
+    query_vec: Any,
+    window_matrix: Any,
+    *,
+    top_k: int,
+) -> tuple[Any, Any]:
+    """Two-pass activation routing: first hop, blended query, final top-k."""
+    first_indices, _first_values = activation_topk(query_vec, window_matrix, top_k=1)
+    first_index_list = first_indices.tolist()
+    if not first_index_list:
+        return activation_topk(query_vec, window_matrix, top_k=top_k)
+    first_window_id = int(first_index_list[0])
+    try:
+        first_window_vec = window_matrix[first_window_id]
+    except Exception as exc:
+        raise RuntimeError(
+            "asi_route_candidates: failed to read first-hop activation route "
+            f"row {first_window_id}"
+        ) from exc
+    blended_query_vec = _blend_activation_query_vector(query_vec, first_window_vec)
+    return activation_topk(blended_query_vec, window_matrix, top_k=top_k)
+
+
 def _score_activation_windows(
     handles: Sequence[CheckpointHandle],
     activation_query_vector: Any,
@@ -755,6 +824,7 @@ def _score_activation_windows(
     *,
     candidate_pool: int,
     decode_window_text: bool = False,
+    recursive_mode: bool = False,
 ) -> list[_WindowScoreRow]:
     """Score activation-backed stores via activation_routes.npy cosine top-k."""
     raw: list[_WindowScoreRow] = []
@@ -780,11 +850,18 @@ def _score_activation_windows(
         route_count = int(getattr(route_matrix, "shape", [0])[0] or 0)
         if route_count <= 0:
             continue
-        indices, values = activation_topk(
-            activation_query_vector,
-            route_matrix,
-            route_count,
-        )
+        if recursive_mode:
+            indices, values = _recursive_activation_topk(
+                activation_query_vector,
+                route_matrix,
+                top_k=max(1, int(candidate_pool)),
+            )
+        else:
+            indices, values = activation_topk(
+                activation_query_vector,
+                route_matrix,
+                route_count,
+            )
 
         store_keywords: dict[int, list[str]] = getattr(store, "keywords", {}) or {}
         store_metadata: dict[int, dict[str, Any]] = getattr(store, "window_metadata", {}) or {}
@@ -1061,6 +1138,7 @@ def asi_route_candidates(
     dense_scoring: str | None = None,
     dense_query_vector: Sequence[float] | None = None,
     activation_query_vector: Any | None = None,
+    recursive_mode: bool = False,
     dense_window_vectors: Any = None,
     rrf_k: float = DEFAULT_RRF_K,
     ranking_policy: str | None = None,
@@ -1081,6 +1159,13 @@ def asi_route_candidates(
     fallback, RRF, freshness, learned reward, and cost. State is NOT persisted
     here. ``exploration_ratio`` / ``exploitation_ratio`` are retained for
     signature parity; downstream axes consume them for tiering.
+
+    ``recursive_mode=False`` preserves the legacy activation path exactly:
+    activation stores ask :func:`activation_topk` for ``route_count`` rows and
+    then merge those scores into the normal hybrid ranking. When
+    ``recursive_mode=True``, activation routing runs a first-hop top-1 lookup,
+    blends that route vector with the original query vector, and reruns
+    :func:`activation_topk` capped by ``candidate_pool``.
     """
     if ucb1_c < 0.0:
         raise ValueError(f"ucb1_c must be >= 0, got {ucb1_c}")
@@ -1171,6 +1256,7 @@ def asi_route_candidates(
             tokenizer,
             candidate_pool=candidate_pool,
             decode_window_text=should_decode,
+            recursive_mode=bool(recursive_mode),
         )
         activation_scores = {
             (row.session_id, row.window_id): float(row.activation_score)

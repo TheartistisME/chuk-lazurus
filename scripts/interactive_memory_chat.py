@@ -124,6 +124,7 @@ import atexit
 import inspect
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -132,9 +133,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
+
+try:
+    from transformers import LogitsProcessor
+except Exception:  # noqa: BLE001 - keep lightweight unit imports working.
+    class LogitsProcessor:  # type: ignore[no-redef]
+        def __call__(self, input_ids: Any, scores: Any) -> Any:
+            return scores
 
 from chuk_lazarus.memory_config import (
+    DynamicAllocatorConfig,
     MemoryRecallConfig,
     get_memory_profile_names,
     memory_config_env,
@@ -144,6 +153,14 @@ from chuk_lazarus.repl_agent_tools import (
     LocalCodingToolRunner,
     extract_tool_calls,
     format_tool_results,
+)
+
+from central_router_bridge import (
+    DURABLE_CHAT_MEMORY,
+    add_router_backend_argument,
+    central_route_plan,
+    is_central_backend,
+    ordered_candidate_ids,
 )
 
 # LiveIndexer replaces the subprocess `invoke_build` call at runtime. The
@@ -170,6 +187,7 @@ KV_QUERY_USAGE = (
     "/kv_query --insertion-family sliding "
     "--sliding-layer-indices 13,15 "
     "--sliding-head-indices 0,7 "
+    "--task-type BUILDER "
     "<text>"
 )
 HELP_TEXT = """Interactive memory chat commands
@@ -226,10 +244,46 @@ DIRTY_FLAG_FILENAME = ".dirty"
 # by score and truncates from the bottom. Override with
 # LAZARUS_MAX_TOTAL_INJECT_TOKENS for deployment or proof harness tuning.
 MAX_TOTAL_INJECT_TOKENS = 4096
+DEFAULT_ACTIVATION_GATE_THRESHOLD = 0.45
+BUILDER_DIFF_PROTOCOL_CONSTRAINT = (
+    "CRITICAL: Do not rewrite the entire file. You must only output the exact "
+    "lines to be replaced using a strict SEARCH/REPLACE block format: "
+    "<<<< SEARCH [old lines] ==== REPLACE [new lines] >>>>."
+)
+TASK_TYPES = ("DETECTIVE", "PARSER", "BUILDER", "REASONER")
+IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 
 
 class NoRelevantMemory(RuntimeError):
     """Ordinary auto-recall miss, not a diagnostics failure."""
+
+
+def central_route_chat_windows(
+    query_text: str,
+    windows: list[dict[str, Any]],
+    *,
+    ranking_policy: str | None = None,
+    activation_query_vector: Sequence[float] | None = None,
+    dense_query_vector: Sequence[float] | None = None,
+    activation_gate_threshold: float | None = None,
+    rrf_k: float | None = None,
+    candidate_pool: int | None = None,
+) -> Any:
+    """Route chat/user memory windows through the shared David router."""
+
+    return central_route_plan(
+        query=query_text,
+        capability_mode=DURABLE_CHAT_MEMORY,
+        windows=windows,
+        scope_key="interactive_chat",
+        metadata={"benchmark": "interactive_chat"},
+        ranking_policy=ranking_policy,
+        activation_query_vector=activation_query_vector,
+        dense_query_vector=dense_query_vector,
+        activation_gate_threshold=activation_gate_threshold,
+        rrf_k=rrf_k,
+        candidate_pool=candidate_pool,
+    )
 
 
 def _asi_feedback_reward(
@@ -284,6 +338,212 @@ def _env_truthy(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _activation_gate_threshold() -> float:
+    raw_value = os.environ.get(
+        "LAZARUS_ASI_ACTIVATION_GATE_THRESHOLD",
+        str(DEFAULT_ACTIVATION_GATE_THRESHOLD),
+    )
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError):
+        return float(DEFAULT_ACTIVATION_GATE_THRESHOLD)
+
+
+def _candidate_activation_score(candidate: Any) -> float:
+    score = getattr(candidate, "activation_score", None)
+    if score is None:
+        telemetry = getattr(candidate, "selector_telemetry", None) or {}
+        if isinstance(telemetry, dict):
+            score = telemetry.get("activation_score", 0.0)
+    try:
+        return float(score)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _candidate_selector_telemetry(candidate: Any) -> dict[str, Any]:
+    telemetry = getattr(candidate, "selector_telemetry", None) or {}
+    return dict(telemetry) if isinstance(telemetry, dict) else {}
+
+
+def _candidate_metadata_value(candidate: Any, key: str, default: Any = None) -> Any:
+    value = getattr(candidate, key, None)
+    if value is not None:
+        return value
+    return _candidate_selector_telemetry(candidate).get(key, default)
+
+
+def _routing_gate_allows_candidates(candidates: list[Any]) -> bool:
+    top_tfidf_score = max(
+        (
+            float(getattr(candidate, "raw_tfidf_score_pre_normalization", 1.0) or 0.0)
+            for candidate in candidates
+        ),
+        default=0.0,
+    )
+    if top_tfidf_score > 0.0:
+        return True
+    top_activation_score = max(
+        (_candidate_activation_score(candidate) for candidate in candidates),
+        default=0.0,
+    )
+    return top_activation_score >= _activation_gate_threshold()
+
+
+def _encode_activation_query_ids(tokenizer: Any, text: str) -> list[int]:
+    if hasattr(tokenizer, "encode"):
+        try:
+            encoded = tokenizer.encode(text, add_special_tokens=False)
+        except TypeError:
+            encoded = tokenizer.encode(text)
+    else:
+        encoded_obj = tokenizer(text, add_special_tokens=False)
+        encoded = getattr(encoded_obj, "input_ids", encoded_obj)
+    return [int(token_id) for token_id in list(encoded)]
+
+
+def _token_ids(tokenizer: Any, text: str) -> list[int]:
+    if hasattr(tokenizer, "encode"):
+        try:
+            encoded = tokenizer.encode(text, add_special_tokens=False)
+        except TypeError:
+            encoded = tokenizer.encode(text)
+    else:
+        encoded_obj = tokenizer(text, add_special_tokens=False)
+        encoded = getattr(encoded_obj, "input_ids", encoded_obj)
+    return [int(token_id) for token_id in list(encoded or [])]
+
+
+def _estimate_prompt_tokens(tokenizer: Any, text: str) -> int:
+    try:
+        return len(_token_ids(tokenizer, text))
+    except Exception:  # noqa: BLE001 - tokenizer wrappers vary in tests.
+        return max(1, len(str(text).split()))
+
+
+def _normalize_task_type(task_type: str | None) -> str:
+    normalized = str(task_type or "BUILDER").strip().upper()
+    if normalized not in TASK_TYPES:
+        return "BUILDER"
+    return normalized
+
+
+def _anchor_query_for_task(query_text: str, task_type: str) -> str:
+    if task_type == "DETECTIVE":
+        return f"[EVALUATE LOGIC CHAIN]: {query_text}"
+    if task_type == "BUILDER":
+        return f"<dependency_context_loaded>\n<PATCH_GENERATION_START>\n{query_text}"
+    return query_text
+
+
+def _is_code_like_identifier(token_text: str) -> bool:
+    stripped = token_text.strip().lstrip("▁Ġ")
+    if not IDENTIFIER_RE.fullmatch(stripped):
+        return False
+    return (
+        "_" in stripped
+        or any(char.isdigit() for char in stripped)
+        or (
+            any(char.islower() for char in stripped)
+            and any(char.isupper() for char in stripped)
+        )
+        or stripped.startswith("__")
+    )
+
+
+class DependencyLogitsProcessor(LogitsProcessor):
+    """Conservatively down-rank code-like identifiers absent from HOT context."""
+
+    def __init__(self, safe_token_ids: set[int], tokenizer: Any | None = None) -> None:
+        self.safe_token_ids = {int(token_id) for token_id in safe_token_ids}
+        self.unsafe_token_ids: set[int] = set()
+        if tokenizer is None:
+            return
+        vocab: dict[str, int] = {}
+        try:
+            vocab = dict(tokenizer.get_vocab())
+        except Exception:  # noqa: BLE001 - tokenizer doubles often omit vocab.
+            vocab = {}
+        for token_text, token_id in vocab.items():
+            normalized_id = int(token_id)
+            if normalized_id in self.safe_token_ids:
+                continue
+            if _is_code_like_identifier(str(token_text)):
+                self.unsafe_token_ids.add(normalized_id)
+
+    def __call__(self, input_ids: Any, scores: Any) -> Any:
+        del input_ids
+        if not self.unsafe_token_ids:
+            return scores
+        try:
+            vocab_size = int(scores.shape[-1])
+            unsafe_ids = [
+                token_id for token_id in self.unsafe_token_ids if 0 <= token_id < vocab_size
+            ]
+            if not unsafe_ids:
+                return scores
+            scores[..., unsafe_ids] = scores[..., unsafe_ids] - 100.0
+        except Exception:  # noqa: BLE001 - logits processors must be non-fatal here.
+            return scores
+        return scores
+
+
+def _extract_identifiers(text: str) -> set[str]:
+    return {match.group(0) for match in IDENTIFIER_RE.finditer(text or "")}
+
+
+def _safe_identifier_token_ids(tokenizer: Any, hot_window_texts: list[str]) -> set[int]:
+    identifiers: set[str] = set()
+    for window_text in hot_window_texts:
+        identifiers.update(_extract_identifiers(window_text))
+    safe_ids: set[int] = set()
+    for identifier in identifiers:
+        for variant in (identifier, f" {identifier}"):
+            try:
+                safe_ids.update(_token_ids(tokenizer, variant))
+            except Exception:  # noqa: BLE001 - ignore tokenizer edge cases.
+                continue
+    return safe_ids
+
+
+def _build_activation_query_vector(
+    model: Any,
+    tokenizer: Any,
+    query_text: str,
+    *,
+    device: str | Any | None = None,
+    crystal_layer: int = 13,
+) -> Any | None:
+    if model is None or tokenizer is None:
+        return None
+    token_ids = _encode_activation_query_ids(tokenizer, query_text)
+    if not token_ids:
+        return None
+
+    import torch
+
+    from chuk_lazarus.inference.context.knowledge.activation_routes import mean_pool_hidden
+    from chuk_lazarus.inference.context.knowledge.torch_capture import (
+        capture_post_crystal_boundary,
+    )
+
+    _boundary, stream = capture_post_crystal_boundary(
+        model,
+        token_ids,
+        crystal_layer=int(crystal_layer),
+        device=device,
+        return_stream=True,
+    )
+    seq_len = int(stream.shape[-2])
+    attention_mask = torch.ones(seq_len, dtype=torch.long, device=stream.device)
+    return mean_pool_hidden(
+        stream,
+        attention_mask,
+        normalize=True,
+        out_dtype=torch.float32,
+    )
+
+
 def rule(char: str = "─") -> str:
     return char * HEADER_W
 
@@ -322,6 +582,7 @@ def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
     insertion_family: KVInsertionFamily = "full_attention"
     sliding_layer_indices: tuple[int, ...] | None = None
     sliding_head_indices: tuple[int, ...] | None = None
+    task_type: str | None = None
     query_tokens: list[str] = []
     idx = 0
     while idx < len(tokens):
@@ -350,6 +611,11 @@ def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
             if idx >= len(tokens):
                 raise ValueError(f"{token} requires a value ({KV_QUERY_USAGE})")
             sliding_head_indices = _parse_csv_int_tuple(tokens[idx], option_name=token)
+        elif token == "--task-type":
+            idx += 1
+            if idx >= len(tokens):
+                raise ValueError(f"{token} requires a value ({KV_QUERY_USAGE})")
+            task_type = _normalize_task_type(tokens[idx])
         else:
             raise ValueError(f"unrecognized /kv_query option {token!r}")
         idx += 1
@@ -374,11 +640,15 @@ def _parse_kv_query_args(raw_arg: str) -> tuple[str, dict[str, Any]]:
     if not query_text:
         raise ValueError(KV_QUERY_USAGE)
 
-    return query_text, {
+    options: dict[str, Any] = {
         "insertion_family": insertion_family,
         "sliding_layer_indices": sliding_layer_indices,
         "sliding_head_indices": sliding_head_indices,
     }
+    if task_type is not None:
+        options["task_type"] = task_type
+
+    return query_text, options
 
 
 def _select_kv_direct_kwargs(
@@ -603,6 +873,8 @@ class MemoryChat:
         agent_tools_timeout: int = 30,
         agent_tools_max_steps: int = 4,
         agent_tools_custom_dir: Path | None = None,
+        memory_task_type: str | None = None,
+        memory_router_backend: str = "native",
     ) -> None:
         self.store_root = Path(store_root)
         self.inputs_root = self.store_root / "inputs"
@@ -630,6 +902,10 @@ class MemoryChat:
             )
         self.memory_profile = memory_config.profile
         self.memory_config = memory_config
+        self.memory_task_type = _normalize_task_type(
+            memory_task_type or os.environ.get("LAZARUS_MEMORY_TASK_TYPE", "BUILDER")
+        )
+        self.memory_router_backend = str(memory_router_backend or "native")
 
         self.model_path = model_path
         self.max_new_tokens = max_new_tokens
@@ -738,6 +1014,89 @@ class MemoryChat:
                     os.environ[key] = value
 
     # ── machinery loaders ──────────────────────────────────────────────────
+
+    def _hot_window_texts(self, assignments: list[Any]) -> list[str]:
+        from chuk_lazarus.session_retrieval.enumeration import load_store
+
+        texts: list[str] = []
+        for assignment in assignments:
+            if str(getattr(assignment.tier, "value", assignment.tier)) != "hot":
+                continue
+            candidate = assignment.candidate
+            try:
+                store = load_store(candidate.handle)
+                texts.append(
+                    store.get_window_text(
+                        int(candidate.window_id),
+                        self.retriever.tokenizer,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - optional guard context.
+                info(f"  dependency logits safe-id extraction skipped window: {exc!r}")
+        return texts
+
+    def _dependency_logits_processor_for(
+        self,
+        assignments: list[Any],
+    ) -> DependencyLogitsProcessor | None:
+        if self.retriever is None:
+            return None
+        runtime = getattr(self.retriever, "runtime", None)
+        if not callable(getattr(runtime, "_sample_next_token", None)):
+            return None
+        safe_token_ids = _safe_identifier_token_ids(
+            self.retriever.tokenizer,
+            self._hot_window_texts(assignments),
+        )
+        if not safe_token_ids:
+            return None
+        processor = DependencyLogitsProcessor(
+            safe_token_ids,
+            tokenizer=self.retriever.tokenizer,
+        )
+        if not processor.unsafe_token_ids:
+            return None
+        return processor
+
+    @contextmanager
+    def _temporary_dependency_logits_processor(
+        self,
+        processor: DependencyLogitsProcessor | None,
+    ):
+        runtime = getattr(self.retriever, "runtime", None) if self.retriever is not None else None
+        original_sampler = getattr(runtime, "_sample_next_token", None)
+        if processor is None or not callable(original_sampler):
+            yield
+            return
+
+        def _sample_next_token_with_dependencies(logits: Any, config: Any) -> Any:
+            adjusted_logits = processor(None, logits)
+            return original_sampler(adjusted_logits, config)
+
+        runtime._sample_next_token = _sample_next_token_with_dependencies
+        try:
+            yield
+        finally:
+            runtime._sample_next_token = original_sampler
+
+    @contextmanager
+    def _temporary_retriever_system_prompt_constraint(self, task_type: str):
+        if self.retriever is None or task_type != "BUILDER":
+            yield
+            return
+        current_prompt = getattr(self.retriever, "system_prompt", "")
+        if BUILDER_DIFF_PROTOCOL_CONSTRAINT in str(current_prompt):
+            yield
+            return
+        self.retriever.system_prompt = (
+            str(current_prompt).rstrip()
+            + "\n\n"
+            + BUILDER_DIFF_PROTOCOL_CONSTRAINT
+        ).strip()
+        try:
+            yield
+        finally:
+            self.retriever.system_prompt = current_prompt
 
     def load_model(self) -> None:
         info(f"loading model (device={self.device}) — first load is slow…")
@@ -1379,6 +1738,132 @@ class MemoryChat:
             )
         return kept
 
+    def _central_order_memory_candidates(
+        self,
+        query_text: str,
+        candidates: list[Any],
+        *,
+        activation_query_vector: Sequence[float] | None = None,
+        dense_query_vector: Sequence[float] | None = None,
+        ranking_policy: str | None = None,
+        activation_gate_threshold: float | None = None,
+        rrf_k: float | None = None,
+        candidate_pool: int | None = None,
+    ) -> list[Any]:
+        if not candidates:
+            return candidates
+        from chuk_lazarus.session_retrieval.enumeration import load_store
+
+        route_windows: list[dict[str, Any]] = []
+        by_route_id: dict[str, Any] = {}
+        for index, candidate in enumerate(candidates):
+            handle = candidate.handle
+            session_id = str(getattr(handle, "session_id", ""))
+            window_id = int(getattr(candidate, "window_id", index))
+            route_id = f"{session_id}:{window_id}:{index}"
+            try:
+                store = load_store(handle)
+                window_text = store.get_window_text(window_id, self.retriever.tokenizer)
+            except Exception:
+                window_text = ""
+            by_route_id[route_id] = candidate
+            activation_score = _candidate_activation_score(candidate)
+            selector_telemetry = _candidate_selector_telemetry(candidate)
+            asi_metadata = {
+                "session_id": session_id,
+                "original_window_id": window_id,
+                "window_id": window_id,
+                "activation_score": activation_score,
+                "raw_router_score": _candidate_metadata_value(candidate, "raw_router_score"),
+                "raw_tfidf_score_pre_normalization": _candidate_metadata_value(
+                    candidate,
+                    "raw_tfidf_score_pre_normalization",
+                ),
+                "literal_score": _candidate_metadata_value(candidate, "literal_score"),
+                "entity_score": _candidate_metadata_value(candidate, "entity_score"),
+                "lexical_score": _candidate_metadata_value(candidate, "lexical_score"),
+                "dense_score": _candidate_metadata_value(candidate, "dense_score"),
+                "rrf_score": _candidate_metadata_value(candidate, "rrf_score"),
+                "relevance_score": _candidate_metadata_value(candidate, "relevance_score"),
+                "freshness_score": _candidate_metadata_value(candidate, "freshness_score"),
+                "learned_reward": _candidate_metadata_value(candidate, "learned_reward"),
+                "estimated_cost": _candidate_metadata_value(candidate, "estimated_cost"),
+                "utility_score": _candidate_metadata_value(candidate, "utility_score"),
+                "lexical_rank": _candidate_metadata_value(candidate, "lexical_rank"),
+                "dense_rank": _candidate_metadata_value(candidate, "dense_rank"),
+                "literal_rank": _candidate_metadata_value(candidate, "literal_rank"),
+                "entity_rank": _candidate_metadata_value(candidate, "entity_rank"),
+                "activation_rank": _candidate_metadata_value(candidate, "activation_rank"),
+                "content_fingerprint": _candidate_metadata_value(candidate, "content_fingerprint", ""),
+                "selector_telemetry": selector_telemetry,
+            }
+            dense_vector = _candidate_metadata_value(candidate, "dense_vector")
+            if dense_vector is not None:
+                try:
+                    has_dense_vector = len(dense_vector) > 0
+                except TypeError:
+                    has_dense_vector = True
+                if has_dense_vector:
+                    asi_metadata["dense_vector"] = dense_vector
+            activation_route_vector = _candidate_metadata_value(candidate, "activation_route_vector")
+            if activation_route_vector is not None:
+                try:
+                    has_activation_route_vector = len(activation_route_vector) > 0
+                except TypeError:
+                    has_activation_route_vector = True
+                if has_activation_route_vector:
+                    asi_metadata["activation_route_vector"] = activation_route_vector
+            route_windows.append(
+                {
+                    "window_id": route_id,
+                    "text": window_text,
+                    "session_turn_index": int(
+                        _candidate_metadata_value(candidate, "session_turn_index", window_id)
+                        or window_id
+                    ),
+                    "memory_scope": "interactive_chat",
+                    "source_authority": "user",
+                    "metadata": dict(asi_metadata),
+                    "raw_router_score": asi_metadata["raw_router_score"],
+                    "relevance_score": asi_metadata["relevance_score"],
+                    "rrf_score": asi_metadata["rrf_score"],
+                    "utility_score": asi_metadata["utility_score"],
+                    "activation_score": asi_metadata["activation_score"],
+                    "activation_rank": asi_metadata["activation_rank"],
+                    "dense_score": asi_metadata["dense_score"],
+                    "dense_rank": asi_metadata["dense_rank"],
+                    "literal_score": asi_metadata["literal_score"],
+                    "literal_rank": asi_metadata["literal_rank"],
+                    "entity_score": asi_metadata["entity_score"],
+                    "entity_rank": asi_metadata["entity_rank"],
+                    "lexical_score": asi_metadata["lexical_score"],
+                    "lexical_rank": asi_metadata["lexical_rank"],
+                    "freshness_score": asi_metadata["freshness_score"],
+                    "learned_reward": asi_metadata["learned_reward"],
+                    "estimated_cost": asi_metadata["estimated_cost"],
+                    "content_fingerprint": asi_metadata["content_fingerprint"],
+                    "selector_telemetry": selector_telemetry,
+                }
+            )
+        plan = central_route_chat_windows(
+            query_text,
+            route_windows,
+            ranking_policy=ranking_policy,
+            activation_query_vector=activation_query_vector,
+            dense_query_vector=dense_query_vector,
+            activation_gate_threshold=activation_gate_threshold,
+            rrf_k=rrf_k,
+            candidate_pool=candidate_pool,
+        )
+        ordered = [
+            by_route_id[route_id]
+            for route_id in ordered_candidate_ids(plan)
+            if route_id in by_route_id
+        ]
+        seen = {id(candidate) for candidate in ordered}
+        ordered.extend(candidate for candidate in candidates if id(candidate) not in seen)
+        return ordered
+
     # ── axis-5 KV-direct recall turn ───────────────────────────────────────
 
     def memory_recall_turn(
@@ -1390,6 +1875,7 @@ class MemoryChat:
         sliding_head_indices: tuple[int, ...] | None = None,
         debug_command: bool = False,
         answer_prefix: str = "gemma",
+        task_type: str | None = None,
     ) -> TurnMetadata:
         """Run a single bounded KV-direct memory recall turn.
 
@@ -1436,9 +1922,15 @@ class MemoryChat:
         )
 
         config = self._current_memory_config()
-        candidate_pool = int(config.candidate_pool)
-        route_candidate_pool = int(config.route_candidate_pool)
-        k_hot = int(config.k_hot)
+        task_type = _normalize_task_type(
+            task_type or getattr(self, "memory_task_type", "BUILDER")
+        )
+        visible_query_text = _anchor_query_for_task(query_text, task_type)
+        prompt_length = _estimate_prompt_tokens(self.retriever.tokenizer, visible_query_text)
+        dynamic_max_k = DynamicAllocatorConfig.calculate_max_k(task_type, prompt_length)
+        candidate_pool = max(int(config.candidate_pool), dynamic_max_k)
+        route_candidate_pool = max(int(config.route_candidate_pool), candidate_pool)
+        k_hot = dynamic_max_k
         k_warm = int(config.k_warm)
         hot_budget_mib = int(config.hot_budget_mib)
         for env_key, env_value in memory_config_env(config).items():
@@ -1470,6 +1962,17 @@ class MemoryChat:
                 selector_budget = int(config.max_total_inject_tokens)
             else:
                 selector_budget = int(config.max_total_inject_tokens) // per_fact_cost
+            try:
+                activation_query_vector = _build_activation_query_vector(
+                    getattr(self, "model", None),
+                    self.retriever.tokenizer,
+                    query_text,
+                    device=getattr(self, "device", None),
+                    crystal_layer=13,
+                )
+            except Exception as exc:
+                activation_query_vector = None
+                info(f"  activation route query-vector unavailable: {exc!r}")
             candidates = asi_route_candidates(
                 self.retriever.handles,
                 query_text,
@@ -1477,8 +1980,10 @@ class MemoryChat:
                 candidate_pool=route_candidate_pool,
                 archive_root=feedback_archive_root,
                 dense_scoring=config.dense_scoring,
+                activation_query_vector=activation_query_vector,
                 rrf_k=float(config.rrf_k),
                 ranking_policy=config.selector_policy,
+                recursive_mode=True,
             )
             if bool(config.dedupe_sessions):
                 deduped = []
@@ -1508,18 +2013,18 @@ class MemoryChat:
                 candidates = filtered
             if not candidates:
                 raise NoRelevantMemory("asi_route_candidates returned no candidates")
-            top_raw_score = max(
-                float(
-                    getattr(
-                        candidate,
-                        "raw_tfidf_score_pre_normalization",
-                        1.0,
-                    )
-                )
-                for candidate in candidates
-            )
-            if top_raw_score <= 0.0:
+            if not _routing_gate_allows_candidates(list(candidates)):
                 raise NoRelevantMemory("routing found no relevant memory")
+            if is_central_backend(getattr(self, "memory_router_backend", "native")):
+                candidates = self._central_order_memory_candidates(
+                    query_text,
+                    list(candidates),
+                    activation_query_vector=activation_query_vector,
+                    ranking_policy=config.selector_policy,
+                    activation_gate_threshold=_activation_gate_threshold(),
+                    rrf_k=float(config.rrf_k),
+                    candidate_pool=candidate_pool,
+                )
             meta.candidate_count = int(len(candidates))
 
             tier_assignments = assign_tiers(
@@ -1588,37 +2093,50 @@ class MemoryChat:
                 "answer_with_kv_direct_multi",
                 None,
             )
-            if callable(answer_multi):
-                result = answer_multi(
-                    query_text,
-                    assignments_for_generation,
-                    hot_budget_mib=hot_budget_mib,
-                    warm_config=warm_config,
-                    generation_config=gen_config,
-                    **selector_kwargs,
-                )
-            else:
-                # Compatibility path for older retrievers and unit-test
-                # doubles. It intentionally preserves the old single-session
-                # materialization behaviour when the multi-handle API is not
-                # available.
-                top_handle = assignments_for_generation[0].candidate.handle
-                assignments_for_generation = [
-                    a
-                    for a in assignments_for_generation
-                    if a.candidate.handle.session_id == top_handle.session_id
-                ]
-                if not assignments_for_generation:
-                    raise RuntimeError("no tier assignments owned by top-ranked candidate's handle")
-                result = self.retriever.answer_with_kv_direct(
-                    query_text,
-                    assignments_for_generation,
-                    hot_budget_mib=hot_budget_mib,
-                    warm_config=warm_config,
-                    generation_config=gen_config,
-                    handle=top_handle,
-                    **selector_kwargs,
-                )
+            dependency_processor = (
+                self._dependency_logits_processor_for(assignments_for_generation)
+                if task_type == "BUILDER"
+                else None
+            )
+            # Route on the user's original request to avoid prompt-anchor words
+            # swamping retrieval; generation receives the anchored visible query.
+            with (
+                self._temporary_retriever_system_prompt_constraint(task_type),
+                self._temporary_dependency_logits_processor(dependency_processor),
+            ):
+                if callable(answer_multi):
+                    result = answer_multi(
+                        visible_query_text,
+                        assignments_for_generation,
+                        hot_budget_mib=hot_budget_mib,
+                        warm_config=warm_config,
+                        generation_config=gen_config,
+                        **selector_kwargs,
+                    )
+                else:
+                    # Compatibility path for older retrievers and unit-test
+                    # doubles. It intentionally preserves the old single-session
+                    # materialization behaviour when the multi-handle API is not
+                    # available.
+                    top_handle = assignments_for_generation[0].candidate.handle
+                    assignments_for_generation = [
+                        a
+                        for a in assignments_for_generation
+                        if a.candidate.handle.session_id == top_handle.session_id
+                    ]
+                    if not assignments_for_generation:
+                        raise RuntimeError(
+                            "no tier assignments owned by top-ranked candidate's handle"
+                        )
+                    result = self.retriever.answer_with_kv_direct(
+                        visible_query_text,
+                        assignments_for_generation,
+                        hot_budget_mib=hot_budget_mib,
+                        warm_config=warm_config,
+                        generation_config=gen_config,
+                        handle=top_handle,
+                        **selector_kwargs,
+                    )
         except (NoRelevantMemory, ValueError, RuntimeError) as exc:
             if (
                 feedback_archive_root is not None
@@ -1750,7 +2268,7 @@ class MemoryChat:
         gen_ids = self.tokenizer(result.generated_answer, add_special_tokens=False).input_ids
         meta.generated_tokens = len(gen_ids)
         # Prompt tokens approximation: system + query.
-        prompt_preview = (self.retriever.system_prompt or "") + "\n" + query_text
+        prompt_preview = (self.retriever.system_prompt or "") + "\n" + visible_query_text
         meta.prompt_tokens = len(self.tokenizer(prompt_preview, add_special_tokens=False).input_ids)
         meta.total_time = time.time() - t_total_start
         meta.generate_time = max(0.0, meta.total_time - meta.retrieve_time)
@@ -1788,6 +2306,7 @@ class MemoryChat:
         insertion_family: KVInsertionFamily = "full_attention",
         sliding_layer_indices: tuple[int, ...] | None = None,
         sliding_head_indices: tuple[int, ...] | None = None,
+        task_type: str | None = None,
     ) -> TurnMetadata:
         """Compatibility/debug wrapper for the historical /kv_query path."""
         return self.memory_recall_turn(
@@ -1797,6 +2316,7 @@ class MemoryChat:
             sliding_head_indices=sliding_head_indices,
             debug_command=True,
             answer_prefix="kv_direct",
+            task_type=task_type or "PARSER",
         )
 
     def _format_recent_history_for_routing(self, user_text: str, n_recent: int = 4) -> str:
@@ -2445,6 +2965,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Semantic prefix token budget.",
     )
     parser.add_argument(
+        "--memory-task-type",
+        choices=TASK_TYPES,
+        default=_normalize_task_type(os.environ.get("LAZARUS_MEMORY_TASK_TYPE", "BUILDER")),
+        help="Memory recall task type for dynamic K allocation and prompt anchors.",
+    )
+    add_router_backend_argument(
+        parser,
+        flag="--memory-router-backend",
+        dest="memory_router_backend",
+        help_text=(
+            "Memory routing backend for ASI candidate ordering. Defaults to native "
+            "so existing chat recall behavior is unchanged."
+        ),
+    )
+    parser.add_argument(
         "--memory-hot-budget-mib",
         "--hot-budget-mib",
         type=int,
@@ -2544,6 +3079,8 @@ def main(argv: list[str] | None = None) -> int:
         agent_tools_timeout=args.agent_tools_timeout,
         agent_tools_max_steps=args.agent_tools_max_steps,
         agent_tools_custom_dir=args.agent_tools_custom_dir,
+        memory_task_type=args.memory_task_type,
+        memory_router_backend=args.memory_router_backend,
     )
 
     try:

@@ -825,7 +825,13 @@ def materialize_kv_direct(
 
     per_slot_bytes = 2 * int(n_kv_heads) * int(head_dim) * int(itemsize)  # K + V
     budget_bytes = int(hot_budget_mib) * 1024 * 1024
-    max_slots = max(1, budget_bytes // per_slot_bytes)
+    budget_slot_capacity = budget_bytes // per_slot_bytes
+    if budget_slot_capacity < 2:
+        raise RuntimeError(
+            "materialize_kv_direct: hot_budget_mib is too small for the "
+            "reserved attention sink plus one memory slot."
+        )
+    max_slots = max(1, int(budget_slot_capacity) - 1)
 
     ordered_wids = list(residuals.per_window_residuals.keys())
 
@@ -897,7 +903,11 @@ def materialize_kv_direct(
             )
         slot_count = int(tensor.shape[0])
         chunks.append(tensor)
-        materialized_ranges[int(wid)] = (slot_offset, slot_offset + slot_count)
+        sink_offset = 1
+        materialized_ranges[int(wid)] = (
+            sink_offset + slot_offset,
+            sink_offset + slot_offset + slot_count,
+        )
         slot_offset += slot_count
 
     stacked = torch.cat(chunks, dim=0).unsqueeze(0)  # (1, N, hidden)
@@ -907,9 +917,21 @@ def materialize_kv_direct(
         with torch.no_grad():
             k_flat = k_proj(stacked)  # (1, N, n_kv_heads * head_dim)
             v_flat = v_proj(stacked)
+            null_k = torch.zeros(
+                (1, 1, int(n_kv_heads) * int(head_dim)),
+                device=k_flat.device,
+                dtype=k_flat.dtype,
+            )
+            null_v = torch.zeros(
+                (1, 1, int(n_kv_heads) * int(head_dim)),
+                device=v_flat.device,
+                dtype=v_flat.dtype,
+            )
+            k_flat = torch.cat([null_k, k_flat], dim=1)
+            v_flat = torch.cat([null_v, v_flat], dim=1)
 
     batch = 1
-    n_slots = int(stacked.shape[1])
+    n_slots = int(k_flat.shape[1])
     K = (
         k_flat.view(batch, n_slots, int(n_kv_heads), int(head_dim))
         .transpose(1, 2)

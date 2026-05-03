@@ -24,6 +24,15 @@ from chuk_lazarus.session_retrieval.temporal_ordinal import (
     sort_temporally,
 )
 
+from central_router_bridge import (
+    TEMPORAL_ORDINAL,
+    add_router_backend_argument,
+    candidate_scores_by_id,
+    central_route_plan,
+    is_central_backend,
+    tier_by_window_id,
+)
+
 REPORT_NAME = "mrcr_results_snapshot_2026-04-29.json"
 GOLIATH_REPORT_NAME = "comparative_performance_vs_gpt55.json"
 REPORT_CSV_NAME = "mrcr_results_snapshot_2026-04-29.csv"
@@ -506,6 +515,7 @@ def search_activation_routes(
     *,
     np: Any,
     chunk_size: int,
+    recursive_mode: bool = False,
 ) -> Any:
     if activation_index.route_count <= 0:
         return np.zeros(0, dtype=np.float32)
@@ -513,6 +523,16 @@ def search_activation_routes(
     if routes is None:
         routes = np.lib.format.open_memmap(activation_index.path, mode="r")
     query_vector = _semantic_vector_np(query_text, dim=activation_index.dim, np=np)
+    if recursive_mode:
+        first_scores = np.empty(int(activation_index.route_count), dtype=np.float32)
+        for offset in range(0, int(activation_index.route_count), int(chunk_size)):
+            end = min(offset + int(chunk_size), int(activation_index.route_count))
+            first_scores[offset:end] = routes[offset:end] @ query_vector
+        first_window_id = int(first_scores.argmax())
+        query_vector = (query_vector + routes[first_window_id]) / 2.0
+        norm = float(np.linalg.norm(query_vector))
+        if norm > 0.0:
+            query_vector = query_vector / norm
     scores = np.empty(int(activation_index.route_count), dtype=np.float32)
     for offset in range(0, int(activation_index.route_count), int(chunk_size)):
         end = min(offset + int(chunk_size), int(activation_index.route_count))
@@ -548,6 +568,7 @@ def route_candidates(
     activation_index: ActivationRouteIndex | None = None,
     np: Any | None = None,
     activation_chunk_size: int = 1024,
+    recursive_mode: bool = False,
 ) -> list[MRCRCandidate]:
     canonical_norm = _normalize_text(spec.canonical_request)
     query_text = spec.canonical_request or f"{spec.kind} {spec.topic}".strip()
@@ -566,6 +587,7 @@ def route_candidates(
             query_text,
             np=np,
             chunk_size=int(activation_chunk_size),
+            recursive_mode=bool(recursive_mode),
         )
 
     candidates: list[MRCRCandidate] = []
@@ -623,6 +645,65 @@ def route_candidates(
         )
     )
     return candidates[: int(candidate_pool)]
+
+
+def central_route_candidates(
+    windows: list[MRCRWindow],
+    spec: MRCRQuerySpec,
+    *,
+    candidate_pool: int,
+) -> list[MRCRCandidate]:
+    canonical_norm = _normalize_text(spec.canonical_request)
+    query_text = spec.canonical_request or f"{spec.kind} {spec.topic}".strip()
+    route_windows = []
+    by_window_id: dict[str, MRCRWindow] = {}
+    for window in windows:
+        request_norm = window.request_norm or _normalize_text(window.request_text)
+        window_id = str(window.window_id)
+        by_window_id[window_id] = window
+        route_windows.append(
+            {
+                "window_id": window_id,
+                "text": f"{window.request_text}\n{window.response_text}",
+                "session_turn_index": int(window.session_turn_index),
+                "scope_key": request_norm,
+                "canonical_request": request_norm,
+                "metadata": {
+                    "assistant_msg_index": int(window.assistant_msg_index),
+                    "request_token_start": int(window.request_token_start),
+                    "request_token_end": int(window.request_token_end),
+                },
+            }
+        )
+    plan = central_route_plan(
+        query=query_text,
+        capability_mode=TEMPORAL_ORDINAL,
+        windows=route_windows,
+        ordinal=int(spec.ordinal),
+        scope_key=canonical_norm,
+        canonical_request=canonical_norm,
+    )
+    tiers = tier_by_window_id(plan)
+    scores = candidate_scores_by_id(plan)
+    ordered_ids = [window_id for window_id in scores if window_id in by_window_id]
+    candidates: list[MRCRCandidate] = []
+    for window_id in ordered_ids[: int(candidate_pool)]:
+        window = by_window_id[window_id]
+        request_norm = window.request_norm or _normalize_text(window.request_text)
+        exact_scope = bool(canonical_norm) and request_norm == canonical_norm
+        score = float(scores.get(window_id, 0.0))
+        tier = tiers.get(window_id, "UNTIERED").lower()
+        candidates.append(
+            MRCRCandidate(
+                window=window,
+                hybrid_score=score + (100.0 if exact_scope else 0.0),
+                lexical_score=100.0 if exact_scope else score,
+                activation_score=score,
+                exact_scope_match=bool(exact_scope),
+                route_source=f"central_router:{tier}",
+            )
+        )
+    return candidates
 
 
 def select_ordinal_candidate(
@@ -690,6 +771,7 @@ def run_case(
     torch: Any,
     np: Any,
     activation_chunk_size: int,
+    router_backend: str = "native",
 ) -> dict[str, Any]:
     gc_was_enabled = gc.isenabled()
     if gc_was_enabled:
@@ -699,15 +781,22 @@ def run_case(
         final_prompt = str(messages[-1].get("content", ""))
         prefix = str(row["random_string_to_prepend"])
         spec = parse_query_spec(final_prompt, prefix)
-        candidates = route_candidates(
-            prepared.windows,
-            spec,
-            candidate_pool=candidate_pool,
-            scope_index=prepared.scope_index,
-            activation_index=prepared.activation_index,
-            np=np,
-            activation_chunk_size=int(activation_chunk_size),
-        )
+        if is_central_backend(router_backend):
+            candidates = central_route_candidates(
+                prepared.windows,
+                spec,
+                candidate_pool=candidate_pool,
+            )
+        else:
+            candidates = route_candidates(
+                prepared.windows,
+                spec,
+                candidate_pool=candidate_pool,
+                scope_index=prepared.scope_index,
+                activation_index=prepared.activation_index,
+                np=np,
+                activation_chunk_size=int(activation_chunk_size),
+            )
         selected, temporal_pool = select_ordinal_candidate(candidates, spec)
         target_msg_index = int(row["desired_msg_index"]) + 1
         target_rank = next(
@@ -751,6 +840,7 @@ def run_case(
         "lexical_score": float(selected.lexical_score),
         "hybrid_score": float(selected.hybrid_score),
         "route_source": selected.route_source,
+        "router_backend": str(router_backend),
         "target_rank": None if target_rank is None else int(target_rank),
         "ttft_s": float(ttft_s),
         "index_build_s": float(prepared.index_build_s),
@@ -883,6 +973,7 @@ def main() -> int:
     parser.add_argument("--activation-chunk-size", type=int, default=4096)
     parser.add_argument("--archival-window-tokens", type=int, default=ARCHIVAL_WINDOW_TOKENS)
     parser.add_argument("--archival-overlap-tokens", type=int, default=ARCHIVAL_OVERLAP_TOKENS)
+    add_router_backend_argument(parser)
     parser.add_argument("--halt-consecutive-failures", type=int, default=2)
     args = parser.parse_args()
 
@@ -954,6 +1045,7 @@ def main() -> int:
                 torch=torch,
                 np=np,
                 activation_chunk_size=args.activation_chunk_size,
+                router_backend=args.routing_backend,
             )
             batch_results.append(result)
             all_results.append(result)
@@ -1022,6 +1114,23 @@ def main() -> int:
         "benchmark": "openai/mrcr",
         "snapshot_date": "2026-04-29",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "claim_source_policy": {
+            "primary_source_artifact": ".benchmarks/comparative_performance_vs_gpt55.json",
+            "claim": (
+                "MRCR 1M, needle_count=4, full filtered partition, "
+                "100/100 correct, accuracy=1.0."
+            ),
+            "required_partition": {
+                "token_bin": "1m",
+                "needle_count": 4,
+                "filtered_case_count": 100,
+            },
+            "ignore_for_claim": [
+                ".benchmarks/comparative_performance_vs_gpt55.dryrun.json",
+                ".benchmarks/mrcr_results_snapshot_2026-04-29.dryrun.json",
+            ],
+            "reason": "Dry-run artifacts are subset checks and must not be cited as the MRCR benchmark result.",
+        },
         "stealth_mode": {
             "report_path": str(output_path),
             "csv_report_path": str(csv_output_path),

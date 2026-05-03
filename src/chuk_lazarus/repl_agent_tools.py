@@ -6,6 +6,7 @@ are the source of truth; any memory index built from them is derived state.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -34,6 +35,8 @@ write_file creates new files by default; set overwrite=true or append=true for e
 save_custom_tool persists a Python or bash tool for this and future runs. The
 script receives tool arguments as JSON on stdin, runs from the workspace root,
 prints useful output to stdout, and should exit nonzero on failure.
+save_custom_tool arguments are:
+{"name":"weather","runtime":"python","description":"...","content":"...","overwrite":true}
 Tool JSON must contain only JSON, with no prose inside it. Use "arguments" or "args"."""
 
 _BUILTIN_TOOL_NAMES = frozenset(
@@ -117,6 +120,18 @@ def _coerce_tool_call(obj: Any) -> list[ToolCall]:
         return calls
     if not isinstance(obj, dict):
         return []
+    if "tool_name" in obj and ("content" in obj or "script" in obj or "python_code" in obj):
+        args = dict(obj)
+        args.setdefault("name", args.get("tool_name"))
+        return [ToolCall(name="save_custom_tool", arguments=args)]
+    if (
+        "arguments" not in obj
+        and "args" not in obj
+        and isinstance(obj.get("name"), str)
+        and ("content" in obj or "script" in obj or "python_code" in obj)
+        and obj.get("name") not in _BUILTIN_TOOL_NAMES
+    ):
+        return [ToolCall(name="save_custom_tool", arguments=dict(obj))]
     name = obj.get("name")
     args = obj.get("arguments", obj.get("args", {}))
     if not isinstance(name, str) or not name.strip():
@@ -129,11 +144,48 @@ def _coerce_tool_call(obj: Any) -> list[ToolCall]:
     return [ToolCall(name=name.strip(), arguments=dict(args), call_id=str(call_id))]
 
 
+def _parse_function_style_tool_call(payload: str) -> list[ToolCall]:
+    stripped = payload.strip()
+    prefixed_json = re.fullmatch(
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*(\{.*\})",
+        stripped,
+        re.DOTALL,
+    )
+    if prefixed_json is not None:
+        try:
+            parsed = json.loads(prefixed_json.group(2))
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, dict):
+            return [ToolCall(name=prefixed_json.group(1), arguments=dict(parsed))]
+
+    match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)", stripped, re.DOTALL)
+    if match is None:
+        return []
+    name = match.group(1)
+    raw_args = match.group(2).strip()
+    try:
+        parsed_args = ast.literal_eval(f"({raw_args},)")
+    except (SyntaxError, ValueError):
+        return []
+    if not isinstance(parsed_args, tuple):
+        return []
+    if len(parsed_args) == 1 and isinstance(parsed_args[0], dict):
+        return [ToolCall(name=name, arguments=dict(parsed_args[0]))]
+    if name == "save_custom_tool" and len(parsed_args) >= 2:
+        tool_name, details = parsed_args[0], parsed_args[1]
+        if isinstance(tool_name, str) and isinstance(details, dict):
+            args = dict(details)
+            args.setdefault("name", tool_name)
+            return [ToolCall(name=name, arguments=args)]
+    return []
+
+
 def _parse_json_tool_calls(payload: str) -> list[ToolCall]:
     try:
         parsed = json.loads(payload.strip())
     except json.JSONDecodeError:
-        return []
+        return _parse_function_style_tool_call(payload)
     return _coerce_tool_call(parsed)
 
 
@@ -416,30 +468,48 @@ class LocalCodingToolRunner:
             "input_schema": tool.input_schema,
         }
 
+    def _normalize_save_custom_tool_args(self, raw_args: dict[str, Any]) -> dict[str, Any]:
+        args = dict(raw_args)
+        if "name" not in args:
+            if "tool_name" in args:
+                args["name"] = args.get("tool_name")
+            elif len(args) == 1:
+                maybe_name, maybe_details = next(iter(args.items()))
+                if isinstance(maybe_name, str) and isinstance(maybe_details, dict):
+                    args = dict(maybe_details)
+                    args.setdefault("name", maybe_name)
+        if "content" not in args:
+            for alias in ("script", "python_code"):
+                if alias in args:
+                    args["content"] = args.get(alias)
+                    break
+        return args
+
     def _save_custom_tool(self, call: ToolCall) -> tuple[bool, str, str, dict[str, Any]]:
         if not self.allow_custom_tools:
             return False, "", "custom tools are disabled", {}
+        arguments = self._normalize_save_custom_tool_args(call.arguments)
         try:
-            name = self._normalize_custom_tool_name(call.arguments.get("name"))
+            name = self._normalize_custom_tool_name(arguments.get("name"))
         except ValueError as exc:
             return False, "", str(exc), {}
         if name in _BUILTIN_TOOL_NAMES:
             return False, "", f"custom tool cannot shadow built-in tool: {name}", {}
-        runtime = str(call.arguments.get("runtime", "python") or "python").strip().lower()
+        runtime = str(arguments.get("runtime", "python") or "python").strip().lower()
         if runtime not in _CUSTOM_TOOL_RUNTIMES:
             return False, "", "custom tool runtime must be one of: bash, python", {}
-        if "content" not in call.arguments:
+        if "content" not in arguments:
             return False, "", "save_custom_tool requires content", {}
-        description = str(call.arguments.get("description", "")).strip()
+        description = str(arguments.get("description", "")).strip()
         if not description:
-            return False, "", "save_custom_tool requires description", {}
-        input_schema = call.arguments.get("input_schema", {})
+            description = f"Custom tool {name}."
+        input_schema = arguments.get("input_schema", {})
         if input_schema is None:
             input_schema = {}
         if not isinstance(input_schema, dict):
             return False, "", "input_schema must be a JSON object", {}
 
-        overwrite = bool(call.arguments.get("overwrite", False))
+        overwrite = bool(arguments.get("overwrite", False))
         extension = ".py" if runtime == "python" else ".sh"
         entrypoint = f"{name}{extension}"
         script_path = self.custom_tools_root / entrypoint
@@ -448,7 +518,7 @@ class LocalCodingToolRunner:
             return False, "", "custom tool exists; set overwrite=true to replace it", {}
 
         self.custom_tools_root.mkdir(parents=True, exist_ok=True)
-        content = str(call.arguments.get("content", ""))
+        content = str(arguments.get("content", ""))
         _atomic_write_text(script_path, content)
         if runtime == "bash":
             script_path.chmod(script_path.stat().st_mode | 0o700)
@@ -598,7 +668,7 @@ class LocalCodingToolRunner:
                 timeout=self.timeout_seconds,
                 check=False,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
             return None
         output = completed.stdout
         lines = output.splitlines()[:max_results]

@@ -35,6 +35,44 @@ def test_extract_tool_calls_xml_and_fenced_json() -> None:
     assert calls[2].call_id
 
 
+def test_extract_tool_calls_accepts_gemma_custom_tool_shapes() -> None:
+    text = """
+    ```tool_call
+    save_custom_tool(
+      "weather",
+      {
+        "runtime": "python",
+        "description": "Mock weather.",
+        "script": "print('sunny')"
+      }
+    )
+    ```
+    ```json
+    {"tool_name":"echoer","description":"Echo.","script":"print('ok')"}
+    ```
+    ```json
+    {"name":"weather","runtime":"python","description":"Weather.","content":"print('ok')"}
+    ```
+    ```tool_call
+    save_custom_tool{"name":"tiny_weather","runtime":"python","content":"print('ok')"}
+    ```
+    """
+
+    calls = extract_tool_calls(text)
+
+    assert [call.name for call in calls] == [
+        "save_custom_tool",
+        "save_custom_tool",
+        "save_custom_tool",
+        "save_custom_tool",
+    ]
+    assert calls[0].arguments["name"] == "weather"
+    assert calls[0].arguments["script"] == "print('sunny')"
+    assert calls[1].arguments["name"] == "echoer"
+    assert calls[2].arguments["name"] == "weather"
+    assert calls[3].arguments["name"] == "tiny_weather"
+
+
 def test_read_file_is_line_numbered_and_traced(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     trace_root = tmp_path / "traces"
@@ -256,6 +294,61 @@ def test_custom_tool_management_lists_reads_and_rejects_shadowing(tmp_path) -> N
     assert "json.load" in read.output
 
 
+def test_save_custom_tool_accepts_nested_alias_shape_from_model(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    custom_root = tmp_path / "custom_tools"
+    workspace.mkdir()
+    runner = LocalCodingToolRunner(
+        workspace,
+        tmp_path / "traces",
+        custom_tools_root=custom_root,
+    )
+
+    result = runner.execute(
+        ToolCall(
+            "save_custom_tool",
+            {
+                "weather": {
+                    "runtime": "python",
+                    "description": "Mock weather.",
+                    "script": "print('sunny')",
+                    "overwrite": True,
+                }
+            },
+        )
+    )
+
+    assert result.ok, result.error
+    assert (custom_root / "weather.py").read_text(encoding="utf-8") == "print('sunny')"
+    assert "weather" in runner.custom_tools
+
+
+def test_save_custom_tool_defaults_missing_description(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    custom_root = tmp_path / "custom_tools"
+    workspace.mkdir()
+    runner = LocalCodingToolRunner(
+        workspace,
+        tmp_path / "traces",
+        custom_tools_root=custom_root,
+    )
+
+    result = runner.execute(
+        ToolCall(
+            "save_custom_tool",
+            {
+                "name": "weather",
+                "runtime": "python",
+                "content": "print('sunny')",
+            },
+        )
+    )
+
+    assert result.ok, result.error
+    manifest = json.loads((custom_root / "weather.json").read_text(encoding="utf-8"))
+    assert manifest["description"] == "Custom tool weather."
+
+
 def test_search_prefers_or_falls_back(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -279,7 +372,9 @@ def test_shell_runs_in_workspace(tmp_path) -> None:
     result = runner.execute(ToolCall("shell", {"command": "pwd"}))
 
     assert result.ok
-    assert result.output.strip() == str(workspace.resolve())
+    shell_cwd = result.output.strip().replace("\\", "/")
+    expected_cwd = str(workspace.resolve()).replace("\\", "/")
+    assert shell_cwd == expected_cwd or shell_cwd.endswith(expected_cwd.removeprefix("C:"))
 
 
 def test_apply_patch_updates_file(tmp_path) -> None:

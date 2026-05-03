@@ -10,6 +10,10 @@ PIR attached to this change.
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
+import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -137,6 +141,322 @@ def test_estimate_kv_bytes_per_token_unwraps_vlm_text_config() -> None:
     )
     # 2 * 2 * 64 * 8 * 2 = 4096
     assert estimate_kv_bytes_per_token(model) == 4096
+
+
+def _load_loco_benchmark_module():
+    repo_root = Path(__file__).resolve().parents[3]
+    scripts_dir = repo_root / "scripts"
+    for path in (repo_root, repo_root / "src", scripts_dir):
+        raw = str(path)
+        if raw not in sys.path:
+            sys.path.insert(0, raw)
+    module_name = "run_locobench_benchmark"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        scripts_dir / "run_locobench_benchmark.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class _CpuRuntime:
+    def __init__(self, layer_count: int = 4) -> None:
+        self._model = torch.nn.Linear(1, 1)
+        self._layer_count = int(layer_count)
+
+    def _resolve_layers(self):
+        return [object() for _ in range(self._layer_count)]
+
+
+class _TinyTokenizer:
+    def encode(self, text, **_kwargs):
+        return [ord(ch) % 97 for ch in str(text)] or [0]
+
+
+def _write_apollo_phase3_store(
+    root: Path,
+    *,
+    source_layer: int = 1,
+    num_windows: int = 2,
+    hidden_dim: int = 3,
+) -> Path:
+    np = pytest.importorskip("numpy")
+    store_dir = root / "case_00000" / "fast_store"
+    (store_dir / "boundaries").mkdir(parents=True)
+    (store_dir / "residual_streams").mkdir()
+    np.savez(
+        str(store_dir / "window_token_lists.npz"),
+        **{
+            "0": np.array([11, 12], dtype=np.int64),
+            "1": np.array([21, 22, 23], dtype=np.int64),
+        },
+    )
+    for window_id in range(num_windows):
+        np.save(
+            str(store_dir / "boundaries" / f"window_{window_id:03d}.npy"),
+            np.full((hidden_dim,), float(window_id + 1), dtype=np.float32),
+        )
+        np.save(
+            str(store_dir / "residual_streams" / f"window_{window_id:03d}.npy"),
+            np.full((window_id + 2, hidden_dim), float(window_id + 1), dtype=np.float32),
+        )
+    manifest = {
+        "kind": "benchmark_jit_apollo_sequential_residual",
+        "status": "ready",
+        "apollo_ready": True,
+        "source_layer": int(source_layer),
+        "layer": int(source_layer),
+        "crystal_layer": int(source_layer),
+        "target_layer": int(source_layer) + 1,
+        "arch_config": {
+            "retrieval_layer": 0,
+            "query_head": 0,
+            "injection_layer": int(source_layer),
+            "crystal_layer": int(source_layer),
+            "hidden_dim": int(hidden_dim),
+            "head_dim": 1,
+            "window_size": 8,
+        },
+        "num_windows": int(num_windows),
+        "num_tokens": 5,
+        "window_tokens": 8,
+        "row_alignment": "window_id",
+        "residual_streams_dir": "residual_streams",
+        "boundaries_dir": "boundaries",
+        "activation_routes": {"row_alignment": "window_id"},
+    }
+    (store_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return store_dir
+
+
+def test_loco_phase3_uses_ready_apollo_store_without_recapture(tmp_path, monkeypatch) -> None:
+    loco = _load_loco_benchmark_module()
+    store_dir = _write_apollo_phase3_store(tmp_path)
+    metadata_path = tmp_path / "jit_index_metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "case_matrices": [
+                    {
+                        "case_index": 0,
+                        "store_dir": str(store_dir),
+                        "apollo_manifest_path": str(store_dir / "manifest.json"),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        window_tokens=8,
+        jit_indexing={"metadata_path": str(metadata_path)},
+        _current_row_index=42,
+        _jit_case_index_by_row={42: 0},
+    )
+    hot_windows = [
+        loco.DependencyWindow(window_id=0, path="a.py", text="alpha", score=1.0),
+        loco.DependencyWindow(window_id=1, path="b.py", text="beta", score=1.0),
+    ]
+
+    def _fail_recapture(**_kwargs):
+        raise AssertionError("recapture should not run when Apollo store is ready")
+
+    monkeypatch.setattr(loco, "recapture_layer13_residuals", _fail_recapture)
+
+    residuals, encoded_by_window, metadata = loco.load_or_recapture_phase3_residuals(
+        args=args,
+        runtime=_CpuRuntime(layer_count=4),
+        tokenizer=_TinyTokenizer(),
+        hot_windows=hot_windows,
+    )
+
+    assert metadata["used_apollo_store"] is True
+    assert metadata["residual_mode"] == "stream"
+    assert residuals.source_layer == 1
+    assert set(residuals.per_window_residuals) == {0, 1}
+    assert tuple(residuals.per_window_residuals[0].shape) == (2, 3)
+    assert tuple(residuals.per_window_residuals[1].shape) == (3, 3)
+    assert encoded_by_window == {0: [11, 12], 1: [21, 22, 23]}
+
+
+def test_loco_phase3_mixes_apollo_with_synthetic_recapture(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    loco = _load_loco_benchmark_module()
+    store_dir = _write_apollo_phase3_store(tmp_path)
+    metadata_path = tmp_path / "jit_index_metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "case_matrices": [
+                    {
+                        "case_index": 0,
+                        "store_dir": str(store_dir),
+                        "apollo_manifest_path": str(store_dir / "manifest.json"),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        window_tokens=8,
+        jit_indexing={"metadata_path": str(metadata_path)},
+        _current_row_index=42,
+        _jit_case_index_by_row={42: 0},
+    )
+    hot_windows = [
+        loco.DependencyWindow(window_id=0, path="a.py", text="alpha", score=1.0),
+        loco.DependencyWindow(window_id=-200000, path="target.py", text="synthetic", score=1.0),
+        loco.DependencyWindow(window_id=1, path="b.py", text="beta", score=1.0),
+    ]
+
+    def _fake_recapture(**kwargs):
+        assert [int(window.window_id) for window in kwargs["hot_windows"]] == [-200000]
+        assert int(kwargs["source_layer"]) == 1
+        sentinel = GatheredResiduals(
+            per_window_residuals={-200000: torch.full((4, 3), 9.0)},
+            per_window_token_ranges={-200000: (0, 4)},
+            source_layer=1,
+            archive_provenance={-200000: "jit_recapture://layer1/in_vram"},
+        )
+        return sentinel, {-200000: [31, 32, 33, 34]}, {"source_layer": 1, "storage": "in_vram_only"}
+
+    monkeypatch.setattr(loco, "recapture_layer13_residuals", _fake_recapture)
+
+    residuals, encoded_by_window, metadata = loco.load_or_recapture_phase3_residuals(
+        args=args,
+        runtime=_CpuRuntime(layer_count=4),
+        tokenizer=_TinyTokenizer(),
+        hot_windows=hot_windows,
+    )
+
+    assert metadata["used_apollo_store"] is True
+    assert metadata["partial_recapture"] is True
+    assert metadata["recaptured_window_ids"] == [-200000]
+    assert list(residuals.per_window_residuals) == [0, -200000, 1]
+    assert residuals.source_layer == 1
+    assert residuals.per_window_token_ranges == {
+        0: (0, 2),
+        -200000: (2, 6),
+        1: (6, 9),
+    }
+    assert encoded_by_window == {
+        0: [11, 12],
+        -200000: [31, 32, 33, 34],
+        1: [21, 22, 23],
+    }
+
+
+def test_loco_phase3_missing_apollo_falls_back_unless_strict(monkeypatch) -> None:
+    loco = _load_loco_benchmark_module()
+    args = SimpleNamespace(
+        window_tokens=8,
+        jit_indexing={},
+        _current_row_index=0,
+    )
+    hot_windows = [
+        loco.DependencyWindow(window_id=0, path="a.py", text="alpha", score=1.0),
+    ]
+    sentinel = GatheredResiduals(
+        per_window_residuals={0: torch.zeros(1, 3)},
+        per_window_token_ranges={0: (0, 1)},
+        source_layer=1,
+        archive_provenance={0: "recapture://sentinel"},
+    )
+    called = {"value": False}
+
+    def _fake_recapture(**_kwargs):
+        called["value"] = True
+        return sentinel, {0: [99]}, {"source_layer": 1}
+
+    monkeypatch.setattr(loco, "recapture_layer13_residuals", _fake_recapture)
+    residuals, encoded_by_window, metadata = loco.load_or_recapture_phase3_residuals(
+        args=args,
+        runtime=_CpuRuntime(layer_count=4),
+        tokenizer=_TinyTokenizer(),
+        hot_windows=hot_windows,
+    )
+
+    assert called["value"] is True
+    assert residuals is sentinel
+    assert encoded_by_window == {0: [99]}
+    assert metadata["used_apollo_store"] is False
+    assert metadata["fallback_recapture"] is True
+
+    strict_args = SimpleNamespace(
+        window_tokens=8,
+        jit_indexing={},
+        _current_row_index=0,
+        require_phase3_apollo_store=True,
+    )
+    with pytest.raises(loco.Phase3Unavailable, match="required"):
+        loco.load_or_recapture_phase3_residuals(
+            args=strict_args,
+            runtime=_CpuRuntime(layer_count=4),
+            tokenizer=_TinyTokenizer(),
+            hot_windows=hot_windows,
+        )
+
+
+def test_loco_phase3_incompatible_apollo_falls_back_unless_strict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    loco = _load_loco_benchmark_module()
+    store_dir = _write_apollo_phase3_store(tmp_path, source_layer=1)
+    args = SimpleNamespace(
+        window_tokens=8,
+        jit_indexing={},
+        _current_row_index=0,
+        phase3_apollo_store_dir=str(store_dir),
+    )
+    hot_windows = [
+        loco.DependencyWindow(window_id=0, path="a.py", text="alpha", score=1.0),
+    ]
+    sentinel = GatheredResiduals(
+        per_window_residuals={0: torch.zeros(1, 3)},
+        per_window_token_ranges={0: (0, 1)},
+        source_layer=1,
+        archive_provenance={0: "recapture://sentinel"},
+    )
+
+    def _fake_recapture(**_kwargs):
+        return sentinel, {0: [77]}, {"source_layer": 1}
+
+    monkeypatch.setattr(loco, "recapture_layer13_residuals", _fake_recapture)
+    residuals, encoded_by_window, metadata = loco.load_or_recapture_phase3_residuals(
+        args=args,
+        runtime=_CpuRuntime(layer_count=2),
+        tokenizer=_TinyTokenizer(),
+        hot_windows=hot_windows,
+    )
+
+    assert residuals is sentinel
+    assert encoded_by_window == {0: [77]}
+    assert metadata["used_apollo_store"] is False
+    assert "incompatible with runtime layer stack" in metadata["apollo_unavailable_reason"]
+
+    strict_args = SimpleNamespace(
+        window_tokens=8,
+        jit_indexing={},
+        _current_row_index=0,
+        phase3_apollo_store_dir=str(store_dir),
+        require_phase3_apollo_store=True,
+    )
+    with pytest.raises(loco.Phase3Unavailable, match="incompatible with runtime layer stack"):
+        loco.load_or_recapture_phase3_residuals(
+            args=strict_args,
+            runtime=_CpuRuntime(layer_count=2),
+            tokenizer=_TinyTokenizer(),
+            hot_windows=hot_windows,
+        )
 
 
 def test_resolve_attention_projections_prefers_direct_attention_metadata() -> None:
@@ -623,9 +943,11 @@ class TestAxis5GatherAndMaterialize:
         )
         mat = materialize_kv_direct(residuals, runtime, hot_budget_mib=1024)
 
-        # Axis-5 contract: (batch=1, n_kv_heads, N, head_dim).
-        assert tuple(mat.K.shape) == (1, 2, 2, 8)
-        assert tuple(mat.V.shape) == (1, 2, 2, 8)
+        # Axis-5 contract: (batch=1, n_kv_heads, sink + N, head_dim).
+        assert tuple(mat.K.shape) == (1, 2, 3, 8)
+        assert tuple(mat.V.shape) == (1, 2, 3, 8)
+        assert torch.count_nonzero(mat.K[:, :, 0, :]) == 0
+        assert torch.count_nonzero(mat.V[:, :, 0, :]) == 0
         assert mat.K.device.type == "cuda"
         assert mat.V.device.type == "cuda"
         assert mat.materialization_mode == "project_through_W_K_W_V_at_injection_layer"
@@ -672,6 +994,8 @@ class TestAxis5GatherAndMaterialize:
         expected_v = (
             expected_v.view(1, 1, n_kv_heads, head_dim).transpose(1, 2).contiguous()
         )
+        expected_k = torch.cat([torch.zeros_like(expected_k), expected_k], dim=-2)
+        expected_v = torch.cat([torch.zeros_like(expected_v), expected_v], dim=-2)
 
         torch.testing.assert_close(mat.K, expected_k)
         torch.testing.assert_close(mat.V, expected_v)
@@ -698,12 +1022,9 @@ class TestAxis5GatherAndMaterialize:
     def test_materialize_kv_direct_honors_hot_budget_mib(self) -> None:
         """Observed MiB must fit under the configured ceiling.
 
-        Integer MiB granularity makes it hard to force a specific ``max_slots``
-        below 1 MiB. Instead we exercise the smallest expressible budget
-        (``hot_budget_mib=0``) which triggers the ``max(1, ...)`` clamp —
-        the observed usage is then bounded by the ``max_slots=1`` path and
-        the guard-rail assertion ``observed_mib <= hot_budget_mib`` must
-        hold. Two residuals provided; one slot kept.
+        The attention sink is a real K/V slot, so a budget that cannot hold
+        both the reserved sink and at least one memory slot is rejected before
+        projection.
         """
         hidden = 16
         n_kv_heads = 2
@@ -716,17 +1037,8 @@ class TestAxis5GatherAndMaterialize:
             injection_layer=1,
         )
 
-        # hot_budget_mib=0 → budget_bytes=0 → max_slots=max(1, 0)=1.
-        # Because no tier_assignments are supplied, the no-tier truncation
-        # slices to max_slots: ``ordered_wids[:1]``. One slot survives.
-        mat = materialize_kv_direct(residuals, runtime, hot_budget_mib=0)
-
-        # Only one slot survived under the tightest possible budget.
-        assert mat.K.shape[-2] == 1
-        assert mat.V.shape[-2] == 1
-        # Contract guarantee: observed_mib <= configured hot_budget_mib.
-        # With 1 slot and fp32: total_bytes = 2*2*8*4 = 128 → 0 MiB.
-        assert mat.hot_budget_mib_observed <= 0
+        with pytest.raises(RuntimeError, match="reserved attention sink plus one memory slot"):
+            materialize_kv_direct(residuals, runtime, hot_budget_mib=0)
 
     def test_materialize_kv_direct_evicts_warm_before_hot_under_budget_pressure(
         self,
@@ -734,18 +1046,15 @@ class TestAxis5GatherAndMaterialize:
         """With 3 windows [HOT, HOT, WARM] + ``tier_assignments``, WARM evicts
         first even when the budget cannot hold all of HOT.
 
-        Under integer-MiB granularity we exercise the ``max_slots=1`` path
-        via ``hot_budget_mib=0`` and feed ``tier_assignments``. The
-        contract documents HOT-preservation: ``warm_keep = max(0,
-        max_slots - len(hot_wids)) = max(0, 1 - 2) = 0``, i.e. WARM is
-        dropped entirely and ``ordered_wids = hot_wids + [] = [0, 1]``.
-        HOT is preserved in full even when it exceeds max_slots.
+        The reserved sink counts against the K/V budget. This fixture makes
+        a 3 MiB budget hold exactly sink + two memory slots, so the WARM
+        window is dropped while both HOT windows survive.
         """
         from chuk_lazarus.session_retrieval.tier_policy import TierLabel
 
-        hidden = 16
-        n_kv_heads = 2
-        head_dim = 8
+        hidden = 1
+        n_kv_heads = 1
+        head_dim = 131072
         runtime, residuals, model = self._build_runtime_and_residuals(
             hidden=hidden,
             n_kv_heads=n_kv_heads,
@@ -783,19 +1092,17 @@ class TestAxis5GatherAndMaterialize:
             _make_tier_assignment(2, TierLabel.WARM),
         ]
 
-        # hot_budget_mib=0 → max_slots=1. With tier_assignments the code
-        # drops WARM completely (warm_keep=0) but preserves BOTH HOT windows.
-        # Resulting ``ordered_wids = [0, 1]`` → N=2 slots.
         mat = materialize_kv_direct(
             distinct_residuals,
             runtime,
-            hot_budget_mib=0,
+            hot_budget_mib=3,
             tier_assignments=assignments,
         )
 
         assert mat.path_a_replay_count == 0
-        # HOT preserved in full even though max_slots=1 < len(hot_wids).
-        assert mat.K.shape[-2] == 2
+        # Sink + both HOT windows survive; WARM is evicted.
+        assert mat.K.shape[-2] == 3
+        assert mat.per_window_token_ranges == {0: (1, 2), 1: (2, 3)}
         # Verify the two surviving slots correspond to HOT window ids 0 and 1
         # (not the WARM window id 2). Project wid=0 and wid=1 residuals
         # through the same k_proj and compare byte-for-byte.
@@ -818,5 +1125,6 @@ class TestAxis5GatherAndMaterialize:
 
         expected_w0 = _project(distinct_vals[0])
         expected_w1 = _project(distinct_vals[1])
-        torch.testing.assert_close(mat.K[:, :, 0:1, :], expected_w0)
-        torch.testing.assert_close(mat.K[:, :, 1:2, :], expected_w1)
+        assert torch.count_nonzero(mat.K[:, :, 0:1, :]) == 0
+        torch.testing.assert_close(mat.K[:, :, 1:2, :], expected_w0)
+        torch.testing.assert_close(mat.K[:, :, 2:3, :], expected_w1)

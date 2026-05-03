@@ -25,6 +25,72 @@ memory_off_with_store_present
 
 The memory-on path routes the question through the TradeGuru checkpoint store, assigns HOT/WARM/COLD windows, materializes selected residual streams into K/V, generates an answer, and records evidence telemetry. The scoring rubric rewards correct fault types, test order, safety controls, no unsafe live-work advice, document-specific details, clean telemetry, and relevant evidence windows.
 
+The eval defaults to the production memory selector:
+
+```text
+selector_policy=utility-v2
+dense_scoring=deterministic
+selector_budget=K_HOT + K_WARM
+```
+
+Use `TRADEGURU_SELECTOR_POLICY=rank-v1` only when intentionally comparing against the frozen legacy router.
+
+### Catalog/TOC-index window penalty
+
+The `run_tradeguru_fault_eval.sh` shell script defaults `LAZARUS_ROUTER_TOC_INDEX_PENALTY=5.0` (override via `TRADEGURU_TOC_INDEX_PENALTY`). This demotes catalog-style "Example Queries" windows that begin with phrases like `## Example Queries This video answers questions like:`. They TF-IDF-match keyword-rich fault questions but inject low-value index content into KV memory and drag memory_on answers below memory_off (eval `eval_results_20260428T092804Z.jsonl` showed all 4 top-rank hot windows for the kettle question were such TOC pages). Set `TRADEGURU_TOC_INDEX_PENALTY=0` to disable the penalty for an A/B comparison. The penalty applies before tier assignment so HOT slots go to procedural windows ("Step-by-Step", "Key Lessons", "Safety Notes", "Pro Tips") instead.
+
+### Caller-supplied system prompt on the semantic-prefix decode path
+
+The KV-direct memory-on path includes a "semantic prefix" decoder
+(`SessionRetriever._generate_with_semantic_token_prefix` in
+`src/chuk_lazarus/session_retrieval/retriever.py`) used when
+`_synthesize_memory_laws_answer` / `_synthesize_website_color_scheme_answer` /
+`_synthesize_dirty_store_domain_answer` all return empty — which is the
+default for fault-finding questions. Historically the decoder hardcoded a
+"You answer from the context that appears before this chat… be concise."
+system prompt authored for chat_loop value-extraction tests. For procedural
+electrical fault-finding answers this destroys the ordered test sequence
+and skips the safety preamble: grade
+`tradeguru_grade_20260428T115132Z.json` showed `correct_test_order` 1/8 and
+`safety_controls_present` 2/8 on memory-on (vs 6/8 and 8/8 on memory-off
+for the same eight questions, with answer lengths of 65–354 chars vs
+2500+ chars).
+
+`run_tradeguru_fault_eval.sh` defaults
+`LAZARUS_KV_SEMANTIC_PREFIX_USE_CALLER_SYSTEM_PROMPT=1`, which routes the
+decoder through the same SYSTEM_PROMPT that
+`scripts/evaluate_tradeguru_fault_memory.py` configures on the retriever
+(safety-first electrical context, isolation/lockout/PPE, ordered
+fault-finding sequence, licensed-electrician escalation). The chat_loop
+value-extraction default ("be concise") is preserved when the variable is
+unset or `0`. Set `LAZARUS_KV_SEMANTIC_PREFIX_USE_CALLER_SYSTEM_PROMPT=0`
+to A/B against the legacy decoder behaviour.
+
+### Document-grounding directive on the semantic-prefix decode path
+
+Iteration-2's caller-prompt fix restored safety language on memory-on
+but grade `tradeguru_grade_20260428T124342Z.json` still showed
+`memory_on_mean=7.125` vs `memory_off_mean=7.375` (lift=`-0.25`). The
+remaining failures were `correct_test_order` 5/8 and
+`uses_document_specific_details` 6/8 — every memory-on answer truncated
+mid-sentence in the safety preamble (4 enumerated bullets on
+PPE / LOTO / isolate / prove dead) and never reached the diagnostic
+content within `max_new_tokens=240`.
+
+`run_tradeguru_fault_eval.sh` defaults
+`LAZARUS_KV_SEMANTIC_PREFIX_GROUND_IN_DOCUMENT=1`, which prepends a
+small RAG-best-practice directive to the caller-supplied system prompt
+on the prefix-decode path. The directive asks the model to ground its
+answer in the document terminology already provided as KV-direct
+context (component names, fault types, test instruments) and to keep
+any preamble brief (1-2 sentences). The directive is task-agnostic
+(no rubric vocabulary), preserves the caller's safety semantics
+verbatim, and is silent unless both
+`LAZARUS_KV_SEMANTIC_PREFIX_USE_CALLER_SYSTEM_PROMPT=1` *and*
+`LAZARUS_KV_SEMANTIC_PREFIX_GROUND_IN_DOCUMENT=1`. Set
+`LAZARUS_KV_SEMANTIC_PREFIX_GROUND_IN_DOCUMENT=0` to A/B against the
+iteration-2 caller-verbatim behaviour.
+
 ## Agent Preflight
 
 Run from WSL:
@@ -145,11 +211,37 @@ TRADEGURU_MODEL=/path/or/hf/model
 TRADEGURU_DEVICE=cuda
 TRADEGURU_MAX_NEW_TOKENS=240
 TRADEGURU_HOT_BUDGET_MIB=512
+TRADEGURU_SELECTOR_POLICY=utility-v2
+TRADEGURU_DENSE_SCORING=deterministic
+TRADEGURU_RRF_K=60
+TRADEGURU_MMR_LAMBDA=0.75
+TRADEGURU_SELECTOR_BUDGET=12
 TRADEGURU_CONDITIONS=memory_off,memory_on,memory_on_noise,off_store
 TRADEGURU_STORE_ROOT="$PWD/prod/evals/tradeguru test/memory_store/tradeguru_fault_memory"
 TRADEGURU_RESULTS_ROOT="$PWD/prod/evals/tradeguru test/results"
 TRADEGURU_LOG_ROOT="$PWD/prod/evals/tradeguru test/logs"
 ```
+
+## Memory-Off Comparator Is Required For Grade Pass
+
+`scripts/tradeguru_meta.py grade` treats a missing memory-off comparator as a **hard failure** by default. Any benefit-lift claim about the TradeGuru router needs both memory-on and memory-off rows in the eval JSONL — without a memory-off baseline, `memory_lift_vs_off` cannot be measured and the grade is not actionable evidence for router changes.
+
+In practice that means an eval run for a meta-loop grade must include at least one of:
+
+```text
+memory_off_empty_store
+memory_off_with_store_present
+```
+
+alongside the memory-on conditions. Set `TRADEGURU_CONDITIONS` accordingly when invoking `run_tradeguru_fault_eval.sh`.
+
+For smoke runs that intentionally skip the comparator, pass `--allow-missing-memory-off`:
+
+```bash
+python3 scripts/tradeguru_meta.py grade <eval.jsonl> --allow-missing-memory-off
+```
+
+That demotes `missing_memory_off_comparator` from FAIL back to WARN. Smoke grades produced this way are not evidence of router improvement and must not be used to justify router or selector edits.
 
 ## Handoff
 

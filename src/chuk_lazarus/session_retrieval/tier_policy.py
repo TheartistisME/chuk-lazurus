@@ -5,13 +5,12 @@ Frozen contract: ``ve-ins-0mo9p8kou0000d20e0d`` (axis-3 of
 ``ve-ins-0mo9vtofg00005ae032``; baseline-of-absence
 ``ve-ins-0mo9p63sh0000f78047``.
 
-Policy name: ``rank-v1``. Given a candidate list already ranked descending
-by ``ucb1_score`` (as produced by
-:func:`chuk_lazarus.session_retrieval.asi_router.asi_route_candidates`), this
+Default policy: ``utility-v2``. Given a candidate list from
+:func:`chuk_lazarus.session_retrieval.asi_router.asi_route_candidates`, this
 module assigns each candidate a :class:`TierLabel` (``HOT``/``WARM``/``COLD``)
-purely as a function of its zero-based rank. Tier boundaries are controlled
-by ``K_HOT`` and ``K_WARM`` with a hard cap of ``candidate_pool`` kept
-candidates.
+with a utility-ranked, MMR-diversified, budget-aware selector. The legacy
+``rank-v1`` policy remains available by explicit ``policy_version`` for frozen
+axis-3 compatibility; it assigns tiers purely as a function of zero-based rank.
 
 Upstream: ``asi_route_candidates`` — input is already ranked by
 ``ucb1_score`` descending; :func:`assign_tiers` does NOT re-sort.
@@ -312,7 +311,7 @@ def assign_tiers(
     K_HOT: int = 4,
     K_WARM: int = 12,
     candidate_pool: int = 64,
-    policy_version: str = POLICY_VERSION_RANK_V1,
+    policy_version: str = POLICY_VERSION_UTILITY_V2,
     budget: int | float | None = None,
     mmr_lambda: float = DEFAULT_MMR_LAMBDA,
     rrf_k: float = DEFAULT_RRF_K,
@@ -324,14 +323,14 @@ def assign_tiers(
     hot_utility_threshold: float = 0.35,
     warm_utility_threshold: float = 0.05,
 ) -> list[TierAssignment]:
-    """Deterministic tier assignment from a ucb1-ranked candidate list.
+    """Deterministic tier assignment from an ASI-router candidate list.
 
     Invariants (verification obligations):
 
     - ``len(returned) == min(len(candidates), candidate_pool)``.
-    - Tier counts are exactly ``(K_HOT, K_WARM, candidate_pool - K_HOT -
-      K_WARM)`` when ``len(candidates) >= candidate_pool``; otherwise degrade
-      gracefully (fewer COLD, then fewer WARM, then fewer HOT).
+    - ``utility-v2`` enforces a cost budget and suppresses redundant windows
+      before assigning HOT/WARM/COLD labels.
+    - Explicit ``rank-v1`` keeps the frozen rank split contract exactly.
     - Assignment is stable: same input -> same output, byte-identical.
     """
     if K_HOT < 0:
@@ -531,10 +530,11 @@ def tier_assignments_to_json(ts: Sequence[TierAssignment]) -> str:
 
     Uses ``sort_keys=True`` and a compact separator so byte-identical inputs
     yield byte-identical outputs. The envelope's ``policy_version`` mirrors
-    the first assignment's; an empty sequence uses :data:`POLICY_VERSION_RANK_V1`.
+    the first assignment's; an empty sequence uses
+    :data:`POLICY_VERSION_UTILITY_V2`.
     """
     assignments = [tier_assignment_to_dict(ta) for ta in ts]
-    envelope_policy = assignments[0]["policy_version"] if assignments else POLICY_VERSION_RANK_V1
+    envelope_policy = assignments[0]["policy_version"] if assignments else POLICY_VERSION_UTILITY_V2
     envelope: dict[str, Any] = {
         "schema_version": TIER_POLICY_SCHEMA_VERSION,
         "policy_version": envelope_policy,

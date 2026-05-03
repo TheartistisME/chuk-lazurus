@@ -27,6 +27,7 @@ from chuk_lazarus.session_retrieval.asi_router import AsiRouterCandidate
 from chuk_lazarus.session_retrieval.enumeration import CheckpointHandle
 from chuk_lazarus.session_retrieval.tier_policy import (
     POLICY_VERSION_RANK_V1,
+    POLICY_VERSION_UTILITY_V2,
     TIER_POLICY_SCHEMA_VERSION,
     TierAssignment,
     TierLabel,
@@ -115,6 +116,14 @@ def _count_tiers(
     warm = sum(1 for a in assignments if a.tier == TierLabel.WARM)
     cold = sum(1 for a in assignments if a.tier == TierLabel.COLD)
     return hot, warm, cold
+
+
+def _assign_rank_tiers(
+    candidates: list[AsiRouterCandidate],
+    **kwargs: object,
+) -> list[TierAssignment]:
+    """Exercise the frozen rank-v1 contract after utility-v2 became default."""
+    return assign_tiers(candidates, policy_version=POLICY_VERSION_RANK_V1, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +225,14 @@ class TestAssignTiersBasics:
         candidates = _make_candidate_pool(5)
         result = assign_tiers(candidates)
         assert result, "expected non-empty result for 5 candidates"
-        assert result[0].policy_version == "rank-v1"
-        assert result[0].policy_version == POLICY_VERSION_RANK_V1
-        assert result[0].policy_params == {
-            "K_HOT": 4, "K_WARM": 12, "candidate_pool": 64,
-        }
+        assert result[0].policy_version == "utility-v2"
+        assert result[0].policy_version == POLICY_VERSION_UTILITY_V2
+        assert result[0].policy_params["K_HOT"] == 4
+        assert result[0].policy_params["K_WARM"] == 12
+        assert result[0].policy_params["candidate_pool"] == 64
+        assert result[0].policy_params["budget"] == pytest.approx(5.0)
+        assert result[0].policy_params["mmr_lambda"] == pytest.approx(0.75)
+        assert result[0].policy_params["rrf_k"] == pytest.approx(60.0)
         # Every assignment in a single call shares identical policy_params.
         for a in result:
             assert a.policy_params == result[0].policy_params
@@ -228,7 +240,7 @@ class TestAssignTiersBasics:
 
     def test_custom_hyperparameters_flow_to_policy_params(self) -> None:
         candidates = _make_candidate_pool(30)
-        result = assign_tiers(
+        result = _assign_rank_tiers(
             candidates, K_HOT=2, K_WARM=5, candidate_pool=20,
         )
         assert len(result) == 20
@@ -281,7 +293,7 @@ class TestAssignTiersEdgeCases:
     def test_shorter_than_k_hot_all_hot(self) -> None:
         """Contract edge case: len < K_HOT -> all HOT, 0 WARM, 0 COLD."""
         candidates = _make_candidate_pool(3)
-        result = assign_tiers(candidates, K_HOT=4, K_WARM=12)
+        result = _assign_rank_tiers(candidates, K_HOT=4, K_WARM=12)
         assert len(result) == 3
         hot, warm, cold = _count_tiers(result)
         assert (hot, warm, cold) == (3, 0, 0)
@@ -290,13 +302,13 @@ class TestAssignTiersEdgeCases:
 
     def test_exactly_k_hot_candidates(self) -> None:
         candidates = _make_candidate_pool(4)
-        result = assign_tiers(candidates, K_HOT=4, K_WARM=12)
+        result = _assign_rank_tiers(candidates, K_HOT=4, K_WARM=12)
         hot, warm, cold = _count_tiers(result)
         assert (hot, warm, cold) == (4, 0, 0)
 
     def test_exactly_k_hot_plus_k_warm(self) -> None:
         candidates = _make_candidate_pool(16)
-        result = assign_tiers(candidates, K_HOT=4, K_WARM=12)
+        result = _assign_rank_tiers(candidates, K_HOT=4, K_WARM=12)
         hot, warm, cold = _count_tiers(result)
         assert (hot, warm, cold) == (4, 12, 0)
 
@@ -332,7 +344,7 @@ class TestAssignTiersValidation:
         """Graceful degrade invariant — overlapping budgets must not crash."""
         candidates = _make_candidate_pool(8)
         # K_HOT + K_WARM = 30 > candidate_pool = 8: no raise, no COLD.
-        result = assign_tiers(
+        result = _assign_rank_tiers(
             candidates, K_HOT=10, K_WARM=20, candidate_pool=8,
         )
         assert len(result) == 8
@@ -372,7 +384,7 @@ class TestAssignTiersProperty:
             candidates = _make_candidate_pool(length)
             rng.shuffle(candidates)
             for k_hot, k_warm, pool in param_grid:
-                result = assign_tiers(
+                result = _assign_rank_tiers(
                     candidates,
                     K_HOT=k_hot,
                     K_WARM=k_warm,

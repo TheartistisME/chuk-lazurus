@@ -18,6 +18,41 @@ MEMORY_PROFILES = ("plug_and_play", "proof", "smoke", "nightly", "diagnostic")
 
 
 @dataclass(frozen=True)
+class DynamicAllocatorConfig:
+    cognitive_ceiling_tokens: int = 4096
+    allocation_quantum_tokens: int = 512
+    output_buffers: dict[str, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.output_buffers is None:
+            object.__setattr__(
+                self,
+                "output_buffers",
+                {
+                    "DETECTIVE": 100,
+                    "PARSER": 512,
+                    "BUILDER": 1280,
+                    "REASONER": 2048,
+                },
+            )
+
+    @classmethod
+    def calculate_max_k(cls, task_type: str, prompt_length: int) -> int:
+        config = cls()
+        normalized_task = str(task_type or "BUILDER").strip().upper()
+        output_buffers = config.output_buffers or {}
+        output_buffer = int(
+            output_buffers.get(normalized_task, output_buffers["BUILDER"])
+        )
+        available_tokens = (
+            int(config.cognitive_ceiling_tokens)
+            - int(prompt_length)
+            - output_buffer
+        )
+        return max(1, int(available_tokens // int(config.allocation_quantum_tokens)))
+
+
+@dataclass(frozen=True)
 class MemoryRecallConfig:
     profile: str = "plug_and_play"
     enabled: bool = True
@@ -224,6 +259,7 @@ def memory_config_env(config: MemoryRecallConfig) -> dict[str, str]:
 __all__ = [
     "MEMORY_MODES",
     "MEMORY_PROFILES",
+    "DynamicAllocatorConfig",
     "MemoryRecallConfig",
     "get_memory_profile",
     "get_memory_profile_names",

@@ -3246,6 +3246,9 @@ def apply_tier_attention_mask(attn_logits, inputs: AttentionTierMaskInputs):
       per window by ``(1 - inputs.warm_scores[window_id])``. If
       ``warm_config.clamp_min is not None``, WARM-touched logits are clamped
       from below AFTER the subtraction.
+    * Unmapped prefix slots are left unchanged. KV_DIRECT reserves prefix
+      index 0 as the attention sink, so callers offset memory ranges by +1
+      and omit the sink from ``per_window_token_ranges``/``tier_assignments``.
 
     Raises
     ------

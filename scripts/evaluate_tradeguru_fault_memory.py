@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_MODEL = "google/gemma-4-E2B-it"
+DEFAULT_SELECTOR_POLICY = "utility-v2"
+DEFAULT_DENSE_SCORING = "deterministic"
+DEFAULT_RRF_K = 60.0
+DEFAULT_MMR_LAMBDA = 0.75
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_EVAL_ROOT = _REPO_ROOT / "prod" / "evals" / "tradeguru test"
 DEFAULT_STORE_ROOT = str(
@@ -77,6 +81,19 @@ UNSAFE_PATTERNS = (
     "short active",
     "short the active",
 )
+
+
+def _env_default(*names: str, default: str) -> str:
+    for name in names:
+        value = os.environ.get(name)
+        if value not in (None, ""):
+            return str(value)
+    return str(default)
+
+
+def _env_float(*names: str, default: float) -> float:
+    raw = _env_default(*names, default=str(default))
+    return float(raw)
 
 
 @dataclass(frozen=True)
@@ -197,6 +214,51 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-pool", type=int, default=32)
     parser.add_argument("--k-hot", type=int, default=4)
     parser.add_argument("--k-warm", type=int, default=8)
+    parser.add_argument(
+        "--selector-policy",
+        default=_env_default(
+            "TRADEGURU_SELECTOR_POLICY",
+            "LAZARUS_ASI_SELECTOR_POLICY",
+            default=DEFAULT_SELECTOR_POLICY,
+        ),
+        choices=("utility-v2", "rank-v1", "hybrid-v2"),
+        help="Memory window selector policy for memory-on conditions.",
+    )
+    parser.add_argument(
+        "--dense-scoring",
+        default=_env_default(
+            "TRADEGURU_DENSE_SCORING",
+            "LAZARUS_ASI_DENSE_SCORING",
+            default=DEFAULT_DENSE_SCORING,
+        ),
+        help="Dense selector mode passed to asi_route_candidates.",
+    )
+    parser.add_argument(
+        "--rrf-k",
+        type=float,
+        default=_env_float(
+            "TRADEGURU_RRF_K",
+            "LAZARUS_ASI_RRF_K",
+            default=DEFAULT_RRF_K,
+        ),
+        help="Reciprocal-rank-fusion k for the utility selector.",
+    )
+    parser.add_argument(
+        "--mmr-lambda",
+        type=float,
+        default=_env_float(
+            "TRADEGURU_MMR_LAMBDA",
+            "LAZARUS_ASI_MMR_LAMBDA",
+            default=DEFAULT_MMR_LAMBDA,
+        ),
+        help="MMR relevance/diversity balance for utility-v2 tiers.",
+    )
+    parser.add_argument(
+        "--selector-budget",
+        type=float,
+        default=None,
+        help="Active selector cost budget; default is k_hot + k_warm windows.",
+    )
     parser.add_argument("--hot-budget-mib", type=int, default=512)
     parser.add_argument("--warm-penalty", type=float, default=4.0)
     parser.add_argument("--local-files-only", action="store_true")
@@ -434,18 +496,32 @@ def run_memory_on(
     from chuk_lazarus.session_retrieval.asi_router import asi_route_candidates
     from chuk_lazarus.session_retrieval.tier_policy import assign_tiers, tier_assignment_to_dict
 
+    selector_policy = str(args.selector_policy).strip().lower().replace("_", "-")
+    dense_scoring = str(args.dense_scoring).strip().lower().replace("-", "_")
+    selector_budget = (
+        float(args.selector_budget)
+        if args.selector_budget is not None
+        else float(int(args.k_hot) + int(args.k_warm))
+    )
     candidates = asi_route_candidates(
         retriever.handles,
         question.question,
         retriever.tokenizer,
         candidate_pool=int(args.candidate_pool),
         archive_root=store_root,
+        dense_scoring=dense_scoring,
+        rrf_k=float(args.rrf_k),
+        ranking_policy=selector_policy,
     )
     assignments = assign_tiers(
         candidates,
         K_HOT=int(args.k_hot),
         K_WARM=int(args.k_warm),
         candidate_pool=int(args.candidate_pool),
+        policy_version=selector_policy,
+        budget=selector_budget,
+        mmr_lambda=float(args.mmr_lambda),
+        rrf_k=float(args.rrf_k),
     )
     if not assignments:
         raise RuntimeError(f"no route candidates for question {question.qid}")
@@ -466,6 +542,11 @@ def run_memory_on(
         "source_session": result.source_session,
         "window_id": result.window_id,
         "strict_assertions": result.strict_assertions,
+        "selector_policy": selector_policy,
+        "dense_scoring": dense_scoring,
+        "rrf_k": float(args.rrf_k),
+        "mmr_lambda": float(args.mmr_lambda),
+        "selector_budget": float(selector_budget),
         "evidence": result.evidence_supports,
         "top_assignments": [tier_assignment_to_dict(item) for item in assignments[:8]],
     }
@@ -491,6 +572,12 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[eval] conditions={conditions}")
     print(f"[eval] questions={len(questions)} output={output_path}")
+    print(
+        "[eval] selector="
+        f"{args.selector_policy} dense={args.dense_scoring} "
+        f"rrf_k={float(args.rrf_k)} mmr_lambda={float(args.mmr_lambda)} "
+        f"budget={args.selector_budget if args.selector_budget is not None else int(args.k_hot) + int(args.k_warm)}"
+    )
 
     if args.dry_run:
         store_handles = enumerate_handles(store_root) if store_root.exists() else []

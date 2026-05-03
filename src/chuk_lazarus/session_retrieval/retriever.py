@@ -55,6 +55,195 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+def _resolve_ghost_activation_layers(model: Any) -> list[Any]:
+    """Locate decoder layers across the HF wrappers used by Lazarus."""
+    candidates = [
+        ("model", "language_model", "layers"),
+        ("model", "language_model", "model", "layers"),
+        ("language_model", "model", "layers"),
+        ("language_model", "layers"),
+        ("model", "layers"),
+        ("transformer", "h"),
+        ("gpt_neox", "layers"),
+        (None, "layers"),
+    ]
+    for path in candidates:
+        target = model
+        *outer, inner_name = path
+        ok = True
+        for attr in outer:
+            if attr is None:
+                continue
+            target = getattr(target, attr, None)
+            if target is None:
+                ok = False
+                break
+        if not ok:
+            continue
+        layers = getattr(target, inner_name, None)
+        if layers is None or not hasattr(layers, "__iter__") or not hasattr(layers, "__len__"):
+            continue
+        try:
+            if len(layers) == 0:
+                continue
+        except TypeError:
+            continue
+        return list(layers)
+    raise ValueError(
+        "apply_ghost_activation: cannot resolve transformer layers. Expected "
+        "model.model.layers, model.model.language_model.layers, "
+        "model.language_model.model.layers, model.transformer.h, "
+        "gpt_neox.layers, or model.layers."
+    )
+
+
+def _resolve_ghost_activation_final_norm(model: Any) -> Any:
+    """Locate the final normalization module immediately before ``lm_head``."""
+    candidates = [
+        ("model", "language_model", "norm"),
+        ("model", "language_model", "model", "norm"),
+        ("language_model", "norm"),
+        ("language_model", "model", "norm"),
+        ("model", "norm"),
+        ("transformer", "ln_f"),
+        (None, "norm"),
+    ]
+    for path in candidates:
+        target = model
+        ok = True
+        for attr in path:
+            if attr is None:
+                continue
+            target = getattr(target, attr, None)
+            if target is None:
+                ok = False
+                break
+        if ok and callable(target):
+            return target
+    raise ValueError(
+        "apply_ghost_activation: cannot resolve final norm. Expected "
+        "model.model.language_model.norm, model.language_model.norm, "
+        "model.model.norm, model.transformer.ln_f, or model.norm."
+    )
+
+
+def apply_ghost_activation(
+    model: Any,
+    layer_idx: int | None,
+    ghost_bias_tensor: Any,
+    *,
+    surface: str = "self_attn_pre",
+) -> Any:
+    """Install a final-token ghost activation hook.
+
+    ``surface="self_attn_pre"`` clones the residual stream passed into the
+    selected ``self_attn`` module and adds ``ghost_bias_tensor`` only to
+    ``hidden_states[:, -1, :]``.
+
+    ``surface="final_norm_output"`` clones the output of the final normalization
+    module immediately before ``lm_head`` and applies the same final-token-only
+    bias there. The returned handle is owned by the caller and must be removed
+    after generation.
+    """
+    surface_name = str(surface).strip().lower()
+
+    def _normalized_bias(hidden_states):
+        bias = ghost_bias_tensor.to(
+            device=hidden_states.device,
+            dtype=hidden_states.dtype,
+            non_blocking=True,
+        )
+        while getattr(bias, "dim", lambda: 0)() > 1 and bias.shape[0] == 1:
+            bias = bias.squeeze(0)
+        if bias.dim() == 1:
+            if int(bias.shape[0]) != int(hidden_states.shape[-1]):
+                raise ValueError(
+                    "apply_ghost_activation: ghost_bias_tensor hidden size "
+                    f"{int(bias.shape[0])} does not match residual hidden "
+                    f"size {int(hidden_states.shape[-1])}."
+                )
+            return bias.view(1, -1)
+        if bias.dim() == 2:
+            if int(bias.shape[-1]) != int(hidden_states.shape[-1]):
+                raise ValueError(
+                    "apply_ghost_activation: ghost_bias_tensor hidden size "
+                    f"{int(bias.shape[-1])} does not match residual hidden "
+                    f"size {int(hidden_states.shape[-1])}."
+                )
+            if int(bias.shape[0]) not in {1, int(hidden_states.shape[0])}:
+                raise ValueError(
+                    "apply_ghost_activation: rank-2 ghost_bias_tensor batch "
+                    f"dimension {int(bias.shape[0])} is not broadcastable to "
+                    f"batch {int(hidden_states.shape[0])}."
+                )
+            return bias
+        raise ValueError(
+            "apply_ghost_activation: ghost_bias_tensor must have shape "
+            "[hidden], [1, hidden], [batch, hidden], or [1, 1, hidden]."
+        )
+
+    def _shift_final_token(hidden_states):
+        if not hasattr(hidden_states, "shape") or getattr(hidden_states, "dim", lambda: 0)() != 3:
+            return hidden_states
+        modified = hidden_states.clone()
+        modified[:, -1, :] = modified[:, -1, :] + _normalized_bias(modified)
+        return modified
+
+    if surface_name == "final_norm_output":
+        final_norm = _resolve_ghost_activation_final_norm(model)
+
+        def _final_norm_hook(_module, _args, output):
+            if isinstance(output, tuple):
+                if not output:
+                    return output
+                return (_shift_final_token(output[0]), *output[1:])
+            return _shift_final_token(output)
+
+        return final_norm.register_forward_hook(_final_norm_hook)
+
+    if surface_name not in {"self_attn_pre", "attention_pre"}:
+        raise ValueError(
+            "apply_ghost_activation: unsupported surface "
+            f"{surface!r}; expected 'self_attn_pre' or 'final_norm_output'."
+        )
+
+    layers = _resolve_ghost_activation_layers(model)
+    idx = int(layer_idx) if layer_idx is not None else -1
+    if idx < 0 or idx >= len(layers):
+        raise IndexError(
+            f"apply_ghost_activation: layer_idx={idx} out of range for "
+            f"{len(layers)} resolved layers."
+        )
+    attn = getattr(layers[idx], "self_attn", None) or getattr(layers[idx], "attention", None)
+    if attn is None:
+        raise ValueError(
+            f"apply_ghost_activation: layer {idx} has no .self_attn/.attention module."
+        )
+
+    def _pre_hook(_module, args, kwargs):
+        args = tuple(args)
+        kwargs = dict(kwargs)
+        if args:
+            hidden_states = args[0]
+            source = "args"
+        elif "hidden_states" in kwargs:
+            hidden_states = kwargs["hidden_states"]
+            source = "kwargs"
+        else:
+            return args, kwargs
+
+        if not hasattr(hidden_states, "shape") or getattr(hidden_states, "dim", lambda: 0)() != 3:
+            return args, kwargs
+
+        modified = _shift_final_token(hidden_states)
+        if source == "args":
+            return (modified, *args[1:]), kwargs
+        kwargs["hidden_states"] = modified
+        return args, kwargs
+
+    return attn.register_forward_pre_hook(_pre_hook, with_kwargs=True)
+
+
 def _install_residual_session_cache(runtime: TorchInferenceRuntime, max_sessions: int | None) -> Any | None:
     """Attach the bounded-engine WARM session cache when that engine is active."""
     if getattr(runtime, "engine_mode", None) != "residual_bounded_kv_direct":
@@ -674,6 +863,77 @@ class SessionRetriever:
         )
         return residuals, materialization
 
+    _DEFAULT_SEMANTIC_PREFIX_SYSTEM_PROMPT = (
+        "You answer from the context that appears before "
+        "this chat. Return every requested value in that "
+        "context and be concise."
+    )
+
+    _KV_SEMANTIC_PREFIX_GROUND_DIRECTIVE = (
+        "The reference document content is provided as context before this chat. "
+        "Ground your answer in the specific terminology from that context: "
+        "name the components, fault types, test instruments, and document terms "
+        "explicitly. Keep any preamble brief (1-2 short sentences) so the "
+        "remainder of the answer covers the practical content the user asked for."
+    )
+
+    def _resolve_semantic_prefix_system_prompt(self) -> str:
+        """Pick the system prompt for the HOT/WARM-prefix decode path.
+
+        The historical default ("be concise") was authored for chat_loop
+        value-extraction tests where a single short answer (color name,
+        identifier, fact key) is expected. For procedural / safety-critical
+        workloads -- TradeGuru electrical fault-finding being the motivating
+        case -- the caller already supplied a task-specific system prompt
+        through :attr:`system_prompt` (safety preamble, ordered fault-finding
+        sequence, licensed-electrician escalation). Silently overriding it
+        regresses ``correct_test_order`` and ``safety_controls_present`` on
+        the memory-on path while leaving memory-off untouched.
+
+        Behaviour:
+
+        * ``LAZARUS_KV_SEMANTIC_PREFIX_USE_CALLER_SYSTEM_PROMPT`` unset / ``"0"``
+          (default): return the legacy "be concise" prompt. Existing
+          chat_loop tests are untouched.
+        * Truthy ("1", "true", "yes", "on") **and** ``self.system_prompt``
+          non-empty: return the caller-configured prompt verbatim.
+        * Truthy but ``self.system_prompt`` empty: fall back to the legacy
+          prompt rather than templating an empty system message.
+
+        Document-grounding directive
+        ----------------------------
+        When ``LAZARUS_KV_SEMANTIC_PREFIX_GROUND_IN_DOCUMENT`` is truthy
+        ("1", "true", "yes", "on") **and** the caller-prompt branch is
+        chosen above, a small RAG-best-practice directive is prepended to
+        the caller's prompt that asks the model to ground in document
+        terminology and keep any preamble brief. This is generally
+        useful for any retrieval-augmented procedural workload where the
+        model's token budget is finite and the answer must reach the
+        document-specific content rather than expand boilerplate
+        preamble. The directive is task-agnostic (no rubric vocabulary),
+        does not weaken the safety semantics of the caller's prompt, and
+        is silent when either env flag is off so existing callers see no
+        change.
+        """
+        use_caller_prompt = str(
+            os.environ.get(
+                "LAZARUS_KV_SEMANTIC_PREFIX_USE_CALLER_SYSTEM_PROMPT", "0"
+            )
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        ground_in_document = str(
+            os.environ.get(
+                "LAZARUS_KV_SEMANTIC_PREFIX_GROUND_IN_DOCUMENT", "0"
+            )
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if use_caller_prompt and self.system_prompt:
+            caller = str(self.system_prompt)
+            if ground_in_document:
+                return (
+                    f"{self._KV_SEMANTIC_PREFIX_GROUND_DIRECTIVE}\n\n{caller}"
+                )
+            return caller
+        return self._DEFAULT_SEMANTIC_PREFIX_SYSTEM_PROMPT
+
     def _generate_with_semantic_token_prefix(
         self,
         query_text: str,
@@ -693,17 +953,11 @@ class SessionRetriever:
 
         torch = self.runtime._torch
         tokenizer = self.tokenizer
+        system_content = self._resolve_semantic_prefix_system_prompt()
         try:
             templated_prompt = tokenizer.apply_chat_template(
                 [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You answer from the context that appears before "
-                            "this chat. Return every requested value in that "
-                            "context and be concise."
-                        ),
-                    },
+                    {"role": "system", "content": system_content},
                     {"role": "user", "content": query_text},
                 ],
                 tokenize=False,

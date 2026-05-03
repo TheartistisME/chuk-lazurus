@@ -26,10 +26,16 @@ from typing import Any
 import numpy as np
 
 LAYER = 12
+APOLLO_LAYER = LAYER + 1
 DEFAULT_DIM = 128
 DEFAULT_OVERLAP_TOKENS = 128
 DEFAULT_CUDA_BATCH_SIZE = 128
 DEFAULT_CPU_BATCH_SIZE = 4
+APOLLO_MANIFEST_NAME = "manifest.json"
+APOLLO_BOUNDARY_RESIDUAL_NAME = "boundary_residual.npy"
+APOLLO_BOUNDARIES_DIR = "boundaries"
+APOLLO_RESIDUAL_STREAMS_DIR = "residual_streams"
+APOLLO_SEMANTICS = "input_ids_seeded_boundary_prehook"
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,7 @@ class JitIndexResult:
     token_count: int = 0
     tokens_per_second: float = 0.0
     memory_usage_percent: float = 0.0
+    apollo_ready: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -55,6 +62,7 @@ class JitIndexResult:
             "token_count": int(self.token_count),
             "tokens_per_second": float(self.tokens_per_second),
             "memory_usage_percent": float(self.memory_usage_percent),
+            "apollo_ready": bool(self.apollo_ready),
         }
 
 
@@ -69,6 +77,15 @@ class FastCaseIndexResult:
     tokens_per_second: float
     memory_usage_percent: float
     batch_size: int
+    apollo_manifest_path: str = ""
+    boundary_residual_path: str = ""
+    boundaries_dir: str = ""
+    residual_streams_dir: str = ""
+    apollo_window_count: int = 0
+    apollo_hidden_dim: int = 0
+    apollo_tokens_per_second: float = 0.0
+    apollo_reused: bool = False
+    apollo_ready: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +98,41 @@ class FastCaseIndexResult:
             "tokens_per_second": float(self.tokens_per_second),
             "memory_usage_percent": float(self.memory_usage_percent),
             "batch_size": int(self.batch_size),
+            "apollo_manifest_path": self.apollo_manifest_path,
+            "boundary_residual_path": self.boundary_residual_path,
+            "boundaries_dir": self.boundaries_dir,
+            "residual_streams_dir": self.residual_streams_dir,
+            "apollo_window_count": int(self.apollo_window_count),
+            "apollo_hidden_dim": int(self.apollo_hidden_dim),
+            "apollo_tokens_per_second": float(self.apollo_tokens_per_second),
+            "apollo_reused": bool(self.apollo_reused),
+            "apollo_ready": bool(self.apollo_ready),
+        }
+
+
+@dataclass(frozen=True)
+class ApolloResidualPassResult:
+    manifest_path: str
+    boundary_residual_path: str
+    boundaries_dir: str
+    residual_streams_dir: str
+    window_count: int
+    token_count: int
+    hidden_dim: int
+    tokens_per_second: float
+    reused: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "manifest_path": self.manifest_path,
+            "boundary_residual_path": self.boundary_residual_path,
+            "boundaries_dir": self.boundaries_dir,
+            "residual_streams_dir": self.residual_streams_dir,
+            "window_count": int(self.window_count),
+            "token_count": int(self.token_count),
+            "hidden_dim": int(self.hidden_dim),
+            "tokens_per_second": float(self.tokens_per_second),
+            "reused": bool(self.reused),
         }
 
 
@@ -352,6 +404,14 @@ def _window_tokens_complete(path: Path, *, expected_windows: int) -> bool:
         return False
 
 
+def _load_window_tokens_npz(path: Path) -> dict[int, list[int]]:
+    with np.load(str(path), allow_pickle=False) as zf:
+        token_lists: dict[int, list[int]] = {}
+        for key in sorted(zf.files, key=lambda item: int(item)):
+            token_lists[int(key)] = [int(token) for token in zf[key].tolist()]
+    return token_lists
+
+
 def _route_fill_count(path: Path, *, expected_windows: int, dim: int) -> int | None:
     if not path.exists():
         return None
@@ -368,9 +428,482 @@ def _route_fill_count(path: Path, *, expected_windows: int, dim: int) -> int | N
     return int(first_unfilled)
 
 
+def _clear_apollo_artifacts(store_dir: Path) -> None:
+    for child in (
+        store_dir / APOLLO_BOUNDARIES_DIR,
+        store_dir / APOLLO_RESIDUAL_STREAMS_DIR,
+    ):
+        if not child.exists():
+            continue
+        for nested in sorted(child.rglob("*"), reverse=True):
+            if nested.is_file() or nested.is_symlink():
+                nested.unlink()
+            elif nested.is_dir():
+                nested.rmdir()
+        child.rmdir()
+    for child in (
+        store_dir / APOLLO_BOUNDARY_RESIDUAL_NAME,
+        store_dir / APOLLO_MANIFEST_NAME,
+    ):
+        if child.exists() or child.is_symlink():
+            child.unlink()
+
+
+def _model_identity(model: Any) -> dict[str, Any]:
+    config = getattr(model, "config", None)
+    text_config = getattr(config, "text_config", None)
+    candidates = (config, text_config)
+    identity: dict[str, Any] = {
+        "model_class": type(model).__name__,
+    }
+    for field in ("name_or_path", "_name_or_path", "model_type", "architectures"):
+        for source in candidates:
+            value = getattr(source, field, None)
+            if value:
+                identity[field.lstrip("_")] = value
+                break
+    hidden_dim = _model_hidden_dim(model)
+    if hidden_dim:
+        identity["hidden_dim"] = int(hidden_dim)
+    return identity
+
+
+def _tokenizer_identity(tokenizer: Any) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "tokenizer_class": type(tokenizer).__name__,
+    }
+    for field in ("name_or_path", "_name_or_path", "vocab_size", "model_max_length"):
+        value = getattr(tokenizer, field, None)
+        if value is not None:
+            identity[field.lstrip("_")] = value
+    return identity
+
+
+def _call_model_for_apollo(model: Any, kwargs: dict[str, Any]) -> None:
+    try:
+        model(**kwargs)
+    except TypeError:
+        kwargs = dict(kwargs)
+        kwargs.pop("use_cache", None)
+        model(**kwargs)
+
+
+def _boundary_as_prefix(boundary: Any, *, like: Any, torch_mod: Any) -> Any:
+    prefix = boundary
+    if not torch_mod.is_tensor(prefix):
+        prefix = torch_mod.as_tensor(prefix)
+    prefix = prefix.to(device=like.device, dtype=like.dtype)
+    if prefix.ndim == 1:
+        prefix = prefix.view(1, 1, -1)
+    elif prefix.ndim == 2:
+        prefix = prefix.unsqueeze(0)
+    elif prefix.ndim != 3:
+        raise ValueError(f"Unsupported boundary residual rank: {int(prefix.ndim)}")
+    if int(prefix.shape[0]) != int(like.shape[0]):
+        if int(prefix.shape[0]) == 1:
+            prefix = prefix.expand(int(like.shape[0]), -1, -1)
+        else:
+            raise ValueError("Boundary residual batch size does not match window batch")
+    if int(prefix.shape[-1]) != int(like.shape[-1]):
+        raise ValueError(
+            "Boundary residual hidden dim does not match model embeddings: "
+            f"{int(prefix.shape[-1])} != {int(like.shape[-1])}"
+        )
+    return prefix.contiguous()
+
+
+def _boundary_seed_ids(input_ids: Any, *, prefix_len: int, torch_mod: Any) -> Any:
+    seed = torch_mod.zeros(
+        (int(input_ids.shape[0]), int(prefix_len)),
+        dtype=input_ids.dtype,
+        device=input_ids.device,
+    )
+    return torch_mod.cat((seed, input_ids), dim=1)
+
+
+def _forward_window_to_boundary_layer(
+    model: Any,
+    *,
+    input_ids: Any,
+    attention_mask: Any,
+    layer: int,
+    initial_residual: Any | None,
+    torch_mod: Any,
+) -> Any:
+    """Forward one window and capture post-boundary-layer residual stream."""
+
+    captured: dict[str, Any] = {}
+
+    def capture_hook(_module: Any, _inputs: Any, output: Any) -> None:
+        captured["hidden"] = _hook_hidden(output)
+
+    boundary_layer = _layer_module(model, layer)
+    capture_handle = boundary_layer.register_forward_hook(capture_hook)
+    prepend_handle = None
+    try:
+        with torch_mod.inference_mode():
+            if initial_residual is None:
+                kwargs = {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "use_cache": False,
+                }
+                _call_model_for_apollo(model, kwargs)
+            else:
+                # Gemma4 cannot safely run this path with inputs_embeds only:
+                # it reverse-maps embeddings against the full vocab to recover
+                # token ids for per-layer inputs. Keep the input_ids path live
+                # and replace the dummy prefix hidden state before layer 0.
+                reference = model.get_input_embeddings()(input_ids[:, :1])
+                prefix = _boundary_as_prefix(initial_residual, like=reference, torch_mod=torch_mod)
+                prefix_len = int(prefix.shape[1])
+                seeded_input_ids = _boundary_seed_ids(
+                    input_ids,
+                    prefix_len=prefix_len,
+                    torch_mod=torch_mod,
+                )
+                prefix_mask = torch_mod.ones(
+                    (int(attention_mask.shape[0]), int(prefix_len)),
+                    dtype=attention_mask.dtype,
+                    device=attention_mask.device,
+                )
+                extended_mask = torch_mod.cat((prefix_mask, attention_mask), dim=1)
+
+                def prepend_hook(_module: Any, inputs: tuple[Any, ...]) -> tuple[Any, ...]:
+                    if not inputs:
+                        return inputs
+                    hidden = inputs[0]
+                    if not torch_mod.is_tensor(hidden) or int(hidden.ndim) != 3:
+                        return inputs
+                    prefix_local = prefix.to(device=hidden.device, dtype=hidden.dtype)
+                    if int(prefix_local.shape[0]) != int(hidden.shape[0]):
+                        if int(prefix_local.shape[0]) == 1:
+                            prefix_local = prefix_local.expand(int(hidden.shape[0]), -1, -1)
+                        else:
+                            raise ValueError("Boundary residual batch size does not match hidden batch")
+                    if int(prefix_local.shape[1]) > int(hidden.shape[1]):
+                        raise ValueError("Boundary residual prefix is longer than seeded hidden states")
+                    adjusted = hidden.clone()
+                    adjusted[:, : int(prefix_local.shape[1]), :] = prefix_local
+                    return (adjusted, *inputs[1:])
+
+                prepend_handle = _layer_module(model, 0).register_forward_pre_hook(prepend_hook)
+                kwargs = {
+                    "input_ids": seeded_input_ids,
+                    "attention_mask": extended_mask,
+                    "use_cache": False,
+                }
+                _call_model_for_apollo(model, kwargs)
+        hidden = captured.get("hidden")
+        if hidden is None:
+            raise RuntimeError(f"Layer {int(layer)} hook did not capture hidden states")
+        if isinstance(hidden, (tuple, list)):
+            hidden = hidden[0]
+        if hidden.ndim == 2:
+            hidden = hidden.unsqueeze(0)
+        return hidden
+    finally:
+        if prepend_handle is not None:
+            prepend_handle.remove()
+        capture_handle.remove()
+
+
+def _save_float32_array(path: Path, tensor: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    array = tensor.detach().float().to("cpu").contiguous().numpy()
+    np.save(str(path), array.astype(np.float32, copy=False))
+
+
+def _apollo_manifest_path(store_dir: Path) -> Path:
+    return store_dir / APOLLO_MANIFEST_NAME
+
+
+def _apollo_boundaries_dir(store_dir: Path) -> Path:
+    return store_dir / APOLLO_BOUNDARIES_DIR
+
+
+def _apollo_residual_streams_dir(store_dir: Path) -> Path:
+    return store_dir / APOLLO_RESIDUAL_STREAMS_DIR
+
+
+def _apollo_residual_complete(
+    store_dir: Path,
+    *,
+    expected_windows: int,
+    layer: int = APOLLO_LAYER,
+) -> bool:
+    manifest_path = _apollo_manifest_path(store_dir)
+    if not manifest_path.exists():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return False
+    if manifest.get("kind") != "benchmark_jit_apollo_sequential_residual":
+        return False
+    if manifest.get("status") != "ready" or manifest.get("apollo_ready") is not True:
+        return False
+    if int(manifest.get("num_windows", -1)) != int(expected_windows):
+        return False
+    if int(manifest.get("layer", -1)) != int(layer):
+        return False
+    if manifest.get("semantics") != APOLLO_SEMANTICS:
+        return False
+    if manifest.get("row_alignment") != "window_id":
+        return False
+    document_order = manifest.get("document_order")
+    if not isinstance(document_order, list) or len(document_order) != int(expected_windows):
+        return False
+    final_boundary = store_dir / str(manifest.get("boundary_residual_path", APOLLO_BOUNDARY_RESIDUAL_NAME))
+    if not final_boundary.exists():
+        return False
+    boundaries_dir = store_dir / APOLLO_BOUNDARIES_DIR
+    streams_dir = store_dir / APOLLO_RESIDUAL_STREAMS_DIR
+    hidden_dim = int(manifest.get("hidden_dim", 0) or 0)
+    for raw_window_id in document_order:
+        try:
+            window_id = int(raw_window_id)
+        except Exception:  # noqa: BLE001
+            return False
+        boundary_path = boundaries_dir / f"window_{window_id:03d}.npy"
+        stream_path = streams_dir / f"window_{window_id:03d}.npy"
+        if not boundary_path.exists() or not stream_path.exists():
+            return False
+        if hidden_dim > 0:
+            try:
+                boundary = np.load(str(boundary_path), mmap_mode="r", allow_pickle=False)
+                stream = np.load(str(stream_path), mmap_mode="r", allow_pickle=False)
+            except Exception:  # noqa: BLE001
+                return False
+            if tuple(boundary.shape) != (hidden_dim,):
+                return False
+            if int(stream.ndim) != 2 or int(stream.shape[-1]) != hidden_dim:
+                return False
+    if hidden_dim > 0:
+        try:
+            final = np.load(str(final_boundary), mmap_mode="r", allow_pickle=False)
+        except Exception:  # noqa: BLE001
+            return False
+        if tuple(final.shape) != (1, 1, hidden_dim):
+            return False
+    return True
+
+
+class ApolloSequentialResidualPass:
+    """Sequential residual sidecar writer for benchmark JIT stores."""
+
+    def __init__(
+        self,
+        *,
+        tokenizer: Any,
+        model: Any,
+        layer: int = APOLLO_LAYER,
+        window_size: int = 512,
+        overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
+    ) -> None:
+        import torch
+
+        self.torch = torch
+        self.tokenizer = tokenizer
+        self.model = model
+        self.layer = int(layer)
+        self.window_size = int(window_size)
+        self.overlap_tokens = int(overlap_tokens)
+        self.device = _model_device(model, torch)
+
+    def ensure(
+        self,
+        *,
+        store_dir: Path,
+        activation_path: Path,
+        window_tokens_path: Path,
+        token_count: int,
+        expected_windows: int,
+        force: bool = False,
+    ) -> ApolloResidualPassResult:
+        if not force and _apollo_residual_complete(
+            store_dir,
+            expected_windows=expected_windows,
+            layer=self.layer,
+        ):
+            manifest = json.loads(_apollo_manifest_path(store_dir).read_text(encoding="utf-8"))
+            return ApolloResidualPassResult(
+                manifest_path=str(_apollo_manifest_path(store_dir)),
+                boundary_residual_path=str(store_dir / APOLLO_BOUNDARY_RESIDUAL_NAME),
+                boundaries_dir=str(_apollo_boundaries_dir(store_dir)),
+                residual_streams_dir=str(_apollo_residual_streams_dir(store_dir)),
+                window_count=int(expected_windows),
+                token_count=int(token_count),
+                hidden_dim=int(manifest.get("hidden_dim", 0) or 0),
+                tokens_per_second=0.0,
+                reused=True,
+            )
+
+        return self.build(
+            store_dir=store_dir,
+            activation_path=activation_path,
+            window_tokens_path=window_tokens_path,
+            token_count=token_count,
+            expected_windows=expected_windows,
+        )
+
+    def build(
+        self,
+        *,
+        store_dir: Path,
+        activation_path: Path,
+        window_tokens_path: Path,
+        token_count: int,
+        expected_windows: int,
+    ) -> ApolloResidualPassResult:
+        torch = self.torch
+        token_lists = _load_window_tokens_npz(window_tokens_path)
+        document_order = sorted(token_lists)
+        if len(document_order) != int(expected_windows):
+            raise RuntimeError(
+                "Cannot build Apollo residual sidecars: "
+                f"expected {int(expected_windows)} token windows, found {len(document_order)}"
+            )
+
+        _clear_apollo_artifacts(store_dir)
+        boundaries_dir = _apollo_boundaries_dir(store_dir)
+        residual_streams_dir = _apollo_residual_streams_dir(store_dir)
+        boundaries_dir.mkdir(parents=True, exist_ok=True)
+        residual_streams_dir.mkdir(parents=True, exist_ok=True)
+
+        boundary = None
+        hidden_dim = _model_hidden_dim(self.model)
+        started = time.perf_counter()
+        processed_tokens = 0
+        for window_id in document_order:
+            token_ids = token_lists[int(window_id)] or [_pad_token_id(self.tokenizer)]
+            input_ids = torch.tensor(
+                [token_ids],
+                dtype=torch.long,
+                device=self.device,
+            )
+            attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=self.device)
+            hidden = _forward_window_to_boundary_layer(
+                self.model,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                layer=self.layer,
+                initial_residual=boundary,
+                torch_mod=torch,
+            )
+            valid_len = int(input_ids.shape[1])
+            stream = hidden[:, -valid_len:, :]
+            boundary = hidden[:, -1:, :].detach()
+            hidden_dim = int(boundary.shape[-1])
+            _save_float32_array(boundaries_dir / f"window_{int(window_id):03d}.npy", boundary[0, 0, :])
+            _save_float32_array(
+                residual_streams_dir / f"window_{int(window_id):03d}.npy",
+                stream[0, :, :],
+            )
+            processed_tokens += valid_len
+
+        if boundary is None:
+            raise RuntimeError("Cannot build Apollo residual sidecars without at least one window")
+        boundary_residual_path = store_dir / APOLLO_BOUNDARY_RESIDUAL_NAME
+        _save_float32_array(boundary_residual_path, boundary.detach().float().to("cpu"))
+
+        activation_shape: list[int] = []
+        activation_dtype = "float16"
+        if activation_path.exists():
+            routes = np.load(str(activation_path), mmap_mode="r", allow_pickle=False)
+            activation_shape = [int(axis) for axis in routes.shape]
+            activation_dtype = str(routes.dtype)
+        stride_tokens = max(1, int(self.window_size) - max(0, int(self.overlap_tokens)))
+        model_identity = _model_identity(self.model)
+        tokenizer_identity = _tokenizer_identity(self.tokenizer)
+        arch_config = dict(_arch_config(self.model, window_size=self.window_size))
+        arch_config["retrieval_layer"] = int(self.layer)
+        arch_config["crystal_layer"] = int(self.layer)
+        arch_config["injection_layer"] = int(self.layer)
+        manifest = {
+            "version": 1,
+            "kind": "benchmark_jit_apollo_sequential_residual",
+            "status": "ready",
+            "apollo_ready": True,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "layer": int(self.layer),
+            "crystal_layer": int(self.layer),
+            "source_layer": int(self.layer),
+            "target_layer": int(self.layer) + 1,
+            "arch_config": arch_config,
+            "model_id": model_identity.get("name_or_path")
+            or model_identity.get("model_type")
+            or type(self.model).__name__,
+            "tokenizer_id": tokenizer_identity.get("name_or_path") or type(self.tokenizer).__name__,
+            "model_identity": model_identity,
+            "tokenizer_identity": tokenizer_identity,
+            "num_windows": int(expected_windows),
+            "num_tokens": int(token_count),
+            "processed_tokens": int(processed_tokens),
+            "window_tokens": int(self.window_size),
+            "window_size": int(self.window_size),
+            "overlap": int(self.overlap_tokens),
+            "overlap_tokens": int(self.overlap_tokens),
+            "stride": int(stride_tokens),
+            "stride_tokens": int(stride_tokens),
+            "document_order": [int(window_id) for window_id in document_order],
+            "semantics": APOLLO_SEMANTICS,
+            "boundary_source": "last_post_crystal_hidden",
+            "input_policy": "window_tokens_row_in_document_order",
+            "stream_policy": "valid_window_tokens_excludes_prefix_boundary",
+            "dtype": "float32",
+            "hidden_dim": int(hidden_dim),
+            "row_alignment": "window_id",
+            "activation_routes": {
+                "path": "activation_routes.npy",
+                "dtype": activation_dtype,
+                "shape": activation_shape,
+                "count": int(expected_windows),
+                "row_alignment": "window_id",
+                "query_path": True,
+            },
+            "window_tokens_path": "window_tokens.npz",
+            "boundary_residual_path": APOLLO_BOUNDARY_RESIDUAL_NAME,
+            "boundaries_dir": APOLLO_BOUNDARIES_DIR,
+            "residual_streams_dir": APOLLO_RESIDUAL_STREAMS_DIR,
+            "artifacts": {
+                "final_boundary": APOLLO_BOUNDARY_RESIDUAL_NAME,
+                "boundaries_dir": APOLLO_BOUNDARIES_DIR,
+                "residual_streams_dir": APOLLO_RESIDUAL_STREAMS_DIR,
+            },
+        }
+        _write_json(_apollo_manifest_path(store_dir), manifest)
+        elapsed = max(1e-9, time.perf_counter() - started)
+        tokens_per_second = float(processed_tokens / elapsed)
+        print(
+            "APOLLO RESIDUAL PASS COMPLETE: "
+            f"{tokens_per_second:.1f} tokens/sec "
+            f"(windows={int(expected_windows)} layer={int(self.layer)})",
+            flush=True,
+        )
+        return ApolloResidualPassResult(
+            manifest_path=str(_apollo_manifest_path(store_dir)),
+            boundary_residual_path=str(boundary_residual_path),
+            boundaries_dir=str(boundaries_dir),
+            residual_streams_dir=str(residual_streams_dir),
+            window_count=int(expected_windows),
+            token_count=int(token_count),
+            hidden_dim=int(hidden_dim),
+            tokens_per_second=tokens_per_second,
+            reused=False,
+        )
+
+
 def _clean_fast_store(store_dir: Path) -> None:
     store_dir.mkdir(parents=True, exist_ok=True)
-    keep = {"activation_routes.npy", "window_tokens.npz"}
+    keep = {
+        "activation_routes.npy",
+        "window_tokens.npz",
+        APOLLO_MANIFEST_NAME,
+        APOLLO_BOUNDARY_RESIDUAL_NAME,
+        APOLLO_BOUNDARIES_DIR,
+        APOLLO_RESIDUAL_STREAMS_DIR,
+    }
     for child in store_dir.iterdir():
         if child.name in keep:
             continue
@@ -412,6 +945,30 @@ class FastBatchIndexer:
         self.pad_token_id = _pad_token_id(tokenizer)
         self.requested_batch_size = batch_size
 
+    def _ensure_apollo_sidecars(
+        self,
+        *,
+        store_dir: Path,
+        activation_path: Path,
+        window_tokens_path: Path,
+        token_count: int,
+        expected_windows: int,
+    ) -> ApolloResidualPassResult:
+        pass_runner = ApolloSequentialResidualPass(
+            tokenizer=self.tokenizer,
+            model=self.model,
+            layer=self.layer + 1,
+            window_size=self.window_size,
+            overlap_tokens=self.overlap_tokens,
+        )
+        return pass_runner.ensure(
+            store_dir=store_dir,
+            activation_path=activation_path,
+            window_tokens_path=window_tokens_path,
+            token_count=token_count,
+            expected_windows=expected_windows,
+        )
+
     def index_text(
         self,
         text: str,
@@ -448,6 +1005,23 @@ class FastBatchIndexer:
         batch_size = _fast_batch_size(torch, self.device, self.requested_batch_size, num_windows)
         if filled_rows == num_windows:
             memory_percent = _memory_usage_percent(torch, self.device)
+            if not _apollo_residual_complete(
+                store_dir,
+                expected_windows=num_windows,
+                layer=self.layer + 1,
+            ):
+                print(
+                    "FAST JIT FOUND: Apollo sidecars missing. "
+                    f"Running Apollo upgrader only for case={int(case_index)} windows={num_windows}.",
+                    flush=True,
+                )
+            apollo_result = self._ensure_apollo_sidecars(
+                store_dir=store_dir,
+                activation_path=activation_path,
+                window_tokens_path=window_tokens_path,
+                token_count=token_count,
+                expected_windows=num_windows,
+            )
             print(
                 "FAST-PATH INDEXING ACTIVE: "
                 f"reusing completed case={int(case_index)} "
@@ -464,6 +1038,15 @@ class FastBatchIndexer:
                 tokens_per_second=0.0,
                 memory_usage_percent=float(memory_percent),
                 batch_size=int(batch_size),
+                apollo_manifest_path=apollo_result.manifest_path,
+                boundary_residual_path=apollo_result.boundary_residual_path,
+                boundaries_dir=apollo_result.boundaries_dir,
+                residual_streams_dir=apollo_result.residual_streams_dir,
+                apollo_window_count=apollo_result.window_count,
+                apollo_hidden_dim=apollo_result.hidden_dim,
+                apollo_tokens_per_second=apollo_result.tokens_per_second,
+                apollo_reused=apollo_result.reused,
+                apollo_ready=True,
             )
         if filled_rows is None:
             routes = np.lib.format.open_memmap(
@@ -570,6 +1153,13 @@ class FastBatchIndexer:
             f"(case={int(case_index)} tokens={token_count} windows={num_windows})",
             flush=True,
         )
+        apollo_result = self._ensure_apollo_sidecars(
+            store_dir=store_dir,
+            activation_path=activation_path,
+            window_tokens_path=window_tokens_path,
+            token_count=token_count,
+            expected_windows=num_windows,
+        )
         return FastCaseIndexResult(
             case_index=int(case_index),
             token_count=int(token_count),
@@ -580,6 +1170,15 @@ class FastBatchIndexer:
             tokens_per_second=tokens_per_second,
             memory_usage_percent=float(max_memory_percent),
             batch_size=int(batch_size),
+            apollo_manifest_path=apollo_result.manifest_path,
+            boundary_residual_path=apollo_result.boundary_residual_path,
+            boundaries_dir=apollo_result.boundaries_dir,
+            residual_streams_dir=apollo_result.residual_streams_dir,
+            apollo_window_count=apollo_result.window_count,
+            apollo_hidden_dim=apollo_result.hidden_dim,
+            apollo_tokens_per_second=apollo_result.tokens_per_second,
+            apollo_reused=apollo_result.reused,
+            apollo_ready=True,
         )
 
 
@@ -614,19 +1213,47 @@ def jit_index_dataset_windows(
         except Exception:  # noqa: BLE001 - fall through and rebuild.
             first_matrix_path = ""
         else:
-            all_case_paths_exist = bool(case_matrices) and all(
-                Path(str(case.get("activation_matrix_path", ""))).exists()
-                and Path(str(case.get("window_tokens_path", ""))).exists()
-                for case in case_matrices
-                if isinstance(case, dict)
-            )
-            if (
+            all_fast_case_paths_exist = bool(case_matrices)
+            all_apollo_case_paths_exist = bool(case_matrices)
+            for case in case_matrices:
+                if not isinstance(case, dict):
+                    all_fast_case_paths_exist = False
+                    all_apollo_case_paths_exist = False
+                    break
+                store_dir = Path(str(case.get("store_dir", "")))
+                expected_windows = int(case.get("window_count", 0) or 0)
+                activation_matrix_path = Path(str(case.get("activation_matrix_path", "")))
+                window_tokens_path = Path(str(case.get("window_tokens_path", "")))
+                fast_jit_ready = (
+                    _route_fill_count(
+                        activation_matrix_path,
+                        expected_windows=expected_windows,
+                        dim=int(dim),
+                    )
+                    == expected_windows
+                    and _window_tokens_complete(
+                        window_tokens_path,
+                        expected_windows=expected_windows,
+                    )
+                )
+                if not fast_jit_ready:
+                    all_fast_case_paths_exist = False
+                    all_apollo_case_paths_exist = False
+                    break
+                if not _apollo_residual_complete(
+                    store_dir,
+                    expected_windows=expected_windows,
+                    layer=APOLLO_LAYER,
+                ):
+                    all_apollo_case_paths_exist = False
+            fast_cache_ready = (
                 mode == "real_gemma4_fast_batch_layer12"
                 and first_matrix_path
                 and Path(first_matrix_path).exists()
                 and route_root.exists()
-                and all_case_paths_exist
-            ):
+                and all_fast_case_paths_exist
+            )
+            if fast_cache_ready and all_apollo_case_paths_exist:
                 print(
                     "FAST-PATH INDEXING ACTIVE: "
                     f"{float(metadata.get('tokens_per_second', 0.0)):.1f} tokens/sec | "
@@ -644,6 +1271,13 @@ def jit_index_dataset_windows(
                     token_count=int(token_count),
                     tokens_per_second=float(metadata.get("tokens_per_second", 0.0)),
                     memory_usage_percent=float(metadata.get("memory_usage_percent", 0.0)),
+                    apollo_ready=True,
+                )
+            if fast_cache_ready:
+                print(
+                    "FAST-PATH INDEXING ACTIVE: "
+                    "reusing fast routes; Apollo sidecars missing - running Apollo upgrader only.",
+                    flush=True,
                 )
 
     route_root.mkdir(parents=True, exist_ok=True)
@@ -701,6 +1335,17 @@ def jit_index_dataset_windows(
         if weighted_token_seconds > 0.0
         else 0.0
     )
+    apollo_total_tokens = sum(int(case.get("token_count", 0) or 0) for case in case_metadata)
+    apollo_weighted_token_seconds = sum(
+        int(case.get("token_count", 0) or 0) / float(case.get("apollo_tokens_per_second", 0.0))
+        for case in case_metadata
+        if float(case.get("apollo_tokens_per_second", 0.0)) > 0.0
+    )
+    apollo_tps = (
+        float(apollo_total_tokens / apollo_weighted_token_seconds)
+        if apollo_weighted_token_seconds > 0.0
+        else 0.0
+    )
     metadata = {
         "benchmark_slug": benchmark_slug,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -727,12 +1372,31 @@ def jit_index_dataset_windows(
             "gpu_mean_pooling": True,
             "projection_dim": int(dim),
             "activation_routes": "np.lib.format.open_memmap(mode='w+')",
+            "route_query_path": "activation_routes.npy",
+            "window_tokens_path": "window_tokens.npz",
             "bypassed_files": [
-                "boundaries/window_*.npy",
-                "residual_streams/window_*.npy",
                 "activation_routes/window_*.npy",
                 "keywords.json",
                 "idf.json",
+            ],
+        },
+        "apollo_residual_pass": {
+            "enabled": True,
+            "status": "ready" if all(case.get("apollo_ready") for case in case_metadata) else "incomplete",
+            "semantics": APOLLO_SEMANTICS,
+            "row_alignment": "window_id",
+            "layer": LAYER,
+            "crystal_layer": APOLLO_LAYER,
+            "source_layer": APOLLO_LAYER,
+            "case_count": len(case_metadata),
+            "window_count": int(total_windows),
+            "token_count": int(apollo_total_tokens),
+            "tokens_per_second": float(apollo_tps),
+            "query_path_preserved": "activation_routes.npy",
+            "case_manifests": [
+                str(case.get("apollo_manifest_path", ""))
+                for case in case_metadata
+                if case.get("apollo_manifest_path")
             ],
         },
     }
@@ -753,4 +1417,5 @@ def jit_index_dataset_windows(
         token_count=int(total_tokens),
         tokens_per_second=float(aggregate_tps),
         memory_usage_percent=float(max_memory_percent),
+        apollo_ready=True,
     )

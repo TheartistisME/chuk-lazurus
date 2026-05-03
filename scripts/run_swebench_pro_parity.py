@@ -39,9 +39,30 @@ for import_root in (REPO_ROOT, SRC_ROOT, Path(__file__).resolve().parent):
         sys.path.insert(0, import_path)
 
 from benchmark_jit_indexing import jit_index_dataset_windows, release_cuda_memory
+from central_router_bridge import PATCH_TARGET, add_router_backend_argument
+from David.decoding_prior_store import (
+    DEFAULT_CROSS_CASE_DECAY as DECODER_PRIOR_DEFAULT_CROSS_CASE_DECAY,
+    DEFAULT_MAX_SEED_ALPHA as DECODER_PRIOR_DEFAULT_MAX_SEED_ALPHA,
+    DEFAULT_PEAK_TO_SEED as DECODER_PRIOR_DEFAULT_PEAK_TO_SEED,
+    DEFAULT_STEERING_VERSION as DECODER_PRIOR_DEFAULT_STEERING_VERSION,
+    DecoderPriorScope,
+    decoder_dialect_prior_plan as stored_decoder_dialect_prior_plan,
+    dialects_from_dialect_plan,
+    load_decoder_dialect_prior_store,
+    new_decoder_dialect_prior_state as stored_new_decoder_dialect_prior_state,
+    save_decoder_dialect_prior_store,
+    update_decoder_dialect_prior_state,
+)
 
 from run_locobench_benchmark import (
     COMMON_LOCAL_IDENTIFIERS,
+    DEFAULT_DECODER_DIALECT_STEERING_DECAY,
+    DEFAULT_DECODER_DIALECT_STEERING_FLOOR,
+    DEFAULT_DECODER_DIALECT_STEERING_FRACTION,
+    DEFAULT_DECODER_DIALECT_STEERING_MARGIN,
+    DEFAULT_DECODER_DIALECT_STEERING_MAX_DELTA_RMS,
+    DEFAULT_DECODER_DIALECT_STEERING_MAX_EVENTS,
+    DEFAULT_DECODER_DIALECT_STEERING_TOP_K,
     DEFAULT_DIFF_RESERVED_TOKENS,
     DEFAULT_KV_DECODE_HEARTBEAT_SECONDS,
     DEFAULT_KV_DECODE_PAYLOAD_TOKEN_CAP,
@@ -102,6 +123,11 @@ MAX_PHASE2_HOT_WINDOWS = 15
 DEFAULT_MAX_CONTEXT_FILES = 80
 DEFAULT_MAX_CONTEXT_BYTES = 2_500_000
 DEFAULT_TARGET_CONTEXT_TOKENS = 1_000_000
+DECODER_DIALECT_PRIOR_VERSION = 1
+DECODER_DIALECT_PRIOR_MODE = "same_dialect_bounded_seed"
+DECODER_DIALECT_PRIOR_MAX_SEED_ALPHA = DECODER_PRIOR_DEFAULT_MAX_SEED_ALPHA
+DECODER_DIALECT_PRIOR_PEAK_TO_SEED = DECODER_PRIOR_DEFAULT_PEAK_TO_SEED
+DECODER_DIALECT_PRIOR_CROSS_CASE_DECAY = DECODER_PRIOR_DEFAULT_CROSS_CASE_DECAY
 REQUIRED_KV_RUNTIME_PACKAGES = ("torch", "transformers", "accelerate", "einops")
 MIN_REQUIRED_VRAM_GIB = 24.0
 REQUIRED_GPU_NAME_FRAGMENT = "5090"
@@ -364,6 +390,87 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_KV_DECODE_HEARTBEAT_SECONDS,
         help="Emit KV-direct decode progress telemetry at this interval. Use 0 to disable.",
     )
+    parser.add_argument(
+        "--decoder-dialect-steering",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Opt into decoder-informed Layer-14 dialect steering when raw "
+            "logits show high-confidence temptation for a banned dialect family."
+        ),
+    )
+    parser.add_argument(
+        "--decoder-dialect-steering-top-k",
+        type=int,
+        default=DEFAULT_DECODER_DIALECT_STEERING_TOP_K,
+        help="Raw-logit rank cutoff for triggering dialect steering.",
+    )
+    parser.add_argument(
+        "--decoder-dialect-steering-margin",
+        type=float,
+        default=DEFAULT_DECODER_DIALECT_STEERING_MARGIN,
+        help=(
+            "Minimum raw-logit margin versus the chosen token for top-k banned "
+            "dialect tokens. Non-negative margins always trigger."
+        ),
+    )
+    parser.add_argument(
+        "--decoder-dialect-steering-decay",
+        type=float,
+        default=DEFAULT_DECODER_DIALECT_STEERING_DECAY,
+        help="Per-token alpha decay applied before any new temptation spike.",
+    )
+    parser.add_argument(
+        "--decoder-dialect-steering-floor",
+        type=float,
+        default=DEFAULT_DECODER_DIALECT_STEERING_FLOOR,
+        help="Alpha values below this floor are snapped back to zero.",
+    )
+    parser.add_argument(
+        "--decoder-dialect-steering-fraction",
+        type=float,
+        default=DEFAULT_DECODER_DIALECT_STEERING_FRACTION,
+        help="Fraction of current hidden-state RMS used for the steering delta.",
+    )
+    parser.add_argument(
+        "--decoder-dialect-steering-max-delta-rms",
+        type=float,
+        default=DEFAULT_DECODER_DIALECT_STEERING_MAX_DELTA_RMS,
+        help="Maximum steering delta RMS as a fraction of current hidden-state RMS.",
+    )
+    parser.add_argument(
+        "--decoder-dialect-steering-max-events",
+        type=int,
+        default=DEFAULT_DECODER_DIALECT_STEERING_MAX_EVENTS,
+        help="Maximum detailed steering events retained in benchmark telemetry.",
+    )
+    parser.add_argument(
+        "--decoder-dialect-prior-store",
+        type=Path,
+        default=None,
+        help=(
+            "Optional persistent JSON store for decoder dialect priors. The store "
+            "is model/tokenizer/layer scoped and can be reused across separate "
+            "SWE runs."
+        ),
+    )
+    parser.add_argument(
+        "--decoder-dialect-prior-load",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Load --decoder-dialect-prior-store at startup when a store path is supplied.",
+    )
+    parser.add_argument(
+        "--decoder-dialect-prior-save",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save --decoder-dialect-prior-store after every completed case.",
+    )
+    parser.add_argument(
+        "--decoder-dialect-prior-reset",
+        action="store_true",
+        help="Ignore any existing decoder prior store and start with a fresh state.",
+    )
     parser.add_argument("--repo-cache", type=Path, default=DEFAULT_REPO_CACHE)
     parser.add_argument(
         "--clone-behavior",
@@ -404,6 +511,7 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Allow gold patch paths to seed routing. Off by default to avoid leakage.",
     )
+    add_router_backend_argument(parser)
     return parser.parse_args()
 
 
@@ -1584,6 +1692,8 @@ def multi_target_route_hot_windows(
         overlap_tokens=int(args.activation_overlap_tokens),
         activation_route_dir=args.jit_output_dir / "swebench_pro_source_activation_routes",
         case_id=case.instance_id or case.row_index,
+        routing_backend=getattr(args, "routing_backend", "native"),
+        central_capability_mode=PATCH_TARGET,
     )
     by_path: dict[str, list[DependencyWindow]] = {}
     for window in routed:
@@ -1648,6 +1758,7 @@ def multi_target_route_hot_windows(
     selected = selected[:budget]
     metadata = {
         "active": True,
+        "router_backend": str(getattr(args, "routing_backend", "native")),
         "target_file_budget": int(args.target_file_budget),
         "windows_per_target": int(windows_per_target),
         "windows_per_selected_path": int(windows_per_selected_path),
@@ -2011,6 +2122,191 @@ def infer_dynamic_dialect_plan(
     }
 
 
+def new_decoder_dialect_prior_state() -> dict[str, Any]:
+    return stored_new_decoder_dialect_prior_state(config=decoder_dialect_prior_config())
+
+
+def decoder_dialect_prior_config() -> dict[str, Any]:
+    return {
+        "mode": DECODER_DIALECT_PRIOR_MODE,
+        "max_seed_alpha": DECODER_DIALECT_PRIOR_MAX_SEED_ALPHA,
+        "peak_to_seed": DECODER_DIALECT_PRIOR_PEAK_TO_SEED,
+        "cross_case_decay": DECODER_DIALECT_PRIOR_CROSS_CASE_DECAY,
+        "alpha_floor": DEFAULT_DECODER_DIALECT_STEERING_FLOOR,
+    }
+
+
+def decoder_dialect_prior_scope(args: argparse.Namespace) -> dict[str, Any]:
+    model_key = (
+        str(args.jit_model_path).strip()
+        or os.environ.get("LAZARUS_MODEL", "").strip()
+        or "google/gemma-4-E2B-it"
+    )
+    tokenizer_key = (
+        str(getattr(args, "context_token_packing", {}).get("tokenizer", "")).strip()
+        or model_key
+    )
+    return DecoderPriorScope(
+        model_key=model_key,
+        tokenizer_key=tokenizer_key,
+        layer_index=14,
+        steering_version=DECODER_PRIOR_DEFAULT_STEERING_VERSION,
+        benchmark=BENCHMARK_NAME,
+        task_type=TASK_TYPE,
+        runner=Path(__file__).name,
+    ).as_dict()
+
+
+def _dialects_from_dialect_plan(dialect_plan: dict[str, Any]) -> list[str]:
+    return dialects_from_dialect_plan(dialect_plan)
+
+
+def decoder_dialect_prior_plan(
+    prior: dict[str, Any] | None,
+    dialect_plan: dict[str, Any],
+) -> dict[str, Any]:
+    return stored_decoder_dialect_prior_plan(prior, dialect_plan)
+
+
+def _result_decoder_steering_meta(result: dict[str, Any]) -> dict[str, Any]:
+    runtime_meta = (
+        result.get("phase3", {})
+        .get("runtime", {})
+        .get("phase4", {})
+        .get("decoder_dialect_steering", {})
+    )
+    if isinstance(runtime_meta, dict) and runtime_meta:
+        return runtime_meta
+    fallback = (
+        result.get("dependency_logits_processor", {})
+        .get("runtime_context_whitelist", {})
+        .get("decoder_dialect_steering", {})
+    )
+    return fallback if isinstance(fallback, dict) else {}
+
+
+def _result_dynamic_dialect_plan(result: dict[str, Any]) -> dict[str, Any]:
+    plan = (
+        result.get("dependency_logits_processor", {})
+        .get("dynamic_dialect_switching", {})
+    )
+    if isinstance(plan, dict) and plan:
+        return plan
+    phase_plan = result.get("phase3", {}).get("dynamic_dialect_switching", {})
+    return phase_plan if isinstance(phase_plan, dict) else {}
+
+
+def _decay_decoder_dialect_prior(prior: dict[str, Any]) -> None:
+    decay = max(0.0, min(1.0, float(prior.get("cross_case_decay", 0.0) or 0.0)))
+    floor = DEFAULT_DECODER_DIALECT_STEERING_FLOOR
+    dialects = prior.get("dialects", {})
+    if not isinstance(dialects, dict):
+        return
+    for entry in dialects.values():
+        if not isinstance(entry, dict):
+            continue
+        families = entry.get("families", {})
+        if not isinstance(families, dict):
+            continue
+        for family_entry in families.values():
+            if not isinstance(family_entry, dict):
+                continue
+            seed_alpha = float(family_entry.get("seed_alpha", 0.0) or 0.0) * decay
+            family_entry["seed_alpha"] = 0.0 if seed_alpha < floor else seed_alpha
+
+
+def update_decoder_dialect_prior_from_result(
+    args: argparse.Namespace,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    prior = getattr(args, "_decoder_dialect_prior", None)
+    if not isinstance(prior, dict):
+        prior = stored_new_decoder_dialect_prior_state(
+            scope=decoder_dialect_prior_scope(args),
+            config=decoder_dialect_prior_config(),
+        )
+        args._decoder_dialect_prior = prior
+    accepted = bool(result.get("pass_at_1")) or bool(result.get("dependency_constraint_pass"))
+    dialect_plan = _result_dynamic_dialect_plan(result)
+    steering = _result_decoder_steering_meta(result)
+    swe_meta = result.get("swebench_pro", {})
+    update_decoder_dialect_prior_state(
+        prior,
+        dialect_plan=dialect_plan,
+        steering=steering,
+        accepted=accepted,
+        case_metadata={
+            "row_index": result.get("row_index"),
+            "instance_id": stringify(swe_meta.get("instance_id", "")),
+            "repo": stringify(swe_meta.get("repo", "")),
+        },
+    )
+    return prior
+
+
+def initialize_decoder_dialect_prior(args: argparse.Namespace) -> None:
+    scope = decoder_dialect_prior_scope(args)
+    args._decoder_dialect_prior_scope = scope
+    store_path = getattr(args, "decoder_dialect_prior_store", None)
+    if store_path is not None and bool(getattr(args, "decoder_dialect_prior_load", True)):
+        prior, metadata = load_decoder_dialect_prior_store(
+            store_path,
+            scope=scope,
+            config=decoder_dialect_prior_config(),
+            reset=bool(getattr(args, "decoder_dialect_prior_reset", False)),
+        )
+    else:
+        prior = stored_new_decoder_dialect_prior_state(
+            scope=scope,
+            config=decoder_dialect_prior_config(),
+        )
+        metadata = {
+            "active": bool(store_path),
+            "path": str(store_path or ""),
+            "loaded": False,
+            "reason": "load_disabled" if store_path is not None else "no_store_path",
+        }
+    args._decoder_dialect_prior = prior
+    args.decoder_dialect_prior_store_metadata = {
+        **metadata,
+        "scope": scope,
+        "save_enabled": bool(getattr(args, "decoder_dialect_prior_save", True)),
+    }
+    if store_path is not None:
+        print(
+            "DECODER_DIALECT_PRIOR_STORE: "
+            f"path={store_path} loaded={metadata.get('loaded', False)} "
+            f"reason={metadata.get('reason', '')} "
+            f"seen_cases={prior.get('seen_cases', 0)}",
+            flush=True,
+        )
+
+
+def save_decoder_dialect_prior_after_case(args: argparse.Namespace) -> dict[str, Any]:
+    store_path = getattr(args, "decoder_dialect_prior_store", None)
+    if store_path is None or not bool(getattr(args, "decoder_dialect_prior_save", True)):
+        metadata = {
+            "active": bool(store_path),
+            "saved": False,
+            "reason": "save_disabled" if store_path is not None else "no_store_path",
+        }
+    else:
+        metadata = save_decoder_dialect_prior_store(
+            store_path,
+            getattr(args, "_decoder_dialect_prior", {}),
+        )
+    args.decoder_dialect_prior_last_save = metadata
+    if metadata.get("active"):
+        print(
+            "DECODER_DIALECT_PRIOR_STORE: "
+            f"saved={metadata.get('saved', False)} "
+            f"path={metadata.get('path', store_path)} "
+            f"seen_cases={metadata.get('seen_cases', 0)}",
+            flush=True,
+        )
+    return metadata
+
+
 def kv_direct_sampler_hard_switch_available() -> tuple[bool, str]:
     """Return whether kv_direct accepts a true path-aware dialect switch plan."""
     try:
@@ -2174,6 +2470,11 @@ def run_post_patch_test_gate(
     *,
     patch_applied: bool,
 ) -> TestGateResult:
+    def subprocess_tail(value: Any) -> str:
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        return tail(stringify(value))
+
     if not patch_applied:
         return TestGateResult(False, False, bool(args.require_test_gate), "patch_not_applied", "", None, "", "", 0.0, [])
     checkout = Path(case.checkout_path) if case.checkout_path else None
@@ -2206,15 +2507,31 @@ def run_post_patch_test_gate(
             selected_tests=selected,
         )
     if case.before_repo_set_cmd:
-        setup = subprocess.run(
-            case.before_repo_set_cmd,
-            cwd=str(checkout),
-            shell=True,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=600,
-        )
+        try:
+            setup = subprocess.run(
+                case.before_repo_set_cmd,
+                cwd=str(checkout),
+                shell=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=False,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return TestGateResult(
+                passed=False,
+                skipped=False,
+                required=bool(args.require_test_gate),
+                reason="before_repo_set_cmd_timeout",
+                command=case.before_repo_set_cmd,
+                returncode=None,
+                stdout_tail=subprocess_tail(exc.stdout),
+                stderr_tail=subprocess_tail(exc.stderr),
+                elapsed_ms=600000.0,
+                selected_tests=selected,
+            )
         if setup.returncode != 0:
             return TestGateResult(
                 passed=False,
@@ -2223,22 +2540,39 @@ def run_post_patch_test_gate(
                 reason="before_repo_set_cmd_failed",
                 command=case.before_repo_set_cmd,
                 returncode=setup.returncode,
-                stdout_tail=tail(setup.stdout),
-                stderr_tail=tail(setup.stderr),
+                stdout_tail=subprocess_tail(setup.stdout),
+                stderr_tail=subprocess_tail(setup.stderr),
                 elapsed_ms=0.0,
                 selected_tests=selected,
             )
     started = time.perf_counter()
-    completed = subprocess.run(
-        command,
-        cwd=str(checkout),
-        shell=True,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=1800,
-    )
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(checkout),
+            shell=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            timeout=1800,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+    except subprocess.TimeoutExpired as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        return TestGateResult(
+            passed=False,
+            skipped=False,
+            required=bool(args.require_test_gate),
+            reason="timeout",
+            command=command,
+            returncode=None,
+            stdout_tail=subprocess_tail(exc.stdout),
+            stderr_tail=subprocess_tail(exc.stderr),
+            elapsed_ms=elapsed_ms,
+            selected_tests=selected,
+        )
     return TestGateResult(
         passed=completed.returncode == 0,
         skipped=False,
@@ -2246,8 +2580,8 @@ def run_post_patch_test_gate(
         reason="passed" if completed.returncode == 0 else "failed",
         command=command,
         returncode=completed.returncode,
-        stdout_tail=tail(completed.stdout),
-        stderr_tail=tail(completed.stderr),
+        stdout_tail=subprocess_tail(completed.stdout),
+        stderr_tail=subprocess_tail(completed.stderr),
         elapsed_ms=elapsed_ms,
         selected_tests=selected,
     )
@@ -3250,6 +3584,10 @@ def run_case(case: SWEBenchProCase, args: argparse.Namespace) -> dict[str, Any]:
             list(generated_paths_hint),
             prediction_mode=generation_args.prediction_mode,
         )
+        dialect_plan["decoder_dialect_prior"] = decoder_dialect_prior_plan(
+            getattr(generation_args, "_decoder_dialect_prior", None),
+            dialect_plan,
+        )
         phase3 = phase3_metadata(
             generation_args,
             hot_windows=hot_windows,
@@ -3873,6 +4211,12 @@ def build_report(results: list[dict[str, Any]], args: argparse.Namespace) -> dic
             "ruler_jit_indexing_compat": (
                 getattr(args, "jit_indexing", {}) or {}
             ).get("ruler_compat", {}),
+            "decoder_dialect_prior": getattr(args, "_decoder_dialect_prior", {}),
+            "decoder_dialect_prior_store": {
+                "load": getattr(args, "decoder_dialect_prior_store_metadata", {}),
+                "last_save": getattr(args, "decoder_dialect_prior_last_save", {}),
+                "path": str(getattr(args, "decoder_dialect_prior_store", "") or ""),
+            },
             "preflight": {
                 "phase_2_indexer": {
                     "fast_unfold_batched_path": bool(
@@ -4058,9 +4402,27 @@ def main() -> int:
             f"SWE-bench Pro selection produced zero rows: start={start} limit={args.limit}."
         )
     cases = [extract_case(dict(row), start + index, args) for index, row in enumerate(selected)]
+    initialize_decoder_dialect_prior(args)
     args.jit_indexing = run_ruler_compatible_jit_indexing(cases, args)
+    args._jit_case_index_by_row = {
+        int(case.row_index): int(case_index)
+        for case_index, case in enumerate(cases)
+    }
     release_cuda_memory()
-    results = [run_case(case, args) for case in cases]
+    results = []
+    for case in cases:
+        result = run_case(case, args)
+        update_decoder_dialect_prior_from_result(args, result)
+        store_save = save_decoder_dialect_prior_after_case(args)
+        result["decoder_dialect_prior_after_case"] = decoder_dialect_prior_plan(
+            getattr(args, "_decoder_dialect_prior", None),
+            _result_dynamic_dialect_plan(result),
+        )
+        result["decoder_dialect_prior_store"] = {
+            "load": getattr(args, "decoder_dialect_prior_store_metadata", {}),
+            "save": store_save,
+        }
+        results.append(result)
     write_predictions_jsonl(args.predictions_jsonl, results)
     report = build_report(results, args)
     write_json(args.output, report)

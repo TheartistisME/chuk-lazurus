@@ -22,6 +22,15 @@ from benchmark_jit_indexing import jit_index_dataset_windows, release_cuda_memor
 from chuk_lazarus.benchmarks.baselines import COMPARISON_BASELINES
 from chuk_lazarus.memory_config import DynamicAllocatorConfig
 
+from central_router_bridge import (
+    SYMBOLIC_CHAIN,
+    add_router_backend_argument,
+    candidate_scores_by_id,
+    central_route_plan,
+    is_central_backend,
+    tier_by_window_id,
+)
+
 DATASET_ID = "rbiswasfc/ruler"
 DATASET_CONFIG = "variable_tracking"
 DATASET_SPLIT = "test"
@@ -59,6 +68,7 @@ class RouteWindow:
     window_id: int
     text: str
     score: float
+    route_source: str = "native_recursive"
 
 
 def require_datasets_loader() -> Any:
@@ -203,6 +213,7 @@ def parse_args() -> argparse.Namespace:
         default="heuristic",
         help="Local fallback mode when --prediction-command is omitted.",
     )
+    add_router_backend_argument(parser)
     return parser.parse_args()
 
 
@@ -335,7 +346,14 @@ def recursive_route_windows(
     *,
     max_k: int,
     recursive_mode: bool,
+    routing_backend: str = "native",
 ) -> list[RouteWindow]:
+    if is_central_backend(routing_backend):
+        return central_recursive_route_windows(
+            query_text,
+            windows,
+            max_k=max_k,
+        )
     query_vec = semantic_vector(query_text)
     window_vecs = [semantic_vector(window) for window in windows]
     route_vec = query_vec
@@ -346,11 +364,52 @@ def recursive_route_windows(
         )
         route_vec = blend(query_vec, window_vecs[first_idx])
     scored = [
-        RouteWindow(window_id=idx, text=window, score=cosine(route_vec, window_vec))
+        RouteWindow(
+            window_id=idx,
+            text=window,
+            score=cosine(route_vec, window_vec),
+            route_source="native_recursive",
+        )
         for idx, (window, window_vec) in enumerate(zip(windows, window_vecs))
     ]
     scored.sort(key=lambda window: (-window.score, window.window_id))
     return scored[: max(1, int(max_k))]
+
+
+def central_recursive_route_windows(
+    query_text: str,
+    windows: list[str],
+    *,
+    max_k: int,
+) -> list[RouteWindow]:
+    route_windows = [
+        {
+            "window_id": str(index),
+            "text": window,
+            "metadata": {"native_window_id": int(index)},
+        }
+        for index, window in enumerate(windows)
+    ]
+    plan = central_route_plan(
+        query=query_text,
+        capability_mode=SYMBOLIC_CHAIN,
+        windows=route_windows,
+        identifiers=(target_variable(query_text),),
+    )
+    tiers = tier_by_window_id(plan)
+    scores = candidate_scores_by_id(plan)
+    routed: list[RouteWindow] = []
+    for window_id in scores:
+        index = int(window_id)
+        routed.append(
+            RouteWindow(
+                window_id=index,
+                text=windows[index],
+                score=float(scores[window_id]),
+                route_source=f"central_router:{tiers.get(window_id, 'UNTIERED').lower()}",
+            )
+        )
+    return routed[: max(1, int(max_k))]
 
 
 def target_variable(query_text: str) -> str:
@@ -481,6 +540,7 @@ def run_case(case: RulerCase, args: argparse.Namespace) -> dict[str, Any]:
             windows,
             max_k=max_k,
             recursive_mode=True,
+            routing_backend=getattr(args, "routing_backend", "native"),
         )
     if args.prediction_command:
         generated, command_ttft_ms = command_prediction(
@@ -523,6 +583,7 @@ def run_case(case: RulerCase, args: argparse.Namespace) -> dict[str, Any]:
         "routed_window_ids": [int(window.window_id) for window in routed_windows],
         "top_route_score": float(routed_windows[0].score) if routed_windows else 0.0,
         "runner_mode": runner_mode,
+        "router_backend": str(getattr(args, "routing_backend", "native")),
     }
 
 
