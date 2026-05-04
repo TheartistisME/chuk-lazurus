@@ -168,11 +168,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inspect local model boot readiness without downloads or model load",
     )
     doctor.add_argument("--workspace", default=".", help="Workspace path")
-    doctor.add_argument("--model", default=None, help="Path or HF id for the open model")
+    doctor.add_argument("--model", default=argparse.SUPPRESS, help="Path or HF id for the open model")
     doctor.add_argument(
         "--validation-report",
-        default=None,
+        default=argparse.SUPPRESS,
         help="Path to a validator JSON report accepted by the harness boot gate",
+    )
+    doctor.add_argument(
+        "--model-attestation",
+        default=argparse.SUPPRESS,
+        help="Path to a manual-reviewed attestation JSON for standard decode of needs-review reports",
     )
     doctor.add_argument(
         "--auto-validate-model",
@@ -268,6 +273,7 @@ def _run_doctor_command(args: argparse.Namespace) -> int:
         model=args.model,
         workspace_path=Path(args.workspace),
         validation_report=args.validation_report,
+        attestation_path=getattr(args, "model_attestation", None),
         auto_validate_model=args.auto_validate_model,
     )
     sys.stdout.write(format_doctor_report(report))

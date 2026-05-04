@@ -358,6 +358,8 @@ def test_parser_adds_doctor_command():
             "google/gemma-e2b",
             "--workspace",
             ".",
+            "--model-attestation",
+            "review.json",
             "--auto-validate-model",
         ]
     )
@@ -365,7 +367,31 @@ def test_parser_adds_doctor_command():
     assert args.command == "doctor"
     assert args.model == "google/gemma-e2b"
     assert args.workspace == "."
+    assert args.model_attestation == "review.json"
     assert args.auto_validate_model is True
+
+
+def test_parser_preserves_root_doctor_common_options():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "--model",
+            "root-model",
+            "--validation-report",
+            "root-report.json",
+            "--model-attestation",
+            "root-attestation.json",
+            "doctor",
+            "--workspace",
+            ".",
+        ]
+    )
+
+    assert args.command == "doctor"
+    assert args.model == "root-model"
+    assert args.validation_report == "root-report.json"
+    assert args.model_attestation == "root-attestation.json"
 
 
 def test_doctor_command_prints_report_without_runtime(monkeypatch, tmp_path, capsys):
@@ -396,6 +422,8 @@ def test_doctor_command_prints_report_without_runtime(monkeypatch, tmp_path, cap
             str(tmp_path),
             "--validation-report",
             "report.json",
+            "--model-attestation",
+            "attestation.json",
             "--auto-validate-model",
         ]
     )
@@ -407,6 +435,7 @@ def test_doctor_command_prints_report_without_runtime(monkeypatch, tmp_path, cap
             "model": "google/gemma-e2b",
             "workspace_path": Path(tmp_path),
             "validation_report": "report.json",
+            "attestation_path": "attestation.json",
             "auto_validate_model": True,
         }
     ]
