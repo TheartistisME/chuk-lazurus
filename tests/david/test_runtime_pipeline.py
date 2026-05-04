@@ -433,3 +433,47 @@ def test_runtime_uses_validated_harness_adapter_for_prior_scope(tmp_path: Path) 
     assert result.decoder_prior is not None
     assert result.decoder_prior["scope"]["layer"] == 23
     assert result.decoder_prior["scope"]["model_id"] == "gemma-runtime-test"
+
+
+def test_runtime_passes_model_execution_controls_to_validated_backend(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    model_root = tmp_path / "model"
+    model_root.mkdir()
+    report_path = tmp_path / "validation.json"
+    report_path.write_text(json.dumps(_validation_report()), encoding="utf-8")
+    runtime = DavidRuntime.create(
+        DavidConfig(
+            workspace_root=workspace,
+            state_dir=tmp_path / "state",
+            model_path=str(model_root),
+            validation_report_path=str(report_path),
+            require_validated_model=True,
+            model_device="cuda:0",
+            model_dtype="bfloat16",
+            model_max_new_tokens=37,
+        )
+    )
+    captured: dict[str, object] = {}
+
+    assert isinstance(runtime.backend, TransformersCausalLMBackend)
+    assert runtime.backend.device == "cuda:0"
+    assert runtime.backend.requested_dtype == "bfloat16"
+
+    class CaptureBackend:
+        name = "capture"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            captured.update(kwargs)
+            return ModelBackendResult(text="controlled answer", backend=self.name, metadata={"prompt": prompt})
+
+    runtime.backend = CaptureBackend()
+
+    result = runtime.run_once("Inspect source dependencies")
+
+    assert captured["max_new_tokens"] == 37
+    assert result.model_result is not None
+    assert result.model_result.text == "controlled answer"

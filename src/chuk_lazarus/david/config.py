@@ -3,8 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any
+
+
+def _env_optional_string(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _env_model_max_new_tokens() -> int:
+    value = os.environ.get("DAVID_MODEL_MAX_NEW_TOKENS")
+    if value is None or not value.strip():
+        return 160
+    try:
+        parsed = int(value)
+    except ValueError:
+        return 160
+    return max(1, parsed)
 
 
 @dataclass(frozen=True)
@@ -51,6 +71,9 @@ class DavidConfig:
     model_path: str | None = None
     validation_report_path: str | None = None
     require_validated_model: bool = True
+    model_device: str | None = field(default_factory=lambda: _env_optional_string("DAVID_MODEL_DEVICE"))
+    model_dtype: str | None = field(default_factory=lambda: _env_optional_string("DAVID_MODEL_DTYPE") or "auto")
+    model_max_new_tokens: int = field(default_factory=_env_model_max_new_tokens)
     color: bool = True
     once: str | None = None
     verify_command: str | None = None

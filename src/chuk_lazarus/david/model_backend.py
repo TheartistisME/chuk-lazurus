@@ -10,6 +10,9 @@ from .materialization_replay import ReplayConsumerInput, replay_generation_metad
 from .model_artifacts import VindexArtifactMetadata, inspect_vindex_artifact
 
 
+_SUPPORTED_DTYPE_STRINGS = {"auto", "float16", "bfloat16", "float32", "none"}
+
+
 @dataclass(frozen=True)
 class ModelBackendStatus:
     name: str
@@ -173,17 +176,27 @@ class TransformersCausalLMBackend:
         *,
         local_files_only: bool = True,
         device: str | None = None,
-        torch_dtype: Any | None = None,
+        torch_dtype: str | Any | None = None,
     ) -> None:
         self.model_id = model_id
         self.local_files_only = local_files_only
         self.device = device
-        self.torch_dtype = torch_dtype
+        self.requested_dtype = _normalize_dtype_request(torch_dtype)
+        self._resolved_dtype_label: str | None = None
         self._tokenizer: Any | None = None
         self._model: Any | None = None
         self._load_error: str | None = None
 
     def status(self) -> ModelBackendStatus:
+        dtype_error = self._requested_dtype_error()
+        if dtype_error is not None:
+            return ModelBackendStatus(
+                name=self.name,
+                available=False,
+                loaded=False,
+                reason=dtype_error,
+                metadata=self._metadata(),
+            )
         missing = _missing_optional_packages("transformers", "torch")
         if missing:
             return ModelBackendStatus(
@@ -206,10 +219,15 @@ class TransformersCausalLMBackend:
         if not status.available or status.loaded:
             return status
         try:
+            torch = __import__("torch")
+            dtype_ok, resolved_dtype, dtype_reason = self._resolve_torch_dtype(torch)
+            if not dtype_ok:
+                self._load_error = dtype_reason
+                return self.status()
             transformers = __import__("transformers", fromlist=["AutoModelForCausalLM", "AutoTokenizer"])
             kwargs: dict[str, Any] = {"local_files_only": self.local_files_only}
-            if self.torch_dtype is not None:
-                kwargs["torch_dtype"] = self.torch_dtype
+            if resolved_dtype is not None:
+                kwargs["torch_dtype"] = resolved_dtype
             self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.model_id, local_files_only=self.local_files_only)
             self._model = transformers.AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
             if self.device:
@@ -296,11 +314,51 @@ class TransformersCausalLMBackend:
             "model_id": self.model_id,
             "local_files_only": self.local_files_only,
             "device": self.device,
+            "requested_dtype": _dtype_request_label(self.requested_dtype),
+            "resolved_dtype": self._resolved_dtype_label,
         }
+
+    def _requested_dtype_error(self) -> str | None:
+        if not isinstance(self.requested_dtype, str):
+            return None
+        if self.requested_dtype in _SUPPORTED_DTYPE_STRINGS:
+            return None
+        allowed = ", ".join(sorted(_SUPPORTED_DTYPE_STRINGS))
+        return f"invalid torch dtype '{self.requested_dtype}'; expected one of: {allowed}"
+
+    def _resolve_torch_dtype(self, torch: Any) -> tuple[bool, Any | None, str | None]:
+        if not isinstance(self.requested_dtype, str):
+            self._resolved_dtype_label = type(self.requested_dtype).__name__
+            return True, self.requested_dtype, None
+        if self.requested_dtype == "none":
+            self._resolved_dtype_label = None
+            return True, None, None
+        if self.requested_dtype == "auto":
+            self._resolved_dtype_label = "auto"
+            return True, "auto", None
+        if not hasattr(torch, self.requested_dtype):
+            return False, None, f"torch dtype '{self.requested_dtype}' is unavailable in installed torch"
+        self._resolved_dtype_label = self.requested_dtype
+        return True, getattr(torch, self.requested_dtype), None
 
 
 def _missing_optional_packages(*names: str) -> list[str]:
     return [name for name in names if importlib.util.find_spec(name) is None]
+
+
+def _normalize_dtype_request(value: str | Any | None) -> str | Any:
+    if value is None:
+        return "none"
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized or "none"
+    return value
+
+
+def _dtype_request_label(value: str | Any) -> str:
+    if isinstance(value, str):
+        return value
+    return repr(value)
 
 
 def _apply_stop(text: str, stop: Sequence[str] | None) -> str:

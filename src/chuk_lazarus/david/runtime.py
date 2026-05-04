@@ -648,7 +648,12 @@ class DavidRuntime:
             return VindexArtifactBackend(self.config.model_path)
         can_auto_load = bool(getattr(self.harness_session, "can_auto_load", False))
         if self.config.model_path and can_auto_load and not self.boot_errors:
-            return TransformersCausalLMBackend(self.config.model_path, local_files_only=True)
+            return TransformersCausalLMBackend(
+                self.config.model_path,
+                local_files_only=True,
+                device=self.config.model_device,
+                torch_dtype=self.config.model_dtype,
+            )
         return OfflineModelBackend(prefix="david")
 
     def _product_central_router(self) -> CentralRouterAdapter | None:
@@ -777,7 +782,7 @@ class DavidRuntime:
         steering = self._decoder_steering_processor(decoder)
         model_result = self.backend.generate(
             generation_prompt,
-            max_new_tokens=160,
+            max_new_tokens=self.config.model_max_new_tokens,
             logits_processor=steering["processors"],
             materialization_plan=materialized.materialization_plan,
         )

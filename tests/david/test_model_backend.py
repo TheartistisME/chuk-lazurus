@@ -169,6 +169,7 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
 
     fake_torch = types.ModuleType("torch")
     fake_torch.no_grad = FakeNoGrad
+    fake_torch.float16 = "torch.float16"
 
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
@@ -228,9 +229,12 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     assert result.text == "prompt answer "
     assert result.metadata["model_id"] == "local/test-model"
     assert result.metadata["local_files_only"] is True
+    assert result.metadata["device"] == "cpu"
+    assert result.metadata["requested_dtype"] == "float16"
+    assert result.metadata["resolved_dtype"] == "float16"
     assert result.metadata["max_new_tokens"] == 7
     assert ("tokenizer", "local/test-model", {"local_files_only": True}) in calls
-    assert ("model", "local/test-model", {"local_files_only": True, "torch_dtype": "float16"}) in calls
+    assert ("model", "local/test-model", {"local_files_only": True, "torch_dtype": "torch.float16"}) in calls
     assert ("model.to", "cpu", {}) in calls
     generate_call = next(call for call in calls if call[0] == "generate")
     assert generate_call[2]["max_new_tokens"] == 7
@@ -249,6 +253,23 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     assert replay["refusal_reasons"] == [
         "transformers-causal-lm has no tensor replay hook for residual_sidecar"
     ]
+
+
+def test_transformers_backend_rejects_invalid_dtype_without_loading(monkeypatch) -> None:
+    monkeypatch.setattr(model_backend, "_missing_optional_packages", lambda *names: [])
+    backend = TransformersCausalLMBackend("local/test-model", torch_dtype="float64")
+
+    status = backend.status()
+    result = backend.generate("hello")
+
+    assert status.available is False
+    assert status.loaded is False
+    assert "invalid torch dtype 'float64'" in status.reason
+    assert status.metadata["requested_dtype"] == "float64"
+    assert status.metadata["device"] is None
+    assert status.metadata["local_files_only"] is True
+    assert result.ok is False
+    assert result.error == status.reason
 
 
 def test_transformers_backend_reports_local_asset_load_errors(monkeypatch) -> None:
