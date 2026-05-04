@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 from typing import Sequence
 
+from .patch_routing import is_protected_path, normalize_path
+
 
 class PathSafetyError(ValueError):
     pass
@@ -27,6 +29,9 @@ class LocalTools:
         return self.resolve(path).read_text(encoding="utf-8")
 
     def write(self, path: str | Path, content: str) -> Path:
+        normalized = normalize_path(str(path))
+        if is_protected_path(normalized):
+            raise PathSafetyError(f"protected proof-rig path: {normalized}")
         target = self.resolve(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -55,4 +60,3 @@ class LocalTools:
             "stdout": completed.stdout,
             "stderr": completed.stderr,
         }
-

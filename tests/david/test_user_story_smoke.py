@@ -245,6 +245,28 @@ def test_agent_loop_protected_patch_failure_prints_patch_diagnostics(tmp_path: P
     assert (repo / protected_path).read_text(encoding="utf-8") == "# protected SWE proof rig\n"
 
 
+def test_agent_loop_protected_write_failure_keeps_proof_rig_unchanged(tmp_path: Path, capsys) -> None:
+    repo = _tiny_repo(tmp_path)
+    protected_path = "scripts/run_swebench_pro_parity.py"
+    payload = json.dumps(
+        [
+            {
+                "action": "write",
+                "path": protected_path,
+                "content": "# changed\n",
+            }
+        ]
+    )
+
+    rc = david_main(["code", str(repo), "--once", f"/agent {payload}", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "agent loop: refused steps=1 verified=False" in output
+    assert "- 1: refuse ok=False error=protected proof-rig path: scripts/run_swebench_pro_parity.py" in output
+    assert (repo / protected_path).read_text(encoding="utf-8") == "# protected SWE proof rig\n"
+
+
 def test_plain_terminal_safe_write_prompt_runs_agent_loop(tmp_path: Path, capsys) -> None:
     repo = _tiny_repo(tmp_path)
 

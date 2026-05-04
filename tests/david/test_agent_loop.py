@@ -98,6 +98,23 @@ def test_agent_loop_writes_workspace_file(tmp_path: Path) -> None:
     assert result.trace[0].observation["bytes"] == len("VALUE = 42\n")
 
 
+def test_agent_loop_refuses_protected_write_path(tmp_path: Path) -> None:
+    target = tmp_path / "scripts" / "run_swebench_pro_parity.py"
+    target.parent.mkdir()
+    target.write_text("old\n", encoding="utf-8")
+
+    result = run_agent_loop(
+        [{"action": "write", "path": "scripts/run_swebench_pro_parity.py", "content": "new\n"}],
+        LocalTools(tmp_path),
+    )
+
+    assert result.status == "refused"
+    assert result.trace[0].action == "refuse"
+    assert result.trace[0].observation["requested_action"] == "write"
+    assert "protected proof-rig path: scripts/run_swebench_pro_parity.py" in result.reason
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
 def test_agent_loop_applies_strict_patch_then_verifies(tmp_path: Path) -> None:
     target = tmp_path / "src" / "example.py"
     target.parent.mkdir()
