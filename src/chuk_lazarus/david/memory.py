@@ -118,13 +118,15 @@ class MemoryBank:
         self.user = user_store
         self.task = task_store
 
+    @staticmethod
+    def family_for_method(method: str) -> str:
+        return "user" if method in {"user_continuity", "temporal_recall"} else "task"
+
     def store_for_method(self, method: str) -> JsonlMemoryStore:
-        if method == "user_continuity" or method == "temporal_recall":
-            return self.user
-        return self.task
+        return self.user if self.family_for_method(method) == "user" else self.task
 
     def writeback(self, *, method: str, user_id: str, session_id: str, text: str, metadata: dict[str, Any]) -> MemoryArtifact:
-        family = "user" if method == "user_continuity" else "task"
+        family = self.family_for_method(method)
         artifact = MemoryArtifact(
             family=family,
             kind=method,
@@ -150,4 +152,3 @@ class MemoryBank:
 
     def stores(self) -> Iterable[JsonlMemoryStore]:
         return (self.user, self.task)
-

@@ -32,6 +32,48 @@ def test_temporal_recall_uses_user_memory_latest_match(tmp_path: Path) -> None:
     assert "Latest deadline is Friday" in result.route.evidence[0]["text"]
 
 
+def test_temporal_recall_writeback_uses_user_memory(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    artifact = runtime.memory.writeback(
+        method="temporal_recall",
+        user_id="user-1",
+        session_id="session-1",
+        text="Latest preference is compact diffs",
+        metadata={"provenance": "test"},
+    )
+
+    assert artifact.family == "user"
+    assert artifact.kind == "temporal_recall"
+    assert runtime.memory.user.all() == [artifact]
+    assert runtime.memory.task.all() == []
+
+
+def test_repo_patch_and_source_dependency_writeback_use_task_memory(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    patch_artifact = runtime.memory.writeback(
+        method="repo_patch",
+        user_id="user-1",
+        session_id="session-1",
+        text="Patch target is src/runtime.py",
+        metadata={"provenance": "test"},
+    )
+    source_artifact = runtime.memory.writeback(
+        method="source_dependency",
+        user_id="user-1",
+        session_id="session-1",
+        text="Source dependency runs through src/session.py",
+        metadata={"provenance": "test"},
+    )
+
+    assert [artifact.family for artifact in runtime.memory.task.all()] == ["task", "task"]
+    assert [artifact.kind for artifact in runtime.memory.task.all()] == ["repo_patch", "source_dependency"]
+    assert runtime.memory.user.all() == []
+    assert patch_artifact.family == "task"
+    assert source_artifact.family == "task"
+
+
 def test_symbolic_recall_can_chain_task_and_user_evidence(tmp_path: Path) -> None:
     runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
     runtime.memory.task.append(MemoryArtifact(family="task", text="A depends on B", kind="symbolic_multi_hop"))
@@ -42,4 +84,3 @@ def test_symbolic_recall_can_chain_task_and_user_evidence(tmp_path: Path) -> Non
     assert result.method == "symbolic_multi_hop"
     assert len(result.route.evidence) >= 2
     assert {item["family"] for item in result.route.evidence} == {"task", "user"}
-
