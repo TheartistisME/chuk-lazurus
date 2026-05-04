@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from chuk_lazarus.david import doctor
 from chuk_lazarus.david import model_validation
@@ -1012,6 +1013,116 @@ def test_doctor_wsl_python_missing_packages_stays_review(monkeypatch, tmp_path):
     assert checks["WSL HF snapshot"].status == "review"
     assert checks["WSL Python packages"].status == "review"
     assert "missing packages: torch, accelerate" in checks["WSL Python packages"].detail
+
+
+def test_torch_cuda_check_reports_missing_torch(monkeypatch):
+    monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: None)
+
+    check = doctor._torch_cuda_check()
+
+    assert check.status == "missing"
+    assert check.detail == "torch is not installed"
+
+
+def test_torch_cuda_check_degrades_gracefully_on_cpu_only_torch(monkeypatch, tmp_path):
+    report_path = tmp_path / "validation.json"
+    payload = _validation_report_payload()
+    payload["model"] = {"hidden_size": 2048, "num_layers": 2, "dtype": "float16"}
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+    fake_torch = SimpleNamespace(
+        float16=object(),
+        bfloat16=object(),
+        cuda=SimpleNamespace(
+            is_available=lambda: False,
+            is_bf16_supported=lambda: False,
+        ),
+    )
+    monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object() if name == "torch" else None)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    check = doctor._torch_cuda_check(validation_report_path=report_path)
+
+    assert check.name == "torch CUDA"
+    assert check.status == "review"
+    assert "CPU-only torch" in check.detail
+    assert "cuda_available=False" in check.detail
+    assert "selected_device=cpu" in check.detail
+    assert "bfloat16_support=False" in check.detail
+    assert "rough_model_memory_estimate=" in check.detail
+    assert "estimate_evidence=hidden_size=2048" in check.detail
+
+
+def test_torch_cuda_check_reports_cuda_devices_dtype_and_vram_feasibility(
+    monkeypatch,
+    tmp_path,
+):
+    report_path = tmp_path / "validation.json"
+    payload = _validation_report_payload()
+    payload["model"] = {
+        "hidden_size": 1536,
+        "num_layers": 2,
+        "vocab_size": 1024,
+        "dtype": "float16",
+    }
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    gib = 1024**3
+    fake_cuda = SimpleNamespace(
+        is_available=lambda: True,
+        device_count=lambda: 2,
+        current_device=lambda: 1,
+        get_device_name=lambda index: ["Tiny GPU", "Ready GPU"][index],
+        get_device_properties=lambda index: SimpleNamespace(
+            total_memory=[2 * gib, 24 * gib][index]
+        ),
+        get_device_capability=lambda index: [(7, 5), (8, 9)][index],
+        mem_get_info=lambda index: ([1 * gib, 20 * gib][index], [2 * gib, 24 * gib][index]),
+        is_bf16_supported=lambda: True,
+    )
+    fake_torch = SimpleNamespace(float16=object(), bfloat16=object(), cuda=fake_cuda)
+    monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object() if name == "torch" else None)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    check = doctor._torch_cuda_check(validation_report_path=report_path)
+
+    assert check.status == "ready"
+    assert "CUDA available" in check.detail
+    assert "devices=2" in check.detail
+    assert "selected_device=cuda:1" in check.detail
+    assert "selected_device_feasibility=likely_feasible_for_weights" in check.detail
+    assert "float16_support=cuda" in check.detail
+    assert "bfloat16_support=True" in check.detail
+    assert "cuda:0, Tiny GPU, total=2048MiB, free=1024MiB, cc=7.5" in check.detail
+    assert "cuda:1, Ready GPU, total=24576MiB, free=20480MiB, cc=8.9" in check.detail
+    assert "estimate_source=validation_report_topology_rough" in check.detail
+
+
+def test_torch_cuda_check_marks_low_vram_selected_device_for_review(monkeypatch, tmp_path):
+    report_path = tmp_path / "validation.json"
+    payload = _validation_report_payload()
+    payload["model"] = {
+        "parameter_count": 8_000_000_000,
+        "dtype": "float16",
+    }
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    gib = 1024**3
+    fake_cuda = SimpleNamespace(
+        is_available=lambda: True,
+        device_count=lambda: 1,
+        current_device=lambda: 0,
+        get_device_properties=lambda _index: SimpleNamespace(total_memory=8 * gib),
+        mem_get_info=lambda _index: (6 * gib, 8 * gib),
+    )
+    fake_torch = SimpleNamespace(float16=object(), bfloat16=object(), cuda=fake_cuda)
+    monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object() if name == "torch" else None)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    check = doctor._torch_cuda_check(validation_report_path=report_path)
+
+    assert check.status == "review"
+    assert "selected_device_feasibility=blocked_vram_below_weight_estimate" in check.detail
+    assert "estimate_source=validation_report_parameter_count" in check.detail
 
 
 def _disable_wsl_probe_checks(monkeypatch):

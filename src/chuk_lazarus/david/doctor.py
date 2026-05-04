@@ -216,7 +216,7 @@ def run_doctor(
         _validation_report_check(discovery, validation_summary),
         _attestation_check(attestation_discovery, attestation_summary),
         *_optional_package_checks(),
-        _torch_cuda_check(),
+        _torch_cuda_check_compat(discovery.path),
         _wsl_python_packages_check(),
         _auto_validate_check(
             model=model,
@@ -737,7 +737,15 @@ def _optional_package_checks() -> tuple[DoctorCheck, ...]:
     return tuple(checks)
 
 
-def _torch_cuda_check() -> DoctorCheck:
+def _torch_cuda_check_compat(validation_report_path: Path | None) -> DoctorCheck:
+    try:
+        return _torch_cuda_check(validation_report_path=validation_report_path)
+    except TypeError:
+        # Older focused tests monkeypatch _torch_cuda_check with a zero-arg stub.
+        return _torch_cuda_check()  # type: ignore[call-arg]
+
+
+def _torch_cuda_check(*, validation_report_path: Path | None = None) -> DoctorCheck:
     if importlib.util.find_spec("torch") is None:
         return DoctorCheck("torch CUDA", "missing", "torch is not installed")
     try:
@@ -749,10 +757,307 @@ def _torch_cuda_check() -> DoctorCheck:
     is_available = getattr(cuda, "is_available", None)
     if not callable(is_available):
         return DoctorCheck("torch CUDA", "blocked", "torch.cuda API is unavailable")
-    if is_available():
-        count = getattr(cuda, "device_count", lambda: "?")()
-        return DoctorCheck("torch CUDA", "ready", f"CUDA available; devices={count}")
-    return DoctorCheck("torch CUDA", "review", "CPU-only torch; real Gemma boot may be too slow or impossible")
+    estimate = _validation_report_model_memory_estimate(validation_report_path)
+    if not is_available():
+        detail = _torch_runtime_detail(
+            cuda_available=False,
+            device_count=0,
+            selected_device="cpu",
+            devices=(),
+            dtype_support=_torch_dtype_support(torch, cuda, cuda_available=False),
+            estimate=estimate,
+        )
+        return DoctorCheck(
+            "torch CUDA",
+            "review",
+            f"CPU-only torch; real Gemma boot may be too slow or impossible; {detail}",
+        )
+
+    count = _safe_int_call(getattr(cuda, "device_count", None))
+    selected_index = _safe_int_call(getattr(cuda, "current_device", None))
+    if selected_index is None and count:
+        selected_index = 0
+    devices = _torch_cuda_devices(cuda, count or 0)
+    selected = next(
+        (device for device in devices if device.get("index") == selected_index),
+        devices[0] if devices else None,
+    )
+    feasible = _selected_device_feasibility(selected, estimate)
+    status = "review" if feasible.startswith("blocked") else "ready"
+    detail = _torch_runtime_detail(
+        cuda_available=True,
+        device_count=count,
+        selected_device=f"cuda:{selected_index}" if selected_index is not None else "cuda:unknown",
+        devices=devices,
+        dtype_support=_torch_dtype_support(torch, cuda, cuda_available=True),
+        estimate=estimate,
+        selected_feasibility=feasible,
+    )
+    return DoctorCheck("torch CUDA", status, f"CUDA available; {detail}")
+
+
+def _torch_cuda_devices(cuda: object, count: int) -> tuple[dict[str, object], ...]:
+    devices: list[dict[str, object]] = []
+    for index in range(max(count, 0)):
+        device: dict[str, object] = {"index": index}
+        get_name = getattr(cuda, "get_device_name", None)
+        if callable(get_name):
+            try:
+                device["name"] = str(get_name(index))
+            except Exception:
+                device["name"] = "unknown"
+        props = None
+        get_props = getattr(cuda, "get_device_properties", None)
+        if callable(get_props):
+            try:
+                props = get_props(index)
+            except Exception:
+                props = None
+        total_memory = getattr(props, "total_memory", None) if props is not None else None
+        if isinstance(total_memory, int):
+            device["total_vram_mib"] = round(total_memory / (1024**2))
+        capability = _device_capability(cuda, index)
+        if capability is not None:
+            device["capability"] = capability
+        free_memory = _device_free_memory(cuda, index)
+        if free_memory is not None:
+            device["free_vram_mib"] = round(free_memory / (1024**2))
+        devices.append(device)
+    return tuple(devices)
+
+
+def _torch_dtype_support(torch: object, cuda: object, *, cuda_available: bool) -> dict[str, object]:
+    support: dict[str, object] = {
+        "float16": "cuda" if cuda_available and hasattr(torch, "float16") else "unknown",
+        "bfloat16": "unknown",
+    }
+    is_bf16_supported = getattr(cuda, "is_bf16_supported", None)
+    if callable(is_bf16_supported):
+        try:
+            support["bfloat16"] = bool(is_bf16_supported())
+        except Exception:
+            support["bfloat16"] = "unknown"
+    elif cuda_available:
+        capability = _device_capability(cuda, 0)
+        if capability is not None:
+            major = int(capability.split(".", 1)[0])
+            support["bfloat16"] = major >= 8
+    return support
+
+
+def _torch_runtime_detail(
+    *,
+    cuda_available: bool,
+    device_count: int | None,
+    selected_device: str,
+    devices: tuple[dict[str, object], ...],
+    dtype_support: dict[str, object],
+    estimate: dict[str, object] | None,
+    selected_feasibility: str | None = None,
+) -> str:
+    parts = [
+        f"cuda_available={cuda_available}",
+        f"devices={device_count if device_count is not None else 'unknown'}",
+        f"selected_device={selected_device}",
+        f"selected_device_feasibility={selected_feasibility or 'unknown'}",
+        f"float16_support={dtype_support.get('float16', 'unknown')}",
+        f"bfloat16_support={dtype_support.get('bfloat16', 'unknown')}",
+    ]
+    device_text = _format_cuda_devices(devices)
+    if device_text:
+        parts.append(f"available_devices=[{device_text}]")
+    if estimate is not None:
+        parts.append(
+            "rough_model_memory_estimate="
+            f"{estimate.get('estimated_weight_mib')}MiB"
+            f"/{estimate.get('dtype', 'unknown')}"
+            f"; estimate_source={estimate.get('source', 'unknown')}"
+        )
+        evidence = estimate.get("evidence")
+        if evidence:
+            parts.append(f"estimate_evidence={evidence}")
+    return "; ".join(parts)
+
+
+def _format_cuda_devices(devices: tuple[dict[str, object], ...]) -> str:
+    formatted = []
+    for device in devices:
+        fields = [f"cuda:{device.get('index', '?')}"]
+        if device.get("name"):
+            fields.append(str(device["name"]))
+        if device.get("total_vram_mib") is not None:
+            fields.append(f"total={device['total_vram_mib']}MiB")
+        if device.get("free_vram_mib") is not None:
+            fields.append(f"free={device['free_vram_mib']}MiB")
+        if device.get("capability"):
+            fields.append(f"cc={device['capability']}")
+        formatted.append("(" + ", ".join(fields) + ")")
+    return ", ".join(formatted)
+
+
+def _selected_device_feasibility(
+    selected: dict[str, object] | None,
+    estimate: dict[str, object] | None,
+) -> str:
+    if selected is None:
+        return "unknown_no_selected_cuda_device"
+    if estimate is None:
+        return "unknown_no_model_estimate"
+    needed_mib = estimate.get("estimated_weight_mib")
+    if not isinstance(needed_mib, int):
+        return "unknown_no_model_estimate"
+    available_mib = selected.get("free_vram_mib") or selected.get("total_vram_mib")
+    if not isinstance(available_mib, int):
+        return "unknown_no_vram"
+    if needed_mib <= int(available_mib * 0.85):
+        return "likely_feasible_for_weights"
+    return "blocked_vram_below_weight_estimate"
+
+
+def _validation_report_model_memory_estimate(path: Path | None) -> dict[str, object] | None:
+    if path is None:
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(report, Mapping):
+        return None
+
+    model = _mapping_or_none(report.get("model"))
+    topology = _mapping_or_none(report.get("topology"))
+    selected_config = _mapping_or_none(report.get("selected_config"))
+    if selected_config is None:
+        selected_config = _mapping_or_none(report.get("adapter_config_candidate"))
+    provenance = _mapping_or_none(report.get("provenance"))
+    loader_options = _mapping_or_none(provenance.get("loader_options")) if provenance else None
+
+    hidden_size = _first_int(
+        model,
+        topology,
+        selected_config,
+        keys=("hidden_size", "route_dimension", "d_model", "n_embd"),
+    )
+    num_layers = _first_int(model, topology, keys=("num_layers", "num_hidden_layers", "n_layer"))
+    vocab_size = _first_int(model, topology, keys=("vocab_size",))
+    parameter_count = _first_int(model, topology, keys=("parameter_count", "num_parameters"))
+    dtype = (
+        _first_text(model, loader_options, keys=("dtype", "requested_dtype"))
+        or "float16"
+    )
+    bytes_per_param = _dtype_bytes(dtype)
+    if parameter_count is not None:
+        estimated_mib = round(parameter_count * bytes_per_param / (1024**2))
+        return {
+            "estimated_weight_mib": estimated_mib,
+            "dtype": dtype,
+            "source": "validation_report_parameter_count",
+            "evidence": f"parameter_count={parameter_count}",
+        }
+    if hidden_size is None or num_layers is None:
+        return None
+
+    rough_params = num_layers * hidden_size * hidden_size * 12
+    evidence = f"hidden_size={hidden_size}, num_layers={num_layers}"
+    if vocab_size is not None:
+        rough_params += vocab_size * hidden_size
+        evidence = f"{evidence}, vocab_size={vocab_size}"
+    estimated_mib = round(rough_params * bytes_per_param / (1024**2))
+    return {
+        "estimated_weight_mib": estimated_mib,
+        "dtype": dtype,
+        "source": "validation_report_topology_rough",
+        "evidence": evidence,
+    }
+
+
+def _mapping_or_none(value: object) -> Mapping[str, Any] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _first_int(*sources: Mapping[str, Any] | None, keys: tuple[str, ...]) -> int | None:
+    for source in sources:
+        if source is None:
+            continue
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, bool):
+                continue
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _first_text(*sources: Mapping[str, Any] | None, keys: tuple[str, ...]) -> str | None:
+    for source in sources:
+        if source is None:
+            continue
+        for key in keys:
+            text = _optional_str(source.get(key))
+            if text:
+                return text
+    return None
+
+
+def _dtype_bytes(dtype: str) -> int:
+    normalized = dtype.lower().replace("torch.", "")
+    if normalized in {"float16", "bfloat16", "fp16", "bf16", "half", "f16"}:
+        return 2
+    if normalized in {"float32", "fp32", "f32", "single"}:
+        return 4
+    if normalized in {"int8", "uint8", "i8", "u8"}:
+        return 1
+    return 2
+
+
+def _safe_int_call(callable_value: object) -> int | None:
+    if not callable(callable_value):
+        return None
+    try:
+        value = callable_value()
+    except Exception:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _device_capability(cuda: object, index: int) -> str | None:
+    get_capability = getattr(cuda, "get_device_capability", None)
+    if not callable(get_capability):
+        return None
+    try:
+        capability = get_capability(index)
+    except Exception:
+        return None
+    if isinstance(capability, tuple) and len(capability) >= 2:
+        return f"{capability[0]}.{capability[1]}"
+    return None
+
+
+def _device_free_memory(cuda: object, index: int) -> int | None:
+    mem_get_info = getattr(cuda, "mem_get_info", None)
+    if not callable(mem_get_info):
+        return None
+    try:
+        memory = mem_get_info(index)
+    except TypeError:
+        try:
+            memory = mem_get_info()
+        except Exception:
+            return None
+    except Exception:
+        return None
+    if isinstance(memory, tuple) and memory:
+        try:
+            return int(memory[0])
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _wsl_python_packages_check() -> DoctorCheck:
