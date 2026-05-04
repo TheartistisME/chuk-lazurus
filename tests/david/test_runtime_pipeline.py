@@ -5,6 +5,8 @@ from pathlib import Path
 
 from chuk_lazarus.david import runtime as runtime_module
 from chuk_lazarus.david import DavidConfig, DavidRuntime
+from chuk_lazarus.david.config import AdapterSessionMetadata
+from chuk_lazarus.david.materialization_replay import ReplayConsumerCapabilities, replay_generation_metadata
 from chuk_lazarus.david.model_backend import (
     ModelBackendResult,
     ModelBackendStatus,
@@ -64,6 +66,29 @@ def _validation_report() -> dict[str, object]:
         "provenance": {"loader_options": {"model": "gemma-runtime-test"}},
         "warnings": [],
     }
+
+
+def _write_kv_sidecar_manifest(tmp_path: Path) -> Path:
+    manifest_path = tmp_path / "kv-sidecar.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_id": "kv-window-1",
+                "memory_family": "task",
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-a",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+                "kv_source_layer": 6,
+                "kv_target_layer": 7,
+                "refs": [{"kind": "kv_cache", "layer": 7, "dtype": "float16", "shape": [2, 1, 8]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def test_missing_index_requires_jit_plan(tmp_path: Path) -> None:
@@ -235,6 +260,139 @@ def test_runtime_applies_live_decoder_steering_for_transformers_backend(tmp_path
     assert steering["processor_count"] == 1
     assert steering["refused_reason"] is None
     assert steering["forbidden_token_count"] >= 1
+
+
+def test_runtime_passes_backend_replay_consumer_to_materializer_and_generate(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    source = workspace / "src" / "example.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def broken_session():\n    return None\n", encoding="utf-8")
+    sidecar_manifest = _write_kv_sidecar_manifest(tmp_path)
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        model_revision="rev-a",
+        adapter_family="family-a",
+        kv_source_layer=6,
+        kv_target_layer=7,
+        insertion_family="kv_direct",
+    )
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=workspace, state_dir=tmp_path / "state", adapter=adapter))
+    captured: dict[str, object] = {}
+
+    def route_with_sidecar(**kwargs: object) -> RoutePacket:
+        return RoutePacket(
+            method="repo_patch",
+            selected_windows=["hot span"],
+            memory_family="task",
+            session_id=str(kwargs.get("session_id") or "s1"),
+            tier="hot",
+            route_reason="unit sidecar route",
+            evidence=[],
+            token_cost=2,
+            kv_ready=True,
+            provenance={"sidecar_manifest": str(sidecar_manifest)},
+        )
+
+    class TensorReplayBackend:
+        name = "tensor-replay"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def replay_consumer_capabilities(self, adapter: AdapterSessionMetadata) -> ReplayConsumerCapabilities:
+            return ReplayConsumerCapabilities(
+                consumer_id="tensor-replay-hook",
+                capabilities=("materialization.replay.kv_cache.v1",),
+                model_id=adapter.model_id,
+                tokenizer_id=adapter.tokenizer_id,
+                model_revision=adapter.model_revision,
+                adapter_family=adapter.adapter_family,
+                insertion_families=(adapter.insertion_family,),
+                memory_families=("task",),
+                metadata={"supports_tensor_replay": True},
+            )
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del prompt
+            captured.update(kwargs)
+            replay = replay_generation_metadata(
+                kwargs.get("materialization_plan"),
+                kwargs.get("replay_consumer"),
+                backend_name=self.name,
+                supports_tensor_replay=True,
+            )
+            return ModelBackendResult(
+                text="replayed answer",
+                backend=self.name,
+                metadata={"materialization_replay": replay},
+            )
+
+    runtime.router.route = route_with_sidecar  # type: ignore[method-assign]
+    runtime.backend = TensorReplayBackend()
+
+    result = runtime.run_once("Fix the repo bug by patching src/example.py")
+
+    assert result.materialized.refused is False
+    assert result.materialized.strategy == "kv_sidecar"
+    assert result.materialized.materialization_plan["requires_runtime_replay"] is True
+    assert result.materialized.materialization_plan["runtime_replay"]["consumer"]["consumer_id"] == "tensor-replay-hook"
+    assert captured["materialization_plan"] == result.materialized.materialization_plan
+    assert isinstance(captured["replay_consumer"], ReplayConsumerCapabilities)
+    assert captured["replay_consumer"].consumer_id == "tensor-replay-hook"
+    replay = result.model_result.metadata["materialization_replay"]
+    assert replay["refused"] is False
+    assert replay["applied"] is True
+    assert replay["tensor_replay"] is True
+    assert result.writeback["metadata"]["materialized"]["materialization_replay"] == replay
+
+
+def test_runtime_refuses_sidecar_replay_for_default_backend_without_tensor_hook(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    source = workspace / "src" / "example.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def broken_session():\n    return None\n", encoding="utf-8")
+    sidecar_manifest = _write_kv_sidecar_manifest(tmp_path)
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        model_revision="rev-a",
+        adapter_family="family-a",
+        kv_source_layer=6,
+        kv_target_layer=7,
+        insertion_family="kv_direct",
+    )
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=workspace, state_dir=tmp_path / "state", adapter=adapter))
+
+    def route_with_sidecar(**kwargs: object) -> RoutePacket:
+        return RoutePacket(
+            method="repo_patch",
+            selected_windows=["hot span"],
+            memory_family="task",
+            session_id=str(kwargs.get("session_id") or "s1"),
+            tier="hot",
+            route_reason="unit sidecar route",
+            evidence=[],
+            token_cost=2,
+            kv_ready=True,
+            provenance={"sidecar_manifest": str(sidecar_manifest)},
+        )
+
+    runtime.router.route = route_with_sidecar  # type: ignore[method-assign]
+
+    result = runtime.run_once("Fix the repo bug by patching src/example.py")
+
+    assert result.materialized.refused is True
+    assert result.materialized.strategy == "refuse"
+    assert "lacks materialization.replay.kv_cache.v1" in result.materialized.reason
+    assert result.materialized.materialization_plan["runtime_replay"]["consumer"]["consumer_id"].endswith(
+        ":no-tensor-replay"
+    )
+    replay = result.model_result.metadata["materialization_replay"]
+    assert replay["refused"] is True
+    assert replay["applied"] is False
+    assert replay["tensor_replay"] is False
+    assert replay["consumer"]["consumer_id"] == "offline-deterministic:no-tensor-replay"
 
 
 def test_runtime_refuses_live_steering_when_transformers_backend_cannot_load(tmp_path: Path) -> None:

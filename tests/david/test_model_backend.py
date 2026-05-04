@@ -7,7 +7,7 @@ import sys
 import types
 
 from chuk_lazarus.david import model_backend
-from chuk_lazarus.david.config import DavidConfig
+from chuk_lazarus.david.config import AdapterSessionMetadata, DavidConfig
 from chuk_lazarus.david.model_backend import OfflineModelBackend, TransformersCausalLMBackend, VindexArtifactBackend
 from chuk_lazarus.david.runtime import DavidRuntime
 
@@ -78,6 +78,36 @@ def test_offline_backend_records_replay_consumer_without_plan() -> None:
     assert replay["ignored"] is True
     assert replay["consumer"]["consumer_id"] == "metadata-only"
     assert replay["reason"] == "no runtime replay required"
+
+
+def test_default_backends_report_explicit_no_tensor_replay_capabilities(tmp_path: Path) -> None:
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        model_revision="rev-a",
+        adapter_family="family-a",
+        insertion_family="kv_direct",
+    )
+    artifact = _write_vindex_artifact(tmp_path)
+    backends = [
+        OfflineModelBackend(prefix="test"),
+        TransformersCausalLMBackend("local/test-model"),
+        VindexArtifactBackend(str(artifact)),
+    ]
+
+    for backend in backends:
+        capabilities = backend.replay_consumer_capabilities(adapter)
+
+        assert capabilities is not None
+        assert capabilities.consumer_id == f"{backend.name}:no-tensor-replay"
+        assert capabilities.capabilities == ()
+        assert capabilities.strategies == ()
+        assert capabilities.model_id == "model-a"
+        assert capabilities.tokenizer_id == "tokenizer-a"
+        assert capabilities.model_revision == "rev-a"
+        assert capabilities.adapter_family == "family-a"
+        assert capabilities.insertion_families == ("kv_direct",)
+        assert capabilities.metadata["supports_tensor_replay"] is False
 
 
 def test_transformers_backend_reports_missing_optional_packages(monkeypatch) -> None:

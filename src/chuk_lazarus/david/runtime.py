@@ -23,6 +23,7 @@ from .decoder_prior_store import DecoderPriorProductStore, DecoderPriorScope
 from .indexing import IndexReadiness, WorkspaceIndex
 from .live_indexer import LiveIndexer, LiveIndexRefresh, load_live_index_state
 from .materializer import MaterializedContext, Materializer
+from .materialization_replay import ReplayConsumerInput
 from .memory import JsonlMemoryStore, MemoryBank
 from .model_artifacts import is_vindex_artifact_path
 from .model_backend import (
@@ -223,9 +224,10 @@ class DavidRuntime:
             method=method,
             max_tokens=self.config.max_route_tokens,
         )
-        materialized = self.materializer.materialize(route, self.adapter)
+        replay_consumer = self._backend_replay_consumer()
+        materialized = self.materializer.materialize(route, self.adapter, replay_consumer=replay_consumer)
         decoder = self.decoder.plan(route=route, adapter=self.adapter, session_id=self.config.session_id)
-        model_result = self._generate(prompt, method, product_route, materialized, decoder)
+        model_result = self._generate(prompt, method, product_route, materialized, decoder, replay_consumer)
         verification = self.verifier.verify(
             capability=method,
             evidence=evidence,
@@ -771,6 +773,7 @@ class DavidRuntime:
         product_route: ProductRoutePacket,
         materialized: MaterializedContext,
         decoder: DecoderPlan,
+        replay_consumer: ReplayConsumerInput = None,
     ) -> ModelBackendResult:
         generation_prompt = (
             f"Task: {prompt}\n"
@@ -785,6 +788,7 @@ class DavidRuntime:
             max_new_tokens=self.config.model_max_new_tokens,
             logits_processor=steering["processors"],
             materialization_plan=materialized.materialization_plan,
+            replay_consumer=replay_consumer,
         )
         return ModelBackendResult(
             text=model_result.text,
@@ -796,6 +800,15 @@ class DavidRuntime:
                 "decoder_steering": steering["metadata"],
             },
         )
+
+    def _backend_replay_consumer(self) -> ReplayConsumerInput:
+        reporter = getattr(self.backend, "replay_consumer_capabilities", None)
+        if not callable(reporter):
+            return None
+        try:
+            return reporter(self.adapter)
+        except Exception:
+            return None
 
     def _decoder_steering_processor(self, decoder: DecoderPlan) -> dict[str, Any]:
         steering = decoder.constraints.get("steering")

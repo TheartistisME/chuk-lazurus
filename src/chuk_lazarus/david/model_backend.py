@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 import importlib.util
 from typing import Any, Mapping, Protocol, Sequence
 
-from .materialization_replay import ReplayConsumerInput, replay_generation_metadata
+from .config import AdapterSessionMetadata
+from .materialization_replay import (
+    ReplayConsumerCapabilities,
+    ReplayConsumerInput,
+    replay_generation_metadata,
+)
 from .model_artifacts import VindexArtifactMetadata, inspect_vindex_artifact
 
 
@@ -39,6 +44,12 @@ class ModelBackend(Protocol):
     def status(self) -> ModelBackendStatus:
         ...
 
+    def replay_consumer_capabilities(
+        self,
+        adapter: AdapterSessionMetadata,
+    ) -> ReplayConsumerCapabilities | None:
+        ...
+
     def generate(
         self,
         prompt: str,
@@ -65,8 +76,14 @@ class OfflineModelBackend:
             name=self.name,
             available=True,
             loaded=True,
-            metadata={"deterministic": True},
+            metadata={"deterministic": True, "tensor_replay": False},
         )
+
+    def replay_consumer_capabilities(
+        self,
+        adapter: AdapterSessionMetadata,
+    ) -> ReplayConsumerCapabilities | None:
+        return _no_tensor_replay_capabilities(self.name, adapter)
 
     def generate(
         self,
@@ -127,7 +144,18 @@ class VindexArtifactBackend:
                 **self.artifact.to_dict(),
                 "direct_generation": False,
                 "loadable_by_transformers_causal_lm": False,
+                "tensor_replay": False,
             },
+        )
+
+    def replay_consumer_capabilities(
+        self,
+        adapter: AdapterSessionMetadata,
+    ) -> ReplayConsumerCapabilities | None:
+        return _no_tensor_replay_capabilities(
+            self.name,
+            adapter,
+            reason=".vindex.ple artifact backend has no decoder or tensor replay hook",
         )
 
     def generate(
@@ -244,6 +272,16 @@ class TransformersCausalLMBackend:
     def tokenizer(self) -> Any | None:
         return self._tokenizer
 
+    def replay_consumer_capabilities(
+        self,
+        adapter: AdapterSessionMetadata,
+    ) -> ReplayConsumerCapabilities | None:
+        return _no_tensor_replay_capabilities(
+            self.name,
+            adapter,
+            reason="transformers causal-LM backend has no tensor replay hook installed",
+        )
+
     def generate(
         self,
         prompt: str,
@@ -316,6 +354,7 @@ class TransformersCausalLMBackend:
             "device": self.device,
             "requested_dtype": _dtype_request_label(self.requested_dtype),
             "resolved_dtype": self._resolved_dtype_label,
+            "tensor_replay": False,
         }
 
     def _requested_dtype_error(self) -> str | None:
@@ -344,6 +383,28 @@ class TransformersCausalLMBackend:
 
 def _missing_optional_packages(*names: str) -> list[str]:
     return [name for name in names if importlib.util.find_spec(name) is None]
+
+
+def _no_tensor_replay_capabilities(
+    backend_name: str,
+    adapter: AdapterSessionMetadata,
+    *,
+    reason: str | None = None,
+) -> ReplayConsumerCapabilities:
+    return ReplayConsumerCapabilities(
+        consumer_id=f"{backend_name}:no-tensor-replay",
+        strategies=(),
+        capabilities=(),
+        model_id=adapter.model_id,
+        tokenizer_id=adapter.tokenizer_id,
+        model_revision=adapter.model_revision,
+        adapter_family=adapter.adapter_family,
+        insertion_families=(adapter.insertion_family,) if adapter.insertion_family else (),
+        metadata={
+            "supports_tensor_replay": False,
+            "reason": reason or f"{backend_name} does not expose a tensor replay consumer",
+        },
+    )
 
 
 def _normalize_dtype_request(value: str | Any | None) -> str | Any:
