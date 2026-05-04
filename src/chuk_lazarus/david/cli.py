@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .model_validation import ValidationReportDiscovery, discover_validation_report
 from .tui import DavidTui
 
 try:  # Prefer the real harness objects when another worker has provided them.
@@ -151,7 +152,14 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "command", None) not in (None, "code"):
         parser.error(f"unknown command: {args.command}")
 
-    config = _build_config(args, Path(workspace))
+    workspace_path = Path(workspace)
+    discovery = _resolve_validation_report(args, workspace_path)
+    if _missing_required_validation_report(args, discovery):
+        _write_missing_validation_report_status(args, workspace_path, discovery)
+        return 2
+
+    args.validation_report = str(discovery.path) if discovery.path is not None else args.validation_report
+    config = _build_config(args, workspace_path)
     runtime = DavidRuntime.create(config)
     tui = DavidTui(runtime, color=config.color)
     return tui.run(once=config.once)
@@ -205,6 +213,46 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
         if not hasattr(config, name):
             object.__setattr__(config, name, values[name])
     return config
+
+
+def _resolve_validation_report(
+    args: argparse.Namespace,
+    workspace_path: Path,
+) -> ValidationReportDiscovery:
+    if args.validation_report:
+        return ValidationReportDiscovery(path=Path(args.validation_report).expanduser(), checked_paths=())
+    return discover_validation_report(model_path=args.model, workspace_path=workspace_path)
+
+
+def _missing_required_validation_report(
+    args: argparse.Namespace,
+    discovery: ValidationReportDiscovery,
+) -> bool:
+    return bool(args.model and not args.allow_unvalidated and discovery.path is None)
+
+
+def _write_missing_validation_report_status(
+    args: argparse.Namespace,
+    workspace_path: Path,
+    discovery: ValidationReportDiscovery,
+) -> None:
+    checked = "\n".join(f"  - {path}" for path in discovery.checked_paths)
+    if not checked:
+        checked = "  - no local validation-report paths were applicable"
+    sys.stdout.write(
+        "\n".join(
+            (
+                "David startup readiness",
+                "- model validation: blocked: no boot-safe validation report found",
+                f"- model: {args.model}",
+                f"- workspace: {workspace_path.expanduser().resolve()}",
+                "- checked validation report paths:",
+                checked,
+                "Use --validation-report <path> or --allow-unvalidated to open offline shell mode.",
+                "",
+            )
+        )
+    )
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:
