@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from chuk_lazarus.david import cli
@@ -64,3 +65,85 @@ def test_main_preserves_boot_config_fields_with_real_config(monkeypatch, tmp_pat
 
     output = capsys.readouterr().out
     assert "fake response: inspect boot config" in output
+
+
+def test_main_status_uses_real_runtime_with_validation_report(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "model"
+    workspace.mkdir()
+    model.mkdir()
+    report_path = tmp_path / "validation.json"
+    report_path.write_text(json.dumps(_validation_report()), encoding="utf-8")
+
+    rc = cli.main(
+        [
+            "code",
+            str(workspace),
+            "--model",
+            str(model),
+            "--validation-report",
+            str(report_path),
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "David startup readiness" in output
+    assert "model validation: accepted (gemma:gemma-cli-test)" in output
+    assert "workspace:" in output
+
+
+def _validation_report() -> dict[str, object]:
+    selected_config = {
+        "adapter_config_id": "gemma-cli-layer-23",
+        "route_layer": 11,
+        "route_query_head": 3,
+        "route_dimension": 2048,
+        "boundary_layer": 17,
+        "residual_capture_layer": 17,
+        "kv_source_layer": 21,
+        "kv_target_layer": 23,
+        "injection_layer": 23,
+        "projection_producer_layer": 21,
+        "behavior_cache_layer": 21,
+        "insertion_family": "kv_direct",
+        "kv_layout": "bshd",
+        "candidate_role": "behavioral",
+    }
+    return {
+        "schema_name": "lazarus.model_config_validation_report",
+        "schema_version": 1,
+        "validation_status": "accepted",
+        "confidence": "high",
+        "validation_level": "behavioral",
+        "auto_load_allowed": True,
+        "harness_load_policy": "auto",
+        "selected_config": selected_config,
+        "source_report_summary": {
+            "model_identity": "gemma-cli-test",
+            "tokenizer_identity": "gemma-cli-tokenizer",
+            "adapter_family": "gemma",
+            "model_revision_or_hash": "cli-rev",
+            "hidden_size": 2048,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+        },
+        "model_identity_gate": {
+            "model_identity": "gemma-cli-test",
+            "tokenizer_identity": "gemma-cli-tokenizer",
+            "adapter_family": "gemma",
+            "model_revision_or_hash": "cli-rev",
+            "hidden_size": 2048,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+        },
+        "topology_gate": {"accepted": True},
+        "projection_gate": {"ranked_candidates": []},
+        "behavior_gate": {"accepted": True},
+        "report_integrity": {"accepted": True},
+        "provenance": {"loader_options": {"model": "gemma-cli-test"}},
+        "warnings": [],
+    }
