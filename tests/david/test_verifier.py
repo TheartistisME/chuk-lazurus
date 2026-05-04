@@ -264,6 +264,156 @@ def test_task_writeback_requires_route_evidence_chain(tmp_path: Path) -> None:
     assert result.checks["memory_writeback"]["evidence_chain_count"] == 0
 
 
+def test_agent_loop_repair_metadata_reports_recovered_verify_failure(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+    route_evidence_chain = [{"artifact_id": "workspace:src/service.py", "path": "src/service.py"}]
+
+    result = verifier.verify(
+        capability="repo_patch",
+        evidence=[
+            {
+                "kind": "patch_target",
+                "path": "src/service.py",
+                "text": "service patch target",
+            }
+        ],
+        metadata={
+            "route_evidence_chain": route_evidence_chain,
+            "writeback": {
+                "artifact_id": "task-loop-1",
+                "family": "task",
+                "kind": "agent_loop",
+                "text": "Agent loop repaired verify failure",
+                "timestamp": "2026-05-04T02:30:00+00:00",
+                "metadata": {
+                    "route_evidence_chain": route_evidence_chain,
+                    "loop": {
+                        "status": "verified",
+                        "steps": 4,
+                        "verified": True,
+                        "reason": "verify passed after repair",
+                        "trace": [
+                            {
+                                "step": 1,
+                                "action": "patch",
+                                "ok": True,
+                                "observation": {"changed_paths": ["src/service.py"]},
+                            },
+                            {
+                                "step": 2,
+                                "action": "verify",
+                                "ok": False,
+                                "observation": {"passed": False, "reason": "test failed"},
+                            },
+                            {
+                                "step": 3,
+                                "action": "patch",
+                                "ok": True,
+                                "observation": {"changed_paths": ["src/service.py"]},
+                            },
+                            {
+                                "step": 4,
+                                "action": "verify",
+                                "ok": True,
+                                "observation": {"passed": True, "reason": "tests passed"},
+                            },
+                        ],
+                    },
+                },
+            },
+        },
+    )
+
+    assert result.ok is True
+    check = result.checks["agent_loop_repair"]
+    assert check["loop_source"] == "writeback.metadata.loop"
+    assert check["final_verified"] is True
+    assert check["repair_attempted"] is True
+    assert check["repair_attempt_count"] == 1
+    assert check["failed_actions_recovered"] is True
+    assert check["recovered_failures"][0]["action"] == "verify"
+    assert check["unresolved_failures"] == []
+
+
+def test_agent_loop_repair_metadata_reports_unresolved_patch_failure(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="repo_patch",
+        evidence=[
+            {
+                "kind": "patch_target",
+                "path": "src/service.py",
+                "text": "service patch target",
+            }
+        ],
+        metadata={
+            "loop": {
+                "status": "refused",
+                "steps": 1,
+                "verified": False,
+                "reason": "patch failed",
+                "trace": [
+                    {
+                        "step": 1,
+                        "action": "patch",
+                        "ok": False,
+                        "observation": {
+                            "ok": False,
+                            "reason": "search block did not match",
+                            "changed_paths": [],
+                        },
+                    }
+                ],
+            }
+        },
+    )
+
+    assert result.ok is False
+    assert result.reason == "failed checks: agent_loop_repair"
+    check = result.checks["agent_loop_repair"]
+    assert check["final_verified"] is False
+    assert check["failed_actions_recovered"] is False
+    assert check["repair_attempted"] is False
+    assert check["unresolved_failures"][0]["action"] == "patch"
+    assert check["unresolved_failures"][0]["reason"] == "search block did not match"
+
+
+def test_agent_loop_verified_metadata_does_not_override_materialization_failure(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="source_dependency",
+        evidence=[{"path": "src/example.py", "text": "source evidence"}],
+        metadata={
+            "adapter": {"model_id": "gemma-e2b", "tokenizer_id": "gemma-tokenizer"},
+            "materialized": {
+                "strategy": "refuse",
+                "refused": True,
+                "compatibility": {"model_id": "gemma-e2b", "tokenizer_id": "gemma-tokenizer"},
+            },
+            "loop": {
+                "status": "verified",
+                "verified": True,
+                "trace": [
+                    {
+                        "step": 1,
+                        "action": "verify",
+                        "ok": True,
+                        "observation": {"passed": True, "reason": "loop says verified"},
+                    }
+                ],
+            },
+        },
+    )
+
+    assert result.ok is False
+    assert result.checks["agent_loop_repair"]["final_verified"] is True
+    assert result.checks["agent_loop_repair"]["ok"] is True
+    assert result.checks["adapter_materialization_compatibility"]["materializer_refused"] is True
+    assert result.checks["adapter_materialization_compatibility"]["ok"] is False
+
+
 def test_writeback_policy_and_user_lifecycle_metadata_are_verified_when_present(tmp_path: Path) -> None:
     verifier = _verifier(tmp_path)
 

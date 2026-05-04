@@ -92,6 +92,10 @@ class Verifier:
         if writeback is not None:
             checks["memory_writeback"] = writeback
 
+        agent_loop = self._check_agent_loop_repair_metadata(metadata)
+        if agent_loop is not None:
+            checks["agent_loop_repair"] = agent_loop
+
         sidecar_catalog = self._check_sidecar_catalog_metadata(metadata)
         if sidecar_catalog is not None:
             checks["sidecar_catalog_compatibility"] = sidecar_catalog
@@ -341,6 +345,50 @@ class Verifier:
             "user_lifecycle": lifecycle_check,
             "evidence_chain_count": len(evidence_chain) if isinstance(evidence_chain, list) else 0,
             "evidence_chain_required": chain_required,
+        }
+
+    @staticmethod
+    def _check_agent_loop_repair_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
+        loop, loop_source = _agent_loop_mapping(metadata)
+        if loop is None:
+            return None
+
+        trace = _agent_loop_trace(loop)
+        final_verified, final_verify_step = _agent_loop_final_verified(loop, trace)
+        failed_actions = [_agent_loop_step_summary(step) for step in trace if _agent_loop_step_failed(step)]
+        recovered_failures = [
+            failure
+            for failure in failed_actions
+            if final_verified and final_verify_step is not None and failure["step"] < final_verify_step
+        ]
+        unresolved_failures = [
+            failure
+            for failure in failed_actions
+            if not final_verified or final_verify_step is None or failure["step"] >= final_verify_step
+        ]
+        first_failure_step = failed_actions[0]["step"] if failed_actions else None
+        repair_attempts = [
+            _agent_loop_step_summary(step)
+            for step in trace
+            if first_failure_step is not None
+            and step["step"] > first_failure_step
+            and (final_verify_step is None or step["step"] <= final_verify_step)
+            and step["action"] in {"patch", "write", "run", "shell"}
+        ]
+        return {
+            "ok": bool(trace) and final_verified and not unresolved_failures,
+            "loop_source": loop_source,
+            "status": loop.get("status") or loop.get("final_status"),
+            "trace_count": len(trace),
+            "final_verified": final_verified,
+            "final_verify_step": final_verify_step,
+            "repair_attempted": bool(repair_attempts),
+            "repair_attempt_count": len(repair_attempts),
+            "repair_attempts": repair_attempts,
+            "failed_action_count": len(failed_actions),
+            "failed_actions_recovered": bool(recovered_failures) and not unresolved_failures,
+            "recovered_failures": recovered_failures,
+            "unresolved_failures": unresolved_failures,
         }
 
     @staticmethod
@@ -613,6 +661,157 @@ def _first_mapping(*values: Any) -> dict[str, Any] | None:
         if isinstance(value, Mapping):
             return dict(value)
     return None
+
+
+def _agent_loop_mapping(metadata: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    for source, value in (
+        ("loop", metadata.get("loop")),
+        ("agent_loop", metadata.get("agent_loop")),
+    ):
+        if isinstance(value, Mapping):
+            return dict(value), source
+
+    for writeback_key in ("writeback", "memory_writeback", "agent_loop_writeback"):
+        writeback = metadata.get(writeback_key)
+        if not isinstance(writeback, Mapping):
+            continue
+        for source, value in (
+            (f"{writeback_key}.loop", writeback.get("loop")),
+            (f"{writeback_key}.agent_loop", writeback.get("agent_loop")),
+        ):
+            if isinstance(value, Mapping):
+                return dict(value), source
+        writeback_metadata = writeback.get("metadata")
+        if isinstance(writeback_metadata, Mapping):
+            for source, value in (
+                (f"{writeback_key}.metadata.loop", writeback_metadata.get("loop")),
+                (f"{writeback_key}.metadata.agent_loop", writeback_metadata.get("agent_loop")),
+            ):
+                if isinstance(value, Mapping):
+                    return dict(value), source
+
+    loop_trace = metadata.get("loop_trace") or metadata.get("agent_loop_trace")
+    if _is_non_string_sequence(loop_trace):
+        return {
+            "trace": list(loop_trace),
+            "status": metadata.get("loop_status") or metadata.get("status"),
+            "verified": metadata.get("final_verified") or metadata.get("verified"),
+        }, "loop_trace"
+    return None, None
+
+
+def _agent_loop_trace(loop: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_trace = loop.get("trace") or loop.get("loop_trace") or loop.get("steps") or []
+    if not _is_non_string_sequence(raw_trace):
+        return []
+
+    trace: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(raw_trace, start=1):
+        if not isinstance(raw_step, Mapping):
+            continue
+        observation = raw_step.get("observation")
+        if not isinstance(observation, Mapping):
+            observation = {}
+        step = _coerce_int(raw_step.get("step"), index)
+        action = str(raw_step.get("action") or raw_step.get("tool") or "").strip().lower()
+        ok = raw_step.get("ok")
+        if ok is None and "passed" in raw_step:
+            ok = raw_step.get("passed")
+        if ok is None and action == "verify":
+            ok = observation.get("passed")
+        if ok is None and action == "patch":
+            ok = observation.get("ok")
+        trace.append(
+            {
+                "step": step,
+                "action": action,
+                "ok": ok if isinstance(ok, bool) else None,
+                "observation": dict(observation),
+                "reason": raw_step.get("reason") or observation.get("reason") or observation.get("error"),
+            }
+        )
+    return trace
+
+
+def _agent_loop_final_verified(
+    loop: Mapping[str, Any],
+    trace: list[dict[str, Any]],
+) -> tuple[bool, int | None]:
+    status = str(loop.get("status") or loop.get("final_status") or "").strip().lower()
+    verified = loop.get("verified")
+    if verified is None:
+        verified = loop.get("final_verified")
+    successful_verify_steps = [
+        step["step"]
+        for step in trace
+        if step["action"] == "verify" and _agent_loop_step_succeeded(step)
+    ]
+    last_step = trace[-1] if trace else None
+    last_step_verified = bool(
+        last_step
+        and last_step["action"] == "verify"
+        and _agent_loop_step_succeeded(last_step)
+    )
+    final_verified = (
+        last_step_verified
+        or status in {"verified", "success", "succeeded", "passed"}
+        or verified is True
+    ) and status not in {"refused", "verify_failed", "failed", "error", "max_steps"}
+    if not final_verified:
+        return False, None
+    if last_step_verified:
+        return True, int(last_step["step"])
+    if successful_verify_steps:
+        return True, max(successful_verify_steps)
+    if trace:
+        return True, int(trace[-1]["step"])
+    return True, None
+
+
+def _agent_loop_step_failed(step: Mapping[str, Any]) -> bool:
+    if step.get("action") in {"refuse", "error"}:
+        return True
+    ok = step.get("ok")
+    if isinstance(ok, bool):
+        return not ok
+    observation = step.get("observation") if isinstance(step.get("observation"), Mapping) else {}
+    if step.get("action") == "verify" and isinstance(observation.get("passed"), bool):
+        return not bool(observation["passed"])
+    if step.get("action") == "patch" and isinstance(observation.get("ok"), bool):
+        return not bool(observation["ok"])
+    return False
+
+
+def _agent_loop_step_succeeded(step: Mapping[str, Any]) -> bool:
+    ok = step.get("ok")
+    if isinstance(ok, bool):
+        return ok
+    observation = step.get("observation") if isinstance(step.get("observation"), Mapping) else {}
+    if step.get("action") == "verify" and isinstance(observation.get("passed"), bool):
+        return bool(observation["passed"])
+    if step.get("action") == "patch" and isinstance(observation.get("ok"), bool):
+        return bool(observation["ok"])
+    return False
+
+
+def _agent_loop_step_summary(step: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "step": step.get("step"),
+        "action": step.get("action"),
+        "ok": step.get("ok"),
+        "reason": step.get("reason"),
+    }
+
+
+def _is_non_string_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _nested_value(value: Any, *keys: str) -> Any:
