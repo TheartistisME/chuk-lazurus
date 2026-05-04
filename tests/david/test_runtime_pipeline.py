@@ -114,6 +114,10 @@ def test_missing_index_requires_jit_plan(tmp_path: Path) -> None:
     assert (tmp_path / "state" / "resume.json").exists()
     assert result.product_route.provenance["router"] == "david.central_router.full"
     assert result.product_route.provenance["proof_router_available"] is True
+    assert result.product_route.provenance["index_readiness"]["required"] is True
+    assert result.product_route.provenance["capture_metadata"]["activation_routes_expected"] is True
+    assert result.route.provenance["product_route"]["index_readiness"]["jit_plan"]["action"] == "jit_index_workspace"
+    assert result.materialized.materialization_plan["route_metadata"]["index_readiness"]["required"] is True
 
 
 def test_runtime_falls_back_when_full_central_router_wrapper_unavailable(
@@ -259,6 +263,33 @@ def test_runtime_bridges_product_route_metadata_to_materializer_decoder_and_veri
         "scripts/run_swebench_pro_parity.py"
     )
     assert result.verification.checks["product_route"]["selected_paths"] == ["src/service.py"]
+
+
+def test_runtime_uses_product_route_as_authoritative_packet_with_offline_fallback(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    source = tmp_path / "src" / "service.py"
+    source.parent.mkdir()
+    source.write_text("def broken_service():\n    return None\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    def broken_product_route(*args: object, **kwargs: object) -> ProductRoutePacket:
+        del args, kwargs
+        raise RuntimeError("product router unavailable")
+
+    monkeypatch.setattr(runtime.product_router, "route", broken_product_route)
+
+    result = runtime.run_once("Fix the repo bug by patching src/service.py")
+
+    assert result.product_route is not None
+    assert result.product_route.provenance["router"] == "david.central_router.offline"
+    assert result.product_route.provenance["index_readiness"]["required"] is True
+    assert result.route.method == result.product_route.method
+    assert result.route.provenance["product_route"]["methodology"] == "patch_target"
+    assert runtime.product_router_errors == [
+        "product route failed: RuntimeError: product router unavailable"
+    ]
 
 
 def test_runtime_surfaces_unsafe_materialization_in_writeback_verification(tmp_path: Path) -> None:
@@ -1013,6 +1044,10 @@ def test_runtime_auto_jit_builds_bounded_source_index(tmp_path: Path) -> None:
     assert result.product_route is not None
     assert "src/agent.py" in result.product_route.source_index_paths
     assert "boot_agent" in result.product_route.selected_symbols
+    assert result.product_route.provenance["index_readiness"]["ready"] is True
+    assert result.product_route.provenance["source_index"]["file_count"] == 1
+    assert result.product_route.provenance["live_index_refresh"]["file_count"] == 1
+    assert result.materialized.compatibility["route_metadata"]["source_index"]["paths"] == ["src/agent.py"]
 
 
 def test_runtime_jit_index_hook_refreshes_manifest_source_index_and_live_state(tmp_path: Path) -> None:

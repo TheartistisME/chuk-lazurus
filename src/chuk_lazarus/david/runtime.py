@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -259,6 +259,10 @@ def _protected_path_exclusions(product_route: ProductRoutePacket) -> list[dict[s
 
 
 def _product_route_runtime_metadata(product_route: ProductRoutePacket) -> dict[str, Any]:
+    index_readiness = product_route.provenance.get("index_readiness")
+    source_index = product_route.provenance.get("source_index")
+    live_index_refresh = product_route.provenance.get("live_index_refresh")
+    capture_metadata = product_route.provenance.get("capture_metadata")
     return {
         "method": product_route.method,
         "methodology": product_route.methodology,
@@ -275,6 +279,10 @@ def _product_route_runtime_metadata(product_route: ProductRoutePacket) -> dict[s
         "route_reasons": list(product_route.route_reasons),
         "evidence_count": len(product_route.evidence),
         "protected_path_exclusions": _protected_path_exclusions(product_route),
+        "index_readiness": dict(index_readiness) if isinstance(index_readiness, dict) else None,
+        "source_index": dict(source_index) if isinstance(source_index, dict) else None,
+        "live_index_refresh": dict(live_index_refresh) if isinstance(live_index_refresh, dict) else None,
+        "capture_metadata": dict(capture_metadata) if isinstance(capture_metadata, dict) else None,
         "provenance": dict(product_route.provenance),
     }
 
@@ -291,16 +299,23 @@ def _text_windows_from_evidence(evidence: Sequence[dict[str, Any]], *, limit: in
     return windows
 
 
-def _bridge_product_route_packet(route: RoutePacket, product_route: ProductRoutePacket) -> RoutePacket:
-    """Keep the simple RoutePacket API while carrying product route metadata forward."""
+def _route_packet_from_product_route(
+    product_route: ProductRoutePacket,
+    *,
+    fallback: RoutePacket | None = None,
+) -> RoutePacket:
+    """Keep ProductRoutePacket authoritative while preserving RoutePacket consumers."""
 
     safe_evidence = _unprotected_route_evidence(product_route.evidence)
-    if not safe_evidence:
-        safe_evidence = _unprotected_route_evidence(route.evidence)
-    selected_windows = _text_windows_from_evidence(safe_evidence) or list(route.selected_windows)
+    if not safe_evidence and fallback is not None:
+        safe_evidence = _unprotected_route_evidence(fallback.evidence)
+    selected_windows = _text_windows_from_evidence(safe_evidence) or list(product_route.selected_windows)
+    if not selected_windows and fallback is not None:
+        selected_windows = list(fallback.selected_windows)
     product_metadata = _product_route_runtime_metadata(product_route)
+    fallback_provenance = fallback.provenance if fallback is not None else {}
     provenance = {
-        **route.provenance,
+        **fallback_provenance,
         **product_route.provenance,
         "product_methodology": product_route.methodology,
         "product_capability": product_route.capability,
@@ -312,22 +327,28 @@ def _bridge_product_route_packet(route: RoutePacket, product_route: ProductRoute
         "product_route": product_metadata,
     }
     return RoutePacket(
-        method=product_route.method or route.method,
+        method=product_route.method or (fallback.method if fallback is not None else ""),
         selected_windows=selected_windows,
-        memory_family=product_route.memory_family or route.memory_family,
-        session_id=product_route.session_id or route.session_id,
-        tier=product_route.tier or route.tier,
-        route_reason=product_route.route_reason or route.route_reason,
+        memory_family=product_route.memory_family or (fallback.memory_family if fallback is not None else "task"),
+        session_id=product_route.session_id or (fallback.session_id if fallback is not None else "default"),
+        tier=product_route.tier or (fallback.tier if fallback is not None else "cold"),
+        route_reason=product_route.route_reason or (fallback.route_reason if fallback is not None else "product route"),
         evidence=safe_evidence,
         token_cost=product_route.token_cost,
-        activation_score=max(route.activation_score, product_route.activation_score),
-        lexical_score=max(route.lexical_score, product_route.lexical_score),
-        ordinal_score=max(route.ordinal_score, product_route.ordinal_score),
-        recency_score=max(route.recency_score, product_route.recency_score),
-        residual_available=route.residual_available or product_route.residual_available,
-        kv_ready=route.kv_ready or product_route.kv_ready,
+        activation_score=max(fallback.activation_score if fallback is not None else 0.0, product_route.activation_score),
+        lexical_score=max(fallback.lexical_score if fallback is not None else 0.0, product_route.lexical_score),
+        ordinal_score=max(fallback.ordinal_score if fallback is not None else 0.0, product_route.ordinal_score),
+        recency_score=max(fallback.recency_score if fallback is not None else 0.0, product_route.recency_score),
+        residual_available=product_route.residual_available or (fallback.residual_available if fallback is not None else False),
+        kv_ready=product_route.kv_ready or (fallback.kv_ready if fallback is not None else False),
         provenance=provenance,
     )
+
+
+def _bridge_product_route_packet(route: RoutePacket, product_route: ProductRoutePacket) -> RoutePacket:
+    """Compatibility wrapper for older tests/callers."""
+
+    return _route_packet_from_product_route(product_route, fallback=route)
 
 
 def _route_runtime_metadata(route: RoutePacket) -> dict[str, Any]:
@@ -344,6 +365,10 @@ def _route_runtime_metadata(route: RoutePacket) -> dict[str, Any]:
         "route_reasons": list(route.provenance.get("route_reasons") or ()),
         "evidence_count": len(route.evidence),
         "protected_path_exclusions": list(route.provenance.get("protected_path_exclusions") or ()),
+        "index_readiness": route.provenance.get("index_readiness"),
+        "source_index": route.provenance.get("source_index"),
+        "live_index_refresh": route.provenance.get("live_index_refresh"),
+        "capture_metadata": route.provenance.get("capture_metadata"),
         "provenance": dict(route.provenance),
     }
 
@@ -384,6 +409,97 @@ def _decoder_with_route_metadata(decoder: DecoderPlan, route: RoutePacket) -> De
     if methodology:
         prior_scope.setdefault("methodology", methodology)
     return DecoderPlan(constraints=constraints, prior_scope=prior_scope)
+
+
+def _index_runtime_metadata(
+    readiness: IndexReadiness,
+    *,
+    source_index: SourceIndexManifest | None,
+    live_index_refresh: dict[str, Any] | None,
+) -> dict[str, Any]:
+    capture = []
+    if readiness.jit_plan is not None:
+        capture = list(readiness.jit_plan.get("capture") or ())
+    return {
+        "index_readiness": {
+            "ready": readiness.ready,
+            "required": readiness.required,
+            "manifest_path": str(readiness.manifest_path),
+            "reason": readiness.reason,
+            "jit_plan": readiness.jit_plan,
+            "capture": capture,
+        },
+        "source_index": None
+        if source_index is None
+        else {
+            "schema": source_index.schema,
+            "indexed_at": source_index.indexed_at,
+            "source_index_path": None,
+            "workspace_root": source_index.workspace_root,
+            "file_count": len(source_index.files),
+            "truncated": source_index.truncated,
+            "adapter_scope": dict(source_index.adapter_scope),
+            "paths": [record.path for record in source_index.files],
+        },
+        "live_index_refresh": live_index_refresh,
+        "capture_metadata": {
+            "capture": capture,
+            "source_index_ready": source_index is not None,
+            "live_refresh_ready": live_index_refresh is not None,
+            "activation_routes_expected": "activation_routes" in capture,
+            "boundary_residuals_expected": "boundary_residuals" in capture,
+            "kv_cache_expected": "kv_cache" in capture or "kv_caches" in capture,
+        },
+    }
+
+
+def _product_route_with_index_metadata(
+    product_route: ProductRoutePacket,
+    index_metadata: dict[str, Any],
+) -> ProductRoutePacket:
+    provenance = {
+        **product_route.provenance,
+        "index_readiness": index_metadata["index_readiness"],
+        "source_index": index_metadata["source_index"],
+        "live_index_refresh": index_metadata["live_index_refresh"],
+        "capture_metadata": index_metadata["capture_metadata"],
+    }
+    return replace(product_route, provenance=provenance)
+
+
+def _route_has_materialization_metadata(route: RoutePacket) -> bool:
+    return bool(route.residual_available or route.kv_ready or _metadata_has_materialization_handles(route.provenance))
+
+
+def _product_route_has_materialization_metadata(product_route: ProductRoutePacket) -> bool:
+    return bool(
+        product_route.residual_available
+        or product_route.kv_ready
+        or _metadata_has_materialization_handles(product_route.provenance)
+    )
+
+
+def _metadata_has_materialization_handles(metadata: dict[str, Any]) -> bool:
+    if any(
+        key in metadata
+        for key in (
+            "materialization_scope",
+            "materialization_requirements",
+            "artifact_requirements",
+            "required_artifacts",
+            "sidecar_manifest",
+            "sidecar_manifests",
+            "sidecar_ref",
+            "sidecar_refs",
+            "residual_sidecar_manifest",
+            "residual_sidecar_manifests",
+            "kv_sidecar_manifest",
+            "kv_sidecar_manifests",
+        )
+    ):
+        return True
+    product = metadata.get("product_route")
+    return isinstance(product, dict) and _metadata_has_materialization_handles(product)
 
 
 @dataclass(frozen=True)
@@ -534,27 +650,61 @@ class DavidRuntime:
             self.jit_index()
             readiness = self.index.check()
         source_index = self._ensure_source_index() if self.config.auto_jit_index else self._loaded_source_index()
+        live_index_refresh = self._latest_live_index_refresh_json()
+        index_metadata = _index_runtime_metadata(
+            readiness,
+            source_index=source_index,
+            live_index_refresh=live_index_refresh,
+        )
 
         method = self.detector.detect(prompt)
         workspace_files = self._workspace_text_files() if method in {"repo_patch", "source_dependency"} else {}
         evidence = self._recall(method, prompt, workspace_files=workspace_files)
-        route = self.router.route(
-            method=method,
-            prompt=prompt,
-            session_id=self.config.session_id,
-            evidence=evidence,
-            max_tokens=self.config.max_route_tokens,
-        )
-        product_route = self.product_router.route(
-            prompt,
-            session_id=self.config.session_id,
-            evidence=evidence,
-            files=workspace_files or None,
-            source_index=source_index,
-            method=method,
-            max_tokens=self.config.max_route_tokens,
-        )
-        route = _bridge_product_route_packet(route, product_route)
+        fallback_route: RoutePacket | None = None
+        try:
+            product_route = self.product_router.route(
+                prompt,
+                session_id=self.config.session_id,
+                evidence=evidence,
+                files=workspace_files or None,
+                source_index=source_index,
+                method=method,
+                max_tokens=self.config.max_route_tokens,
+            )
+        except Exception as exc:
+            self.product_router_errors.append(f"product route failed: {type(exc).__name__}: {exc}")
+            fallback_route = self.router.route(
+                method=method,
+                prompt=prompt,
+                session_id=self.config.session_id,
+                evidence=evidence,
+                max_tokens=self.config.max_route_tokens,
+            )
+            product_route = ProductRouter(router=CentralRouter(), detector=self.detector).route(
+                prompt,
+                session_id=self.config.session_id,
+                evidence=fallback_route.evidence,
+                files=workspace_files or None,
+                source_index=source_index,
+                method=fallback_route.method,
+                max_tokens=self.config.max_route_tokens,
+            )
+        if fallback_route is None and not _product_route_has_materialization_metadata(product_route):
+            try:
+                fallback_candidate = self.router.route(
+                    method=method,
+                    prompt=prompt,
+                    session_id=self.config.session_id,
+                    evidence=evidence,
+                    max_tokens=self.config.max_route_tokens,
+                )
+            except Exception as exc:
+                self.product_router_errors.append(f"offline materialization fallback failed: {type(exc).__name__}: {exc}")
+            else:
+                if _route_has_materialization_metadata(fallback_candidate):
+                    fallback_route = fallback_candidate
+        product_route = _product_route_with_index_metadata(product_route, index_metadata)
+        route = _route_packet_from_product_route(product_route, fallback=fallback_route)
         replay_consumer = self._backend_replay_consumer()
         materialized = self.materializer.materialize(route, self.adapter, replay_consumer=replay_consumer)
         materialized = _materialized_with_route_metadata(materialized, route)
@@ -589,7 +739,8 @@ class DavidRuntime:
             ),
             "verification": verification.to_json(),
             "harness_session_id": getattr(self.harness_session, "session_id", None),
-            "live_index_refresh": self._latest_live_index_refresh_json(),
+            "live_index_refresh": live_index_refresh,
+            "index_metadata": index_metadata,
         }
         artifact = self.memory.writeback(
             method=method,
@@ -619,7 +770,7 @@ class DavidRuntime:
             product_route=product_route,
             model_result=model_result,
             source_index=source_index.to_json() if source_index is not None else None,
-            live_index_refresh=self._latest_live_index_refresh_json(),
+            live_index_refresh=live_index_refresh,
             decoder_prior=decoder_prior,
             harness_session=self._harness_session_json(),
             writeback_verification=writeback_verification,
@@ -1305,6 +1456,10 @@ class DavidRuntime:
             "protected_path_exclusions": route_metadata["protected_path_exclusions"],
             "route_reasons": route_metadata["route_reasons"],
             "route_provenance": route_metadata["provenance"],
+            "index_readiness": route_metadata.get("index_readiness"),
+            "source_index": route_metadata.get("source_index"),
+            "live_index_refresh": route_metadata.get("live_index_refresh"),
+            "capture_metadata": route_metadata.get("capture_metadata"),
         }
         if materialized.refused:
             metadata.update({"omitted": True, "omitted_reason": "materializer_refused"})
