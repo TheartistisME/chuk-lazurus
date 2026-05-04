@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TextIO
+
+from .resume import SessionSnapshot, format_resume_snapshot, load_session_snapshot
 
 
 HELP_TEXT = """David commands:
   prompt text              Send a one-shot prompt to the runtime
   /status, /readiness      Show model validation, index, and memory readiness
+  /resume                  Show last saved session summary
   /memory                  Show user/task memory readiness and artifact details
   /index [jit|build]       Show or refresh the workspace index
   /verify [cmd]            Run the verifier or a workspace command as the gate
@@ -80,6 +84,8 @@ class DavidTui:
             return CommandResult(HELP_TEXT)
         if command in {"/status", "/readiness"}:
             return CommandResult(self.format_readiness())
+        if command == "/resume":
+            return CommandResult(self.format_resume())
         if command == "/memory":
             fallback = f"memory: {self._readiness().get('memory', 'unknown')}"
             return CommandResult(self._runtime_call(("memory_status",), fallback=fallback))
@@ -119,10 +125,19 @@ class DavidTui:
                 lines.append(f"- {name}: {value}")
         return "\n".join(lines)
 
+    def format_resume(self) -> str:
+        direct = self._runtime_call(("resume_status", "resume_summary"), fallback=None)
+        if direct != "runtime hook unavailable":
+            return self._compact_multiline(direct)
+        return format_resume_snapshot(self._resume_snapshot())
+
     def _write_startup(self) -> None:
         title = self._style("David terminal agent", "bold")
         self._write_block(title)
         self._write_block(self.format_readiness())
+        snapshot = self._resume_snapshot()
+        if snapshot is not None:
+            self._write_block(format_resume_snapshot(snapshot))
 
     def _readiness(self) -> dict[str, str]:
         for name in ("readiness", "startup_status", "status"):
@@ -203,6 +218,35 @@ class DavidTui:
         if callable(to_json):
             return str(to_json())
         return str(value)
+
+    def _resume_snapshot(self) -> SessionSnapshot | None:
+        snapshot = getattr(self.runtime, "resume_snapshot", None)
+        if isinstance(snapshot, SessionSnapshot):
+            return snapshot
+        if isinstance(snapshot, dict):
+            try:
+                return SessionSnapshot.from_json(snapshot)
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        path = getattr(self.runtime, "resume_path", None)
+        if path is not None:
+            try:
+                return load_session_snapshot(Path(path))
+            except (OSError, ValueError):
+                return None
+        return None
+
+    def _compact_multiline(self, text: str, *, max_chars: int = 500) -> str:
+        lines = []
+        for line in str(text).splitlines() or [""]:
+            clean = " ".join(line.split())
+            if clean:
+                lines.append(clean)
+        compacted = "\n".join(lines)
+        if len(compacted) <= max_chars:
+            return compacted
+        return f"{compacted[: max_chars - 3].rstrip()}..."
 
     def _model_validation_status(self) -> str:
         config = getattr(self.runtime, "config", None)

@@ -76,3 +76,26 @@ def summarize_result(result: Any, *, max_chars: int = 500) -> str:
     else:
         summary = str(result)
     return summary[:max_chars]
+
+
+def compact_summary(text: str, *, max_chars: int = 240) -> str:
+    summary = " ".join(str(text or "").split())
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 3].rstrip()}..."
+
+
+def format_resume_snapshot(snapshot: SessionSnapshot | None, *, max_summary_chars: int = 240) -> str:
+    if snapshot is None:
+        return "David resume\n- status: no saved session"
+
+    summary = compact_summary(snapshot.last_result_summary, max_chars=max_summary_chars)
+    return "\n".join(
+        [
+            "David resume",
+            f"- session: {snapshot.session_id or 'unknown'}",
+            f"- workspace: {snapshot.workspace or 'unknown'}",
+            f"- updated: {snapshot.updated_at or 'unknown'}",
+            f"- last result: {summary or 'none'}",
+        ]
+    )

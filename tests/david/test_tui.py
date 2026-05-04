@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import StringIO
 
+from chuk_lazarus.david.resume import SessionSnapshot
 from chuk_lazarus.david.tui import DavidTui
 
 
@@ -17,6 +18,14 @@ class FakeIndex:
 class FakeRuntime:
     def __init__(self) -> None:
         self.index = FakeIndex()
+        self.resume_snapshot = SessionSnapshot(
+            session_id="session-1",
+            workspace="C:/workspace/project",
+            adapter_scope={"model_id": "offline"},
+            memory_paths={"task": "task.jsonl"},
+            updated_at="2026-05-04T01:02:03+00:00",
+            last_result_summary="patched the David TUI",
+        )
 
     def readiness(self) -> dict[str, str]:
         return {
@@ -62,6 +71,11 @@ def test_once_outputs_startup_readiness_and_prompt_response():
     assert "model validation: ready" in text
     assert "index: warm" in text
     assert "memory: hot" in text
+    assert "David resume" in text
+    assert "session: session-1" in text
+    assert "workspace: C:/workspace/project" in text
+    assert "updated: 2026-05-04T01:02:03+00:00" in text
+    assert "last result: patched the David TUI" in text
     assert "prompt=hello" in text
 
 
@@ -70,6 +84,7 @@ def test_slash_commands_cover_terminal_surface():
 
     assert "David startup readiness" in tui.dispatch("/status").text
     assert "David startup readiness" in tui.dispatch("/readiness").text
+    assert "last result: patched the David TUI" in tui.dispatch("/resume").text
     assert tui.dispatch("/memory").text == "memory detail"
     assert tui.dispatch("/index").text == "index detail"
     assert "jit indexed" in tui.dispatch("/index jit").text
@@ -83,6 +98,7 @@ def test_slash_commands_cover_terminal_surface():
     assert "new\nline" in tui.dispatch("/apply new\\nline").text
     assert "new\nline" in tui.dispatch("/patch new\\nline").text
     assert "/readiness" in tui.dispatch("/help").text
+    assert "/resume" in tui.dispatch("/help").text
 
     exit_result = tui.dispatch("/quit")
     assert exit_result.should_exit is True

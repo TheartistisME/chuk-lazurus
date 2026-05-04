@@ -7,7 +7,9 @@ import pytest
 
 from chuk_lazarus.david.resume import (
     SessionSnapshot,
+    compact_summary,
     default_resume_path,
+    format_resume_snapshot,
     load_session_snapshot,
     save_session_snapshot,
     summarize_result,
@@ -49,3 +51,31 @@ def test_summarize_result_uses_answer_from_json() -> None:
             return {"answer": "alpha beta gamma"}
 
     assert summarize_result(Result(), max_chars=10) == "alpha beta"
+
+
+def test_format_resume_snapshot_shows_startup_friendly_fields() -> None:
+    snapshot = SessionSnapshot(
+        session_id="session-2",
+        workspace="C:/workspace/project",
+        adapter_scope={},
+        memory_paths={},
+        updated_at="2026-05-04T01:02:03+00:00",
+        last_result_summary=" ".join(["result"] * 80),
+    )
+
+    text = format_resume_snapshot(snapshot, max_summary_chars=40)
+
+    assert "David resume" in text
+    assert "session: session-2" in text
+    assert "workspace: C:/workspace/project" in text
+    assert "updated: 2026-05-04T01:02:03+00:00" in text
+    assert "last result: result result result" in text
+    assert len(text.split("last result: ", 1)[1]) <= 40
+
+
+def test_format_resume_snapshot_handles_missing_snapshot() -> None:
+    assert format_resume_snapshot(None) == "David resume\n- status: no saved session"
+
+
+def test_compact_summary_collapses_whitespace_and_truncates() -> None:
+    assert compact_summary("alpha\n\n beta   gamma", max_chars=14) == "alpha beta..."
