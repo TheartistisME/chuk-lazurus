@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -137,6 +138,200 @@ def test_main_code_once_uses_operator_env_defaults(monkeypatch, tmp_path, capsys
     assert FakeRuntime.created_with.model_dtype == "float32"
     assert FakeRuntime.created_with.model_max_new_tokens == 77
     assert "model validation: ready" in capsys.readouterr().out
+
+
+def test_main_code_once_uses_workspace_config_defaults(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    workspace = tmp_path / "workspace"
+    model = workspace / "models" / "gemma"
+    workspace_config = workspace / ".david" / "config.json"
+    workspace_config.parent.mkdir(parents=True)
+    model.mkdir(parents=True)
+    workspace_config.write_text(
+        json.dumps(
+            {
+                "model": "models/gemma",
+                "validation_report": "reports/validation.json",
+                "model_attestation": "review/attestation.json",
+                "model_backend": "torch-runtime",
+                "model_device": "cpu",
+                "model_dtype": "float32",
+                "model_max_new_tokens": 88,
+                "auto_jit_index": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(["code", str(workspace), "--once", "/status", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.created_with.model_path == str(model)
+    assert FakeRuntime.created_with.validation_report_path == str(workspace / "reports" / "validation.json")
+    assert FakeRuntime.created_with.model_attestation_path == str(workspace / "review" / "attestation.json")
+    assert FakeRuntime.created_with.model_backend == "torch-runtime"
+    assert FakeRuntime.created_with.model_device == "cpu"
+    assert FakeRuntime.created_with.model_dtype == "float32"
+    assert FakeRuntime.created_with.model_max_new_tokens == 88
+    assert FakeRuntime.created_with.auto_jit_index is True
+    assert "model validation: ready" in capsys.readouterr().out
+
+
+def test_main_workspace_config_preserves_hf_model_id(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    workspace_config = tmp_path / ".david" / "config.json"
+    workspace_config.parent.mkdir(parents=True)
+    workspace_config.write_text(
+        json.dumps(
+            {
+                "model": "google/gemma-e2b",
+                "validation_report": "validation.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(["code", str(tmp_path), "--once", "/status", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.created_with.model_path == "google/gemma-e2b"
+
+
+def test_main_cli_args_override_workspace_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    workspace_config = tmp_path / ".david" / "config.json"
+    workspace_config.parent.mkdir(parents=True)
+    workspace_config.write_text(
+        json.dumps(
+            {
+                "model": "config-model",
+                "validation_report": "config-report.json",
+                "model_attestation": "config-attestation.json",
+                "model_backend": "config-backend",
+                "model_device": "cpu",
+                "model_dtype": "float32",
+                "model_max_new_tokens": 88,
+                "auto_jit_index": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(
+        [
+            "code",
+            str(tmp_path),
+            "--model",
+            "cli-model",
+            "--validation-report",
+            "cli-report.json",
+            "--model-attestation",
+            "cli-attestation.json",
+            "--model-backend",
+            "cli-backend",
+            "--model-device",
+            "cuda:0",
+            "--model-dtype",
+            "bfloat16",
+            "--model-max-new-tokens",
+            "44",
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.created_with.model_path == "cli-model"
+    assert FakeRuntime.created_with.validation_report_path == "cli-report.json"
+    assert FakeRuntime.created_with.model_attestation_path == "cli-attestation.json"
+    assert FakeRuntime.created_with.model_backend == "cli-backend"
+    assert FakeRuntime.created_with.model_device == "cuda:0"
+    assert FakeRuntime.created_with.model_dtype == "bfloat16"
+    assert FakeRuntime.created_with.model_max_new_tokens == 44
+    assert FakeRuntime.created_with.auto_jit_index is True
+
+
+def test_main_env_overrides_workspace_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    workspace_config = tmp_path / ".david" / "config.json"
+    workspace_config.parent.mkdir(parents=True)
+    workspace_config.write_text(
+        json.dumps(
+            {
+                "model": "config-model",
+                "validation_report": "config-report.json",
+                "model_attestation": "config-attestation.json",
+                "model_backend": "config-backend",
+                "model_device": "cpu",
+                "model_dtype": "float32",
+                "model_max_new_tokens": 88,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DAVID_MODEL", "env-model")
+    monkeypatch.setenv("DAVID_VALIDATION_REPORT", "env-report.json")
+    monkeypatch.setenv("DAVID_MODEL_ATTESTATION", "env-attestation.json")
+    monkeypatch.setenv("DAVID_MODEL_BACKEND", "env-backend")
+    monkeypatch.setenv("DAVID_MODEL_DEVICE", "cuda")
+    monkeypatch.setenv("DAVID_MODEL_DTYPE", "float16")
+    monkeypatch.setenv("DAVID_MODEL_MAX_NEW_TOKENS", "99")
+
+    rc = cli.main(["code", str(tmp_path), "--once", "/status", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.created_with.model_path == "env-model"
+    assert FakeRuntime.created_with.validation_report_path == "env-report.json"
+    assert FakeRuntime.created_with.model_attestation_path == "env-attestation.json"
+    assert FakeRuntime.created_with.model_backend == "env-backend"
+    assert FakeRuntime.created_with.model_device == "cuda"
+    assert FakeRuntime.created_with.model_dtype == "float16"
+    assert FakeRuntime.created_with.model_max_new_tokens == 99
+
+
+def test_main_malformed_workspace_config_fails_closed(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    workspace_config = tmp_path / ".david" / "config.json"
+    workspace_config.parent.mkdir(parents=True)
+    workspace_config.write_text('{"model": ', encoding="utf-8")
+
+    rc = cli.main(["code", str(tmp_path), "--once", "/status", "--no-color"])
+
+    assert rc == 2
+    assert FakeRuntime.created_with is None
+    err = capsys.readouterr().err
+    assert "David workspace config error" in err
+    assert str(workspace_config) in err
+    assert "invalid JSON" in err
+
+
+def test_main_workspace_config_model_without_report_fails_closed(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "model"
+    workspace_config = workspace / ".david" / "config.json"
+    workspace_config.parent.mkdir(parents=True)
+    model.mkdir(parents=True)
+    workspace_config.write_text(json.dumps({"model": str(model)}), encoding="utf-8")
+
+    rc = cli.main(["code", str(workspace), "--once", "/status", "--no-color"])
+
+    assert rc == 2
+    assert FakeRuntime.created_with is None
+    output = capsys.readouterr().out
+    assert "model validation: blocked: no boot-safe validation report found" in output
+    assert str(model / "validation_report.json") in output
 
 
 def test_main_keeps_common_options_after_workspace(monkeypatch, tmp_path, capsys):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -209,8 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv_list = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv_list)
     if getattr(args, "command", None) == "doctor":
         _apply_operator_defaults(args)
         return _run_doctor_command(args)
@@ -222,7 +224,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown command: {args.command}")
 
     workspace_path = Path(workspace)
-    _apply_operator_defaults(args)
+    explicit_args = _explicit_common_args(argv_list)
+    workspace_defaults = _load_workspace_config_defaults(workspace_path)
+    if isinstance(workspace_defaults, WorkspaceConfigError):
+        _write_workspace_config_error(workspace_defaults)
+        return 2
+    _apply_workspace_config_defaults(args, workspace_path, workspace_defaults, explicit_args)
+    _apply_operator_defaults(args, explicit_args=explicit_args)
     discovery = _resolve_validation_report(args, workspace_path)
     if _should_auto_validate_model(args, discovery):
         auto_result = run_auto_model_validation(model=args.model, workspace_path=workspace_path)
@@ -373,10 +381,47 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
     return config
 
 
-def _apply_operator_defaults(args: argparse.Namespace) -> None:
+@dataclass(frozen=True)
+class WorkspaceConfigError:
+    path: Path
+    message: str
+
+
+_WORKSPACE_CONFIG_ARG_NAMES = {
+    "model",
+    "validation_report",
+    "model_attestation",
+    "model_backend",
+    "model_device",
+    "model_dtype",
+    "model_max_new_tokens",
+    "auto_jit_index",
+}
+
+_COMMON_OPTION_DESTS = {
+    "--model": "model",
+    "--validation-report": "validation_report",
+    "--model-attestation": "model_attestation",
+    "--model-backend": "model_backend",
+    "--model-device": "model_device",
+    "--model-dtype": "model_dtype",
+    "--model-max-new-tokens": "model_max_new_tokens",
+    "--auto-jit-index": "auto_jit_index",
+}
+
+
+def _apply_operator_defaults(
+    args: argparse.Namespace,
+    *,
+    explicit_args: set[str] | None = None,
+) -> None:
     defaults = _operator_env_defaults()
     for arg_name, value in defaults.items():
-        if value is not None and _arg_is_absent(args, arg_name):
+        if explicit_args is None:
+            should_apply = _arg_is_absent(args, arg_name)
+        else:
+            should_apply = arg_name not in explicit_args
+        if value is not None and should_apply:
             setattr(args, arg_name, value)
 
 
@@ -390,6 +435,110 @@ def _operator_env_defaults() -> dict[str, str | int | None]:
         "model_dtype": _env_optional_string("DAVID_MODEL_DTYPE"),
         "model_max_new_tokens": _env_optional_int("DAVID_MODEL_MAX_NEW_TOKENS"),
     }
+
+
+def _explicit_common_args(argv: list[str]) -> set[str]:
+    explicit: set[str] = set()
+    options_with_values = {
+        "--model",
+        "--validation-report",
+        "--model-attestation",
+        "--model-backend",
+        "--model-device",
+        "--model-dtype",
+        "--model-max-new-tokens",
+    }
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        option, has_inline_value = (token.split("=", 1)[0], "=" in token)
+        dest = _COMMON_OPTION_DESTS.get(option)
+        if dest is not None:
+            explicit.add(dest)
+            if option in options_with_values and not has_inline_value:
+                index += 1
+        index += 1
+    return explicit
+
+
+def _load_workspace_config_defaults(workspace_path: Path) -> dict[str, Any] | WorkspaceConfigError:
+    config_path = workspace_path.expanduser() / ".david" / "config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        loaded = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return WorkspaceConfigError(
+            path=config_path,
+            message=f"invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}",
+        )
+    except OSError as exc:
+        return WorkspaceConfigError(path=config_path, message=str(exc))
+    if not isinstance(loaded, dict):
+        return WorkspaceConfigError(path=config_path, message="config root must be a JSON object")
+    return loaded
+
+
+def _apply_workspace_config_defaults(
+    args: argparse.Namespace,
+    workspace_path: Path,
+    defaults: dict[str, Any],
+    explicit_args: set[str],
+) -> None:
+    for arg_name in _WORKSPACE_CONFIG_ARG_NAMES:
+        if arg_name in explicit_args or arg_name not in defaults:
+            continue
+        value = _coerce_workspace_config_value(arg_name, defaults[arg_name], workspace_path)
+        if value is not None:
+            setattr(args, arg_name, value)
+
+
+def _coerce_workspace_config_value(arg_name: str, value: Any, workspace_path: Path) -> str | int | bool | None:
+    if arg_name == "auto_jit_index":
+        return value if isinstance(value, bool) else None
+    if arg_name == "model_max_new_tokens":
+        if isinstance(value, bool):
+            return None
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if arg_name in {"validation_report", "model_attestation"}:
+        return str(_resolve_workspace_path(value, workspace_path))
+    if arg_name == "model":
+        return str(_resolve_workspace_model(value, workspace_path))
+    return value
+
+
+def _resolve_workspace_path(value: str, workspace_path: Path) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return workspace_path.expanduser() / path
+
+
+def _resolve_workspace_model(value: str, workspace_path: Path) -> str | Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    if value.startswith("."):
+        return workspace_path.expanduser() / path
+    candidate = workspace_path.expanduser() / path
+    if candidate.exists():
+        return candidate
+    return value
+
+
+def _write_workspace_config_error(error: WorkspaceConfigError) -> None:
+    sys.stderr.write("David workspace config error\n")
+    sys.stderr.write(f"config: {error.path}\n")
+    sys.stderr.write(f"{error.message}\n")
+    sys.stderr.write("Fix or remove .david/config.json before booting a model-backed David session.\n")
 
 
 def _arg_is_absent(args: argparse.Namespace, name: str) -> bool:
