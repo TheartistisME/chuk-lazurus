@@ -784,8 +784,8 @@ def test_doctor_reports_complete_wsl_hf_snapshot_for_hf_model_id(monkeypatch, tm
     )
     assert checks["WSL Python packages"].status == "ready"
     assert "CUDA available" in checks["WSL Python packages"].detail
-    assert calls[0][1]["timeout"] == 5.0
-    assert calls[1][1]["timeout"] == 8.0
+    assert calls[0][1]["timeout"] == doctor.DEFAULT_WSL_PROBE_TIMEOUT_SECONDS
+    assert calls[1][1]["timeout"] == doctor.DEFAULT_WSL_PROBE_TIMEOUT_SECONDS
 
 
 def test_doctor_checks_wsl_absolute_model_path_as_local_path(monkeypatch, tmp_path):
@@ -843,7 +843,7 @@ def test_doctor_checks_wsl_absolute_model_path_as_local_path(monkeypatch, tmp_pa
     assert "not applicable for WSL local model path" in checks["HF snapshot"].detail
     assert checks["WSL HF snapshot"].status == "review"
     assert "not applicable; model is not an HF id" in checks["WSL HF snapshot"].detail
-    assert calls[0][1]["timeout"] == 5.0
+    assert calls[0][1]["timeout"] == doctor.DEFAULT_WSL_PROBE_TIMEOUT_SECONDS
 
 
 def test_doctor_reports_missing_wsl_absolute_model_path_without_hf_cache_probe(
@@ -922,9 +922,47 @@ def test_doctor_wsl_probe_timeout_degrades_to_review(monkeypatch, tmp_path):
     checks = {check.name: check for check in report.checks}
 
     assert checks["WSL HF snapshot"].status == "review"
-    assert "timed out after 5s" in checks["WSL HF snapshot"].detail
+    assert "timed out after 20s" in checks["WSL HF snapshot"].detail
     assert checks["WSL Python packages"].status == "review"
-    assert "timed out after 8s" in checks["WSL Python packages"].detail
+    assert "timed out after 20s" in checks["WSL Python packages"].detail
+
+
+def test_doctor_wsl_probe_timeout_env_override(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setenv(doctor.WSL_PROBE_TIMEOUT_ENV, "12.5")
+    monkeypatch.setattr(doctor.shutil, "which", lambda item: "wsl.exe" if item == "wsl" else None)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "review", "CPU-only torch"),
+    )
+
+    report = doctor.run_doctor(model="google/gemma-4-E2B-it", workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert calls[0][1]["timeout"] == 12.5
+    assert calls[1][1]["timeout"] == 12.5
+    assert "timed out after 12.5s" in checks["WSL HF snapshot"].detail
+    assert "timed out after 12.5s" in checks["WSL Python packages"].detail
+
+
+def test_doctor_wsl_probe_timeout_env_invalid_uses_default(monkeypatch):
+    monkeypatch.setenv(doctor.WSL_PROBE_TIMEOUT_ENV, "not-a-timeout")
+
+    assert doctor._wsl_probe_timeout_seconds() == doctor.DEFAULT_WSL_PROBE_TIMEOUT_SECONDS
+
+    monkeypatch.setenv(doctor.WSL_PROBE_TIMEOUT_ENV, "0")
+
+    assert doctor._wsl_probe_timeout_seconds() == doctor.DEFAULT_WSL_PROBE_TIMEOUT_SECONDS
 
 
 def test_doctor_wsl_python_missing_packages_stays_review(monkeypatch, tmp_path):

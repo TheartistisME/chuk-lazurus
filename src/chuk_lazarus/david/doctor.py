@@ -49,6 +49,8 @@ UNSAFE_REPLAY_CAPABILITIES = frozenset(
         "residual_tensor_replay",
     )
 )
+DEFAULT_WSL_PROBE_TIMEOUT_SECONDS = 20.0
+WSL_PROBE_TIMEOUT_ENV = "DAVID_WSL_PROBE_TIMEOUT_SECONDS"
 
 
 @dataclass(frozen=True)
@@ -612,7 +614,7 @@ if snapshots.is_dir():
 
 print(json.dumps(payload))
 """
-    payload, error = _run_wsl_python_json(script, timeout_seconds=5.0)
+    payload, error = _run_wsl_python_json(script)
     if error is not None:
         return DoctorCheck(name, "review", error)
     if payload is None:
@@ -786,7 +788,7 @@ if available.get("torch"):
 
 print(json.dumps({"missing": missing, "cuda_status": cuda_status, "cuda_detail": cuda_detail}))
 """
-    payload, error = _run_wsl_python_json(script, timeout_seconds=8.0)
+    payload, error = _run_wsl_python_json(script)
     if error is not None:
         return DoctorCheck(name, "review", error)
     if payload is None:
@@ -854,10 +856,15 @@ def _wsl_tooling_check() -> DoctorCheck:
     return DoctorCheck("WSL/tooling", "review", "wsl.exe found; tinydex path not found")
 
 
-def _run_wsl_python_json(script: str, *, timeout_seconds: float) -> tuple[dict[str, object] | None, str | None]:
+def _run_wsl_python_json(
+    script: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> tuple[dict[str, object] | None, str | None]:
     wsl = shutil.which("wsl")
     if wsl is None:
         return None, "wsl.exe is not on PATH"
+    timeout = timeout_seconds if timeout_seconds is not None else _wsl_probe_timeout_seconds()
     command = (wsl, "bash", "-lc", f"python3 - <<'PY'\n{script}\nPY")
     try:
         result = subprocess.run(
@@ -865,10 +872,10 @@ def _run_wsl_python_json(script: str, *, timeout_seconds: float) -> tuple[dict[s
             check=False,
             capture_output=True,
             text=True,
-            timeout=timeout_seconds,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return None, f"wsl probe timed out after {timeout_seconds:g}s"
+        return None, f"wsl probe timed out after {timeout:g}s"
     except OSError as exc:
         return None, f"wsl probe failed to start: {exc}"
 
@@ -883,6 +890,19 @@ def _run_wsl_python_json(script: str, *, timeout_seconds: float) -> tuple[dict[s
         return json.loads(stdout.splitlines()[-1]), None
     except json.JSONDecodeError as exc:
         return None, f"wsl probe returned invalid JSON: {exc}"
+
+
+def _wsl_probe_timeout_seconds() -> float:
+    raw = os.environ.get(WSL_PROBE_TIMEOUT_ENV)
+    if raw is None:
+        return DEFAULT_WSL_PROBE_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw)
+    except ValueError:
+        return DEFAULT_WSL_PROBE_TIMEOUT_SECONDS
+    if timeout <= 0:
+        return DEFAULT_WSL_PROBE_TIMEOUT_SECONDS
+    return timeout
 
 
 def _format_vindex_artifact_detail(metadata: VindexArtifactMetadata) -> str:
@@ -949,7 +969,7 @@ if payload["exists"]:
 
 print(json.dumps(payload))
 """
-    payload, error = _run_wsl_python_json(script, timeout_seconds=5.0)
+    payload, error = _run_wsl_python_json(script)
     if error is not None:
         return DoctorCheck("model location", "review", f"WSL local model path; {error}")
     if payload is None:
