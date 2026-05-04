@@ -30,7 +30,20 @@ class MethodDetector:
             return "symbolic_multi_hop"
         if any(word in text for word in ("latest", "first", "last time", "previous", "earliest", "when did")):
             return "temporal_recall"
-        if any(word in text for word in ("remember", "preference", "deadline", "my ", "i prefer")):
+        user_memory_markers = (
+            "remember",
+            "remind me",
+            "follow up",
+            "check back",
+            "tomorrow",
+            "deadline",
+            "preference",
+            "my ",
+            "i prefer",
+            "i am worried",
+            "i'm worried",
+        )
+        if any(marker in text for marker in user_memory_markers):
             return "user_continuity"
         return "source_dependency"
 
@@ -96,4 +109,3 @@ class CentralRouter:
             kv_ready=False,
             provenance={"router": "david.central_router.offline", "prompt_chars": len(prompt)},
         )
-

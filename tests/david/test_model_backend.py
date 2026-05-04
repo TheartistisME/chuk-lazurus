@@ -140,21 +140,29 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     calls: list[tuple[str, str, dict[str, object]]] = []
 
     class FakeTensor:
-        def __init__(self) -> None:
+        def __init__(self, ids: list[int]) -> None:
+            self.ids = ids
+            self.shape = (1, len(ids))
             self.moved_to: str | None = None
 
         def to(self, device: str) -> "FakeTensor":
             self.moved_to = device
             return self
 
+        def __getitem__(self, index: int) -> list[int]:
+            if index != 0:
+                raise IndexError(index)
+            return self.ids
+
     class FakeTokenizer:
         def __call__(self, prompt: str, *, return_tensors: str) -> dict[str, FakeTensor]:
             calls.append(("tokenize", prompt, {"return_tensors": return_tensors}))
-            return {"input_ids": FakeTensor()}
+            return {"input_ids": FakeTensor([101, 102])}
 
         def decode(self, output_ids: list[int], *, skip_special_tokens: bool) -> str:
             calls.append(("decode", repr(output_ids), {"skip_special_tokens": skip_special_tokens}))
-            return "prompt answer STOP trailing"
+            assert output_ids == [201, 202, 203]
+            return "answer STOP trailing"
 
     class FakeTokenizerFactory:
         @staticmethod
@@ -178,7 +186,7 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
 
         def generate(self, **kwargs: object) -> list[list[int]]:
             calls.append(("generate", "", kwargs))
-            return [[1, 2, 3]]
+            return [[101, 102, 201, 202, 203]]
 
     class FakeModelFactory:
         @staticmethod
@@ -256,13 +264,16 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     assert load_status.loaded is True
     assert backend.tokenizer is not None
     assert result.ok is True
-    assert result.text == "prompt answer "
+    assert result.text == "answer "
     assert result.metadata["model_id"] == "local/test-model"
     assert result.metadata["local_files_only"] is True
     assert result.metadata["device"] == "cpu"
     assert result.metadata["requested_dtype"] == "float16"
     assert result.metadata["resolved_dtype"] == "float16"
     assert result.metadata["max_new_tokens"] == 7
+    assert result.metadata["prompt_token_count"] == 2
+    assert result.metadata["input_token_count"] == 2
+    assert result.metadata["generated_token_count"] == 3
     assert ("tokenizer", "local/test-model", {"local_files_only": True}) in calls
     assert ("model", "local/test-model", {"local_files_only": True, "torch_dtype": "torch.float16"}) in calls
     assert ("model.to", "cpu", {}) in calls

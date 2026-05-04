@@ -321,13 +321,21 @@ class TransformersCausalLMBackend:
                 generation_kwargs["logits_processor"] = processors
             with torch.no_grad():
                 output_ids = self._model.generate(**generation_kwargs)
-            text = self._tokenizer.decode(output_ids[0], skip_special_tokens=True)
+            prompt_token_count = _token_count_from_input_ids(inputs.get("input_ids"))
+            generated_ids = _generated_token_ids(output_ids[0], prompt_token_count)
+            generated_token_count = _token_count_from_ids(generated_ids)
+            text = self._tokenizer.decode(generated_ids, skip_special_tokens=True)
             metadata = {
                 **self._metadata(),
                 "max_new_tokens": max_new_tokens,
                 "logits_processor_count": len(processors),
                 "stop_count": len(stop or ()),
             }
+            if prompt_token_count is not None:
+                metadata["prompt_token_count"] = prompt_token_count
+                metadata["input_token_count"] = prompt_token_count
+            if generated_token_count is not None:
+                metadata["generated_token_count"] = generated_token_count
             if replay_metadata is not None:
                 metadata["materialization_replay"] = replay_metadata
             return ModelBackendResult(
@@ -442,3 +450,44 @@ def _normalize_logits_processors(logits_processor: Any | Sequence[Any] | None) -
     if isinstance(logits_processor, tuple):
         return list(logits_processor)
     return [logits_processor]
+
+
+def _token_count_from_input_ids(input_ids: Any) -> int | None:
+    if input_ids is None:
+        return None
+    shape = getattr(input_ids, "shape", None)
+    if shape is not None:
+        try:
+            return int(shape[-1])
+        except (TypeError, ValueError, IndexError):
+            pass
+    try:
+        return len(input_ids[0])
+    except (TypeError, IndexError, KeyError):
+        pass
+    try:
+        return len(input_ids)
+    except TypeError:
+        return None
+
+
+def _generated_token_ids(sequence_ids: Any, prompt_token_count: int | None) -> Any:
+    if prompt_token_count is None:
+        return sequence_ids
+    try:
+        return sequence_ids[prompt_token_count:]
+    except (TypeError, IndexError, KeyError):
+        return sequence_ids
+
+
+def _token_count_from_ids(token_ids: Any) -> int | None:
+    shape = getattr(token_ids, "shape", None)
+    if shape is not None:
+        try:
+            return int(shape[-1])
+        except (TypeError, ValueError, IndexError):
+            pass
+    try:
+        return len(token_ids)
+    except TypeError:
+        return None
