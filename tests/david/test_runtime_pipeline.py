@@ -300,12 +300,20 @@ def test_runtime_auto_jit_builds_bounded_source_index(tmp_path: Path) -> None:
     assert result.source_index["file_count"] == 1
     assert result.source_index["files"][0]["path"] == "src/agent.py"
     assert "boot_agent" in result.source_index["files"][0]["symbols"]
+    assert result.live_index_refresh is not None
+    assert result.live_index_refresh["changed_count"] == 1
+    assert result.live_index_refresh["indexed_count"] == 1
+    assert result.live_index_refresh["deleted_count"] == 0
+    assert len(result.live_index_refresh["manifest_sha256"]) == 64
+    assert result.to_json()["live_index_refresh"] == result.live_index_refresh
+    assert result.resume_snapshot is not None
+    assert result.resume_snapshot["memory_paths"]["live_index_state"].endswith("-live-source-state.json")
     assert result.product_route is not None
     assert "src/agent.py" in result.product_route.source_index_paths
     assert "boot_agent" in result.product_route.selected_symbols
 
 
-def test_runtime_jit_index_hook_refreshes_manifest_and_source_index(tmp_path: Path) -> None:
+def test_runtime_jit_index_hook_refreshes_manifest_source_index_and_live_state(tmp_path: Path) -> None:
     source = tmp_path / "src" / "agent.py"
     source.parent.mkdir()
     source.write_text("def boot_agent():\n    return 'ready'\n", encoding="utf-8")
@@ -315,8 +323,19 @@ def test_runtime_jit_index_hook_refreshes_manifest_and_source_index(tmp_path: Pa
 
     assert "index: ready" in summary
     assert "source index: 1 files" in summary
+    assert "changed=1 indexed=1 deleted=0" in summary
+    assert "manifest_sha256=" in summary
     assert runtime.index.check().ready is True
     assert runtime._loaded_source_index() is not None
+    assert runtime.latest_live_index_refresh is not None
+    assert Path(runtime.latest_live_index_refresh.state_path).exists()
+    status = runtime.index_status()
+    assert "live indexed_at=" in status
+    assert "manifest_sha256=" in status
+
+    second_summary = runtime.refresh_index()
+
+    assert "changed=0 indexed=0 deleted=0" in second_summary
 
 
 def test_runtime_uses_validated_harness_adapter_for_prior_scope(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from .config import AdapterSessionMetadata, DavidConfig
 from .decoder import DecoderController, DecoderPlan
 from .decoder_prior_store import DecoderPriorProductStore, DecoderPriorScope
 from .indexing import IndexReadiness, WorkspaceIndex
+from .live_indexer import LiveIndexer, LiveIndexRefresh, load_live_index_state
 from .materializer import MaterializedContext, Materializer
 from .memory import JsonlMemoryStore, MemoryBank
 from .model_backend import ModelBackend, ModelBackendResult, OfflineModelBackend, TransformersCausalLMBackend
@@ -21,7 +22,7 @@ from .central_router_adapter import CentralRouterAdapter
 from .product_router import ProductRoutePacket, ProductRouter
 from .resume import SessionSnapshot, load_session_snapshot, save_session_snapshot, summarize_result
 from .routing import CentralRouter, MethodDetector, RoutePacket
-from .source_index import SourceIndexManifest, build_source_index, load_source_index, save_source_index
+from .source_index import SourceIndexManifest, load_source_index
 from .steering import DecoderSteeringPolicy, build_decoder_logits_processor
 from .tools import LocalTools
 from .verifier import VerificationResult, Verifier
@@ -46,6 +47,7 @@ class RuntimeResult:
     product_route: ProductRoutePacket | None = None
     model_result: ModelBackendResult | None = None
     source_index: dict[str, Any] | None = None
+    live_index_refresh: dict[str, Any] | None = None
     decoder_prior: dict[str, Any] | None = None
     resume_snapshot: dict[str, Any] | None = None
     harness_session: dict[str, Any] | None = None
@@ -92,6 +94,8 @@ class RuntimeResult:
             }
         if self.source_index is not None:
             data["source_index"] = self.source_index
+        if self.live_index_refresh is not None:
+            data["live_index_refresh"] = self.live_index_refresh
         if self.decoder_prior is not None:
             data["decoder_prior"] = self.decoder_prior
         if self.resume_snapshot is not None:
@@ -127,6 +131,8 @@ class DavidRuntime:
         self.verifier = Verifier(self.tools)
         self.backend = self._create_backend()
         self.source_index_path = config.state_dir / "indexes" / f"{self._adapter_file_stem()}-source.json"
+        self.live_index_state_path = config.state_dir / "indexes" / f"{self._adapter_file_stem()}-live-source-state.json"
+        self.latest_live_index_refresh: LiveIndexRefresh | None = None
         self.decoder_prior_path = config.state_dir / "decoder_priors.json"
         self.decoder_prior_store = DecoderPriorProductStore.load(self.decoder_prior_path)
         self.resume_path = config.state_dir / "resume.json"
@@ -140,7 +146,7 @@ class DavidRuntime:
     def run_once(self, prompt: str, *, verify_command: Sequence[str] | None = None) -> RuntimeResult:
         readiness = self.index.check()
         if readiness.required and self.config.auto_jit_index:
-            self.index.jit()
+            self.jit_index()
             readiness = self.index.check()
         source_index = self._ensure_source_index() if self.config.auto_jit_index else self._loaded_source_index()
 
@@ -194,6 +200,7 @@ class DavidRuntime:
             ),
             "verification": verification.to_json(),
             "harness_session_id": getattr(self.harness_session, "session_id", None),
+            "live_index_refresh": self._latest_live_index_refresh_json(),
         }
         artifact = self.memory.writeback(
             method=method,
@@ -223,6 +230,7 @@ class DavidRuntime:
             product_route=product_route,
             model_result=model_result,
             source_index=source_index.to_json() if source_index is not None else None,
+            live_index_refresh=self._latest_live_index_refresh_json(),
             decoder_prior=decoder_prior,
             harness_session=self._harness_session_json(),
             writeback_verification=writeback_verification,
@@ -243,7 +251,7 @@ class DavidRuntime:
             "model validation": self._model_validation_status(),
             "backend": f"{backend.name}: {'loaded' if backend.loaded else backend.reason}",
             "index": "ready" if index.ready else f"missing: {index.reason}",
-            "source index": "ready" if source is not None else "missing",
+            "source index": self._source_index_status(source),
             "memory": self._memory_readiness(),
             "resume": "ready" if self.resume_snapshot is not None else "missing",
             "workspace": str(self.config.workspace_root),
@@ -262,7 +270,7 @@ class DavidRuntime:
         readiness = self.index.check()
         source = self._loaded_source_index()
         source_line = (
-            f"source index: ready at {self.source_index_path} ({len(source.files)} files)"
+            f"source index: {self._source_index_status(source)} at {self.source_index_path}"
             if source is not None
             else f"source index: missing at {self.source_index_path}"
         )
@@ -281,10 +289,13 @@ class DavidRuntime:
     def jit_index(self) -> str:
         self.index.jit()
         readiness = self.index.check()
-        source = self._ensure_source_index()
+        refresh = self._refresh_source_index()
         return (
             f"index: {'ready' if readiness.ready else readiness.reason} at {readiness.manifest_path}\n"
-            f"source index: {len(source.files)} files at {self.source_index_path}"
+            f"source index: {refresh.file_count} files at {self.source_index_path}\n"
+            "source refresh: "
+            f"changed={len(refresh.changed_paths)} indexed={len(refresh.indexed_paths)} "
+            f"deleted={len(refresh.deleted_paths)} manifest_sha256={refresh.manifest_sha256}"
         )
 
     def build_index(self) -> str:
@@ -504,13 +515,51 @@ class DavidRuntime:
         existing = self._loaded_source_index()
         if existing is not None and existing.adapter_scope == self.adapter.scope():
             return existing
-        manifest = build_source_index(
+        refresh = self._refresh_source_index()
+        manifest = self._loaded_source_index()
+        if manifest is None:
+            raise RuntimeError(f"live source index refresh did not write {refresh.source_index_path}")
+        return manifest
+
+    def _refresh_source_index(self) -> LiveIndexRefresh:
+        refresh = LiveIndexer(
             self.config.workspace_root,
             self.adapter.scope(),
+            state_path=self.live_index_state_path,
+            source_index_path=self.source_index_path,
             max_files=120,
             max_file_bytes=128_000,
-        )
-        return save_source_index(self.source_index_path, manifest)
+        ).refresh()
+        self.latest_live_index_refresh = refresh
+        return refresh
+
+    def _latest_live_index_refresh_json(self) -> dict[str, Any] | None:
+        if self.latest_live_index_refresh is None:
+            return None
+        return self.latest_live_index_refresh.to_session_refresh_handle()
+
+    def _source_index_status(self, source: SourceIndexManifest | None = None) -> str:
+        source = self._loaded_source_index() if source is None else source
+        if source is None:
+            return "missing"
+        parts = [f"ready ({len(source.files)} files)"]
+        if source.adapter_scope != self.adapter.scope():
+            parts.append("stale: adapter scope mismatch")
+        elif self.live_index_state_path.exists():
+            try:
+                state = load_live_index_state(self.live_index_state_path)
+                parts.append(f"live indexed_at={state.indexed_at or 'unknown'}")
+            except (OSError, ValueError):
+                parts.append("live state unreadable")
+        else:
+            parts.append("live state missing")
+        if self.latest_live_index_refresh is not None:
+            parts.append(f"manifest_sha256={self.latest_live_index_refresh.manifest_sha256}")
+        elif source.indexed_at:
+            parts.append(f"source indexed_at={source.indexed_at}")
+        if source.truncated:
+            parts.append("truncated")
+        return "; ".join(parts)
 
     def _load_resume_snapshot(self) -> SessionSnapshot | None:
         try:
@@ -528,8 +577,14 @@ class DavidRuntime:
                 "task": str(self.config.task_memory_path),
                 "decoder_prior": str(self.decoder_prior_path),
                 "source_index": str(self.source_index_path),
+                "live_index_state": str(self.live_index_state_path),
             },
-            last_result_summary=summarize_result(result),
+            last_result_summary=summarize_result(
+                {
+                    "answer": result.answer,
+                    "live_index_refresh": result.live_index_refresh,
+                }
+            ),
         )
         self.resume_snapshot = save_session_snapshot(snapshot, self.resume_path)
         return self.resume_snapshot
