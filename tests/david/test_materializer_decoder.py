@@ -169,13 +169,140 @@ def test_materializer_emits_loadable_residual_sidecar_plan(tmp_path: Path) -> No
         residual_available=True,
     )
 
-    materialized = Materializer().materialize(route, adapter)
+    replay_consumer = {
+        "consumer_id": "unit-replay-hook",
+        "capabilities": ["materialization.replay.residual_stream.v1"],
+        "model_id": "model-a",
+        "tokenizer_id": "tokenizer-a",
+        "model_revision": "rev-a",
+        "adapter_family": "family-a",
+        "insertion_families": ["kv_direct"],
+        "memory_families": ["task"],
+    }
+
+    materialized = Materializer().materialize(route, adapter, replay_consumer=replay_consumer)
 
     assert materialized.refused is False
     assert materialized.strategy == "residual_sidecar"
     assert materialized.materialization_plan["requires_runtime_replay"] is True
+    assert (
+        materialized.materialization_plan["runtime_replay"]["required_capability"]
+        == "materialization.replay.residual_stream.v1"
+    )
+    assert materialized.materialization_plan["runtime_replay"]["consumer"]["consumer_id"] == "unit-replay-hook"
+    assert materialized.materialization_plan["replay_refs"][0]["kind"] == "boundary_residual"
+    assert materialized.materialization_plan["replay_refs"][0]["inline_value_count"] == 4
     assert materialized.materialization_plan["sidecars"][0]["artifact_id"] == "hot-window-1"
     assert materialized.compatibility["sidecar_artifact_ids"] == ["hot-window-1"]
+
+
+def test_materializer_refuses_sidecar_replay_without_consumer(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "sidecar.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_id": "kv-window-1",
+                "memory_family": "task",
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-a",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+                "kv_source_layer": 6,
+                "kv_target_layer": 7,
+                "refs": [{"kind": "kv_cache", "layer": 7, "dtype": "float16", "shape": [2, 1, 8]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        model_revision="rev-a",
+        adapter_family="family-a",
+        kv_source_layer=6,
+        kv_target_layer=7,
+        insertion_family="kv_direct",
+    )
+    route = RoutePacket(
+        method="repo_patch",
+        selected_windows=["hot span"],
+        memory_family="task",
+        session_id="s1",
+        tier="hot",
+        route_reason="test",
+        evidence=[],
+        token_cost=2,
+        kv_ready=True,
+        provenance={"sidecar_manifest": str(manifest_path)},
+    )
+
+    materialized = Materializer().materialize(route, adapter)
+
+    assert materialized.refused is True
+    assert materialized.strategy == "refuse"
+    assert materialized.materialization_plan["requested_strategy"] == "kv_sidecar"
+    assert materialized.materialization_plan["requires_runtime_replay"] is True
+    assert "runtime replay consumer required for kv_sidecar" in materialized.reason
+
+
+def test_materializer_refuses_incompatible_replay_consumer(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "sidecar.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_id": "kv-window-1",
+                "memory_family": "task",
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-a",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+                "kv_source_layer": 6,
+                "kv_target_layer": 7,
+                "refs": [{"kind": "kv_cache", "layer": 7, "dtype": "float16", "shape": [2, 1, 8]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        model_revision="rev-a",
+        adapter_family="family-a",
+        kv_source_layer=6,
+        kv_target_layer=7,
+        insertion_family="kv_direct",
+    )
+    route = RoutePacket(
+        method="repo_patch",
+        selected_windows=["hot span"],
+        memory_family="task",
+        session_id="s1",
+        tier="hot",
+        route_reason="test",
+        evidence=[],
+        token_cost=2,
+        kv_ready=True,
+        provenance={"sidecar_manifest": str(manifest_path)},
+    )
+
+    materialized = Materializer().materialize(
+        route,
+        adapter,
+        replay_consumer={
+            "consumer_id": "text-only-hook",
+            "capabilities": ["materialization.replay.residual_stream.v1"],
+            "model_id": "model-b",
+        },
+    )
+
+    assert materialized.refused is True
+    assert materialized.strategy == "refuse"
+    assert "lacks materialization.replay.kv_cache.v1" in materialized.reason
+    assert "model_id mismatch" in materialized.reason
 
 
 def test_materializer_refuses_sidecar_scope_mismatch(tmp_path: Path) -> None:

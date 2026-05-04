@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .config import AdapterSessionMetadata
+from .materialization_replay import (
+    ReplayConsumerInput,
+    normalize_replay_consumer,
+    replay_consumer_refusals,
+    replay_contract_for_strategy,
+)
 from .residual_store import ResidualSidecarManifest, ResidualStore, ResidualStoreError
 from .routing import RoutePacket
 
@@ -24,14 +30,37 @@ class Materializer:
     def __init__(self, residual_store: ResidualStore | None = None) -> None:
         self.residual_store = residual_store or ResidualStore()
 
-    def materialize(self, route: RoutePacket, adapter: AdapterSessionMetadata) -> MaterializedContext:
+    def materialize(
+        self,
+        route: RoutePacket,
+        adapter: AdapterSessionMetadata,
+        replay_consumer: ReplayConsumerInput = None,
+    ) -> MaterializedContext:
+        consumer = normalize_replay_consumer(replay_consumer)
         route_scope = _route_materialization_scope(route)
         sidecars, sidecar_refusals = _load_sidecars(route, self.residual_store)
         refusal_reasons = _compatibility_refusals(route, adapter, route_scope)
         refusal_reasons.extend(_sidecar_refusals(route, adapter, sidecars))
         refusal_reasons.extend(sidecar_refusals)
-        strategy = _select_strategy(route, adapter, sidecars, refusal_reasons)
-        plan = _materialization_plan(route, adapter, strategy, sidecars, refusal_reasons)
+        requested_strategy = _select_strategy(route, adapter, sidecars, refusal_reasons)
+        refusal_reasons.extend(
+            replay_consumer_refusals(
+                requested_strategy,
+                adapter=adapter,
+                memory_family=route.memory_family,
+                consumer=consumer,
+            )
+        )
+        strategy = "refuse" if refusal_reasons else requested_strategy
+        plan = _materialization_plan(
+            route,
+            adapter,
+            strategy,
+            sidecars,
+            refusal_reasons,
+            requested_strategy=requested_strategy,
+            replay_consumer=consumer,
+        )
         compatibility = adapter.scope() | {
             "route_memory_family": route.memory_family,
             "route_tier": route.tier,
@@ -237,17 +266,57 @@ def _materialization_plan(
     strategy: str,
     sidecars: list[ResidualSidecarManifest],
     refusal_reasons: list[str],
+    *,
+    requested_strategy: str,
+    replay_consumer: Any,
 ) -> dict[str, Any]:
+    replay_contract = replay_contract_for_strategy(
+        requested_strategy,
+        adapter=adapter,
+        memory_family=route.memory_family,
+        consumer=replay_consumer,
+    )
     return {
         "version": 1,
         "strategy": strategy,
+        "requested_strategy": requested_strategy,
         "refused": bool(refusal_reasons),
         "reason": "; ".join(refusal_reasons) if refusal_reasons else "ok",
         "session_id": route.session_id,
         "memory_family": route.memory_family,
         "tier": route.tier,
         "adapter_scope": adapter.scope(),
-        "requires_runtime_replay": strategy in {"kv_sidecar", "residual_sidecar"},
+        "requires_runtime_replay": replay_contract["requires_runtime_replay"],
+        "runtime_replay": replay_contract,
         "text_window_count": len(route.selected_windows),
         "sidecars": [sidecar.to_plan_ref() for sidecar in sidecars],
+        "replay_refs": _replay_refs(sidecars),
     }
+
+
+def _replay_refs(sidecars: list[ResidualSidecarManifest]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for sidecar in sidecars:
+        for ordinal, ref in enumerate(sidecar.refs):
+            refs.append(
+                {
+                    "artifact_id": sidecar.artifact_id,
+                    "manifest_path": sidecar.manifest_path,
+                    "ordinal": ordinal,
+                    "kind": ref.kind,
+                    "layer": ref.layer,
+                    "dtype": ref.dtype,
+                    "shape": list(ref.shape),
+                    "uri": ref.uri,
+                    "inline_value_count": _nested_inline_count(ref.inline_values),
+                    "metadata": dict(ref.metadata),
+                    "scope": sidecar.scope(),
+                }
+            )
+    return refs
+
+
+def _nested_inline_count(value: Any) -> int:
+    if isinstance(value, (list, tuple)):
+        return sum(_nested_inline_count(item) for item in value)
+    return 1 if value is not None else 0
