@@ -691,7 +691,14 @@ def _attestation_check(
 
 
 def _optional_package_checks() -> tuple[DoctorCheck, ...]:
-    packages = ("torch", "transformers", "safetensors", "accelerate", "huggingface_hub")
+    packages = (
+        "torch",
+        "transformers",
+        "pydantic",
+        "safetensors",
+        "accelerate",
+        "huggingface_hub",
+    )
     checks = []
     for package in packages:
         status = "ready" if importlib.util.find_spec(package) is not None else "missing"
@@ -724,7 +731,7 @@ def _wsl_python_packages_check() -> DoctorCheck:
 import importlib.util
 import json
 
-packages = ("torch", "transformers", "accelerate")
+packages = ("torch", "transformers", "pydantic", "accelerate")
 available = {package: importlib.util.find_spec(package) is not None for package in packages}
 missing = [package for package, present in available.items() if not present]
 cuda_status = "not_checked"
@@ -764,7 +771,7 @@ print(json.dumps({"missing": missing, "cuda_status": cuda_status, "cuda_detail":
     if missing_packages:
         return DoctorCheck(name, "review", f"missing packages: {', '.join(missing_packages)}; {cuda_detail}")
     status = "ready" if cuda_status == "ready" else "review"
-    return DoctorCheck(name, status, f"torch, transformers, accelerate importable; {cuda_detail}")
+    return DoctorCheck(name, status, f"torch, transformers, pydantic, accelerate importable; {cuda_detail}")
 
 
 def _auto_validate_check(

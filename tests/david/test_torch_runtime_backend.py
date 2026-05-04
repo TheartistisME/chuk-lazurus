@@ -5,6 +5,7 @@ import json
 import sys
 import types
 
+from chuk_lazarus.david import torch_backend
 from chuk_lazarus.david.config import AdapterSessionMetadata, DavidConfig
 from chuk_lazarus.david.runtime import DavidRuntime
 from chuk_lazarus.david.torch_backend import TorchRuntimeModelBackend
@@ -75,10 +76,50 @@ def test_torch_runtime_backend_reports_missing_optional_packages(monkeypatch) ->
 
     assert status.available is False
     assert status.loaded is False
-    assert "missing optional packages: torch, transformers" in status.reason
+    assert "missing torch-runtime dependencies: torch, transformers, pydantic" in status.reason
+    assert status.metadata["dependency_check"]["missing_packages"] == [
+        "torch",
+        "transformers",
+        "pydantic",
+    ]
     assert result.ok is False
+    assert result.error == status.reason
     assert result.metadata["local_files_only"] is True
     assert result.metadata["device"] == "cuda"
+
+
+def test_torch_runtime_backend_reports_local_generation_dependency_errors(monkeypatch) -> None:
+    def fake_import_module(name: str) -> types.ModuleType:
+        if name == "chuk_lazarus.inference.generation":
+            raise ModuleNotFoundError("No module named 'pydantic'", name="pydantic")
+        return types.ModuleType(name)
+
+    monkeypatch.setattr(
+        "chuk_lazarus.david.torch_backend._missing_optional_packages",
+        lambda *names: [],
+    )
+    monkeypatch.setattr(torch_backend.importlib, "import_module", fake_import_module)
+
+    backend = TorchRuntimeModelBackend("local/model", device="cpu")
+
+    status = backend.status()
+    result = backend.generate("hello")
+
+    assert status.available is False
+    assert status.loaded is False
+    assert status.reason == (
+        "torch-runtime dependency import failed: "
+        "chuk_lazarus.inference.generation: missing dependency pydantic"
+    )
+    assert status.metadata["dependency_check"]["required_modules"] == [
+        "chuk_lazarus.inference.generation",
+        "chuk_lazarus.inference.backends.torch_runtime",
+    ]
+    assert status.metadata["dependency_check"]["import_errors"] == [
+        "chuk_lazarus.inference.generation: missing dependency pydantic"
+    ]
+    assert result.ok is False
+    assert result.error == status.reason
 
 
 def test_torch_runtime_backend_loads_local_model_and_uses_standard_generation_config(monkeypatch) -> None:

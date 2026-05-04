@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 import importlib.util
 from typing import Any, Mapping, Sequence
 
@@ -16,6 +17,39 @@ from .model_backend import ModelBackendResult, ModelBackendStatus, _apply_stop
 
 
 _SUPPORTED_DTYPE_STRINGS = {"auto", "float16", "bfloat16", "float32", "none"}
+_REQUIRED_TORCH_RUNTIME_PACKAGES = ("torch", "transformers", "pydantic")
+_REQUIRED_TORCH_RUNTIME_MODULES = (
+    "chuk_lazarus.inference.generation",
+    "chuk_lazarus.inference.backends.torch_runtime",
+)
+
+
+@dataclass(frozen=True)
+class _TorchRuntimeDependencyReport:
+    required_packages: tuple[str, ...]
+    required_modules: tuple[str, ...]
+    missing_packages: tuple[str, ...]
+    import_errors: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.missing_packages and not self.import_errors
+
+    def reason(self) -> str:
+        if self.missing_packages:
+            return f"missing torch-runtime dependencies: {', '.join(self.missing_packages)}"
+        if self.import_errors:
+            return f"torch-runtime dependency import failed: {'; '.join(self.import_errors)}"
+        return "ready"
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "required_packages": list(self.required_packages),
+            "required_modules": list(self.required_modules),
+            "missing_packages": list(self.missing_packages),
+            "import_errors": list(self.import_errors),
+        }
 
 
 @dataclass(frozen=True)
@@ -67,21 +101,21 @@ class TorchRuntimeModelBackend:
                 reason=dtype_error,
                 metadata=self._metadata(),
             )
-        missing = _missing_optional_packages("torch", "transformers")
-        if missing:
+        dependencies = _torch_runtime_dependency_report()
+        if not dependencies.ok:
             return ModelBackendStatus(
                 name=self.name,
                 available=False,
                 loaded=False,
-                reason=f"missing optional packages: {', '.join(missing)}",
-                metadata=self._metadata(),
+                reason=dependencies.reason(),
+                metadata=self._metadata(dependencies),
             )
         return ModelBackendStatus(
             name=self.name,
             available=self._load_error is None,
             loaded=self._runtime is not None,
             reason=self._load_error or "ready",
-            metadata=self._metadata(),
+            metadata=self._metadata(dependencies),
         )
 
     def load(self) -> ModelBackendStatus:
@@ -239,8 +273,11 @@ class TorchRuntimeModelBackend:
             generation_path=getattr(self._runtime, "last_generation_path", None),
         )
 
-    def _metadata(self) -> dict[str, Any]:
-        return {
+    def _metadata(
+        self,
+        dependencies: _TorchRuntimeDependencyReport | None = None,
+    ) -> dict[str, Any]:
+        metadata = {
             "model_id": self.model_id,
             "local_files_only": self.local_files_only,
             "device": self.device,
@@ -248,6 +285,9 @@ class TorchRuntimeModelBackend:
             "resolved_dtype": self._resolved_dtype_label,
             "trust_remote_code": self.trust_remote_code,
         }
+        if dependencies is not None:
+            metadata["dependency_check"] = dependencies.to_metadata()
+        return metadata
 
     def _requested_dtype_error(self) -> str | None:
         if not isinstance(self.requested_dtype, str):
@@ -275,6 +315,34 @@ class TorchRuntimeModelBackend:
 
 def _missing_optional_packages(*names: str) -> list[str]:
     return [name for name in names if importlib.util.find_spec(name) is None]
+
+
+def _torch_runtime_dependency_report() -> _TorchRuntimeDependencyReport:
+    missing = tuple(_missing_optional_packages(*_REQUIRED_TORCH_RUNTIME_PACKAGES))
+    import_errors: list[str] = []
+    if not missing:
+        for module_name in _REQUIRED_TORCH_RUNTIME_MODULES:
+            try:
+                importlib.import_module(module_name)
+            except ModuleNotFoundError as exc:
+                import_errors.append(_module_not_found_reason(module_name, exc))
+            except Exception as exc:  # pragma: no cover - defensive for broken local installs.
+                import_errors.append(f"{module_name}: {type(exc).__name__}: {exc}")
+    return _TorchRuntimeDependencyReport(
+        required_packages=_REQUIRED_TORCH_RUNTIME_PACKAGES,
+        required_modules=_REQUIRED_TORCH_RUNTIME_MODULES,
+        missing_packages=missing,
+        import_errors=tuple(import_errors),
+    )
+
+
+def _module_not_found_reason(module_name: str, exc: ModuleNotFoundError) -> str:
+    missing_name = getattr(exc, "name", None)
+    if missing_name and missing_name != module_name:
+        return f"{module_name}: missing dependency {missing_name}"
+    if missing_name == module_name:
+        return f"{module_name}: module is not importable"
+    return f"{module_name}: {exc}"
 
 
 def _normalize_dtype_request(value: str | Any | None) -> str | Any:
