@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from chuk_lazarus.david import cli
-from chuk_lazarus.david.model_validation import ModelCommandResult
+from chuk_lazarus.david.model_validation import AutoModelValidationResult, ModelCommandResult
 
 
 class FakeRuntime:
@@ -93,6 +93,95 @@ def test_main_explicit_validation_report_wins_over_discovery(monkeypatch, tmp_pa
     assert FakeRuntime.created_with.validation_report_path == str(explicit)
 
 
+def test_main_auto_validates_model_into_workspace_before_boot(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    validation_report = workspace / ".david" / "model_validation" / "model_validation_report.json"
+    calls = []
+
+    def fake_auto_validate(**kwargs):
+        calls.append(kwargs)
+        return AutoModelValidationResult(
+            scan_report_path=workspace / ".david" / "model" / "model_config_report.json",
+            validation_report_path=validation_report,
+            scan_result=ModelCommandResult(
+                returncode=0,
+                command=("python", "David/get_model_config.py"),
+                stdout="",
+                stderr="",
+            ),
+            validation_result=ModelCommandResult(
+                returncode=0,
+                command=("python", "David/validate_model_config.py"),
+                stdout="",
+                stderr="",
+            ),
+        )
+
+    monkeypatch.setattr(cli, "run_auto_model_validation", fake_auto_validate)
+
+    rc = cli.main(
+        [
+            "code",
+            str(workspace),
+            "--model",
+            "google/gemma-e2b",
+            "--auto-validate-model",
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 0
+    assert calls == [{"model": "google/gemma-e2b", "workspace_path": workspace}]
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.created_with.validation_report_path == str(validation_report)
+
+
+def test_main_auto_validation_scan_failure_blocks_runtime(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fake_auto_validate(**_kwargs):
+        return AutoModelValidationResult(
+            scan_report_path=workspace / ".david" / "model" / "model_config_report.json",
+            validation_report_path=workspace / ".david" / "model_validation" / "model_validation_report.json",
+            scan_result=ModelCommandResult(
+                returncode=7,
+                command=("python", "David/get_model_config.py"),
+                stdout="partial scan",
+                stderr="scan exploded",
+            ),
+            validation_result=None,
+        )
+
+    monkeypatch.setattr(cli, "run_auto_model_validation", fake_auto_validate)
+
+    rc = cli.main(
+        [
+            "code",
+            str(workspace),
+            "--model",
+            "google/gemma-e2b",
+            "--auto-validate-model",
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 7
+    assert FakeRuntime.created_with is None
+    err = capsys.readouterr().err
+    assert "Auto model scan failed (rc=7)" in err
+    assert "scan exploded" in err
+
+
 def test_main_missing_validation_report_fails_closed_before_runtime(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
     FakeRuntime.created_with = None
@@ -109,6 +198,7 @@ def test_main_missing_validation_report_fails_closed_before_runtime(monkeypatch,
     assert "model validation: blocked: no boot-safe validation report found" in output
     assert str(model / "validation_report.json") in output
     assert "--validation-report <path>" in output
+    assert "--auto-validate-model" in output
 
 
 def test_parser_keeps_code_subcommand_and_once_option():
@@ -126,6 +216,7 @@ def test_parser_keeps_code_subcommand_and_once_option():
             "--once",
             "/status",
             "--auto-jit-index",
+            "--auto-validate-model",
         ]
     )
 
@@ -136,6 +227,7 @@ def test_parser_keeps_code_subcommand_and_once_option():
     assert args.allow_unvalidated is True
     assert args.once == "/status"
     assert args.auto_jit_index is True
+    assert args.auto_validate_model is True
 
 
 def test_parser_adds_explicit_model_scan_command():

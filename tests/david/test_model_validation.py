@@ -38,6 +38,18 @@ def test_discover_validation_report_uses_workspace_report_when_model_report_miss
     assert discovery.path == workspace_report
 
 
+def test_discover_validation_report_uses_auto_workspace_validation_report(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace_report_dir = workspace / ".david" / "model_validation"
+    workspace_report_dir.mkdir(parents=True)
+    workspace_report = workspace_report_dir / "model_validation_report.json"
+    workspace_report.write_text("{}", encoding="utf-8")
+
+    discovery = discover_validation_report(model_path="google/gemma-e2b", workspace_path=workspace)
+
+    assert discovery.path == workspace_report
+
+
 def test_discover_validation_report_reports_checked_paths_when_missing(tmp_path):
     workspace = tmp_path / "workspace"
     model = tmp_path / "model"
@@ -50,6 +62,7 @@ def test_discover_validation_report_reports_checked_paths_when_missing(tmp_path)
     assert model / "validation_report.json" in discovery.checked_paths
     assert model / "model_validation_report.json" in discovery.checked_paths
     assert workspace / ".david" / "model_validation_report.json" in discovery.checked_paths
+    assert workspace / ".david" / "model_validation" / "model_validation_report.json" in discovery.checked_paths
 
 
 def test_run_model_scan_invokes_standalone_getter(monkeypatch, tmp_path):
@@ -128,6 +141,87 @@ def test_run_model_validate_invokes_standalone_validator(monkeypatch, tmp_path):
         "model-id",
         "--dry-run",
     )
+
+
+def test_run_auto_model_validation_writes_workspace_artifact_paths(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_scan(**kwargs):
+        calls.append(("scan", kwargs))
+        return model_validation.ModelCommandResult(
+            returncode=0,
+            command=("scan",),
+            stdout="",
+            stderr="",
+        )
+
+    def fake_validate(**kwargs):
+        calls.append(("validate", kwargs))
+        return model_validation.ModelCommandResult(
+            returncode=0,
+            command=("validate",),
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(model_validation, "run_model_scan", fake_scan)
+    monkeypatch.setattr(model_validation, "run_model_validate", fake_validate)
+
+    result = model_validation.run_auto_model_validation(
+        model="google/gemma-e2b",
+        workspace_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    assert result.scan_report_path == tmp_path / ".david" / "model" / "model_config_report.json"
+    assert result.validation_report_path == (
+        tmp_path / ".david" / "model_validation" / "model_validation_report.json"
+    )
+    assert result.scan_report_path.parent.exists()
+    assert result.validation_report_path.parent.exists()
+    assert calls == [
+        (
+            "scan",
+            {
+                "model": "google/gemma-e2b",
+                "output": result.scan_report_path,
+                "repo_root": None,
+            },
+        ),
+        (
+            "validate",
+            {
+                "report": result.scan_report_path,
+                "output": result.validation_report_path,
+                "model": "google/gemma-e2b",
+                "repo_root": None,
+            },
+        ),
+    ]
+
+
+def test_run_auto_model_validation_stops_when_scan_fails(monkeypatch, tmp_path):
+    def fake_scan(**_kwargs):
+        return model_validation.ModelCommandResult(
+            returncode=9,
+            command=("scan",),
+            stdout="",
+            stderr="nope",
+        )
+
+    def fake_validate(**_kwargs):
+        raise AssertionError("validator should not run after failed scan")
+
+    monkeypatch.setattr(model_validation, "run_model_scan", fake_scan)
+    monkeypatch.setattr(model_validation, "run_model_validate", fake_validate)
+
+    result = model_validation.run_auto_model_validation(
+        model="google/gemma-e2b",
+        workspace_path=tmp_path,
+    )
+
+    assert result.returncode == 9
+    assert result.validation_result is None
 
 
 def test_run_model_scan_reports_missing_helper_without_subprocess(monkeypatch, tmp_path):

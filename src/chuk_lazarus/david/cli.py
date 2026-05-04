@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from .model_validation import (
+    AutoModelValidationResult,
     ModelCommandResult,
     ValidationReportDiscovery,
     discover_validation_report,
+    run_auto_model_validation,
     run_model_scan,
     run_model_validate,
 )
@@ -180,6 +182,15 @@ def main(argv: list[str] | None = None) -> int:
 
     workspace_path = Path(workspace)
     discovery = _resolve_validation_report(args, workspace_path)
+    if _should_auto_validate_model(args, discovery):
+        auto_result = run_auto_model_validation(model=args.model, workspace_path=workspace_path)
+        if auto_result.returncode != 0:
+            _write_auto_validation_failure(auto_result)
+            return auto_result.returncode
+        discovery = ValidationReportDiscovery(
+            path=auto_result.validation_report_path,
+            checked_paths=discovery.checked_paths + (auto_result.validation_report_path,),
+        )
     if _missing_required_validation_report(args, discovery):
         _write_missing_validation_report_status(args, workspace_path, discovery)
         return 2
@@ -236,17 +247,7 @@ def _write_model_command_result(
         sys.stdout.write(f"{success_message}\n")
         return 0
 
-    command_text = " ".join(result.command)
-    sys.stderr.write(f"{failure_label} (rc={result.returncode})\n")
-    sys.stderr.write(f"command: {command_text}\n")
-    if result.stderr:
-        sys.stderr.write(result.stderr)
-        if not result.stderr.endswith("\n"):
-            sys.stderr.write("\n")
-    if result.stdout:
-        sys.stderr.write(result.stdout)
-        if not result.stdout.endswith("\n"):
-            sys.stderr.write("\n")
+    _write_model_command_failure(result, failure_label=failure_label)
     return result.returncode
 
 
@@ -316,6 +317,34 @@ def _missing_required_validation_report(
     return bool(args.model and not args.allow_unvalidated and discovery.path is None)
 
 
+def _should_auto_validate_model(
+    args: argparse.Namespace,
+    discovery: ValidationReportDiscovery,
+) -> bool:
+    return bool(
+        args.model
+        and args.auto_validate_model
+        and not args.allow_unvalidated
+        and discovery.path is None
+    )
+
+
+def _write_auto_validation_failure(result: AutoModelValidationResult) -> None:
+    if result.scan_result.returncode != 0:
+        _write_model_command_failure(
+            result.scan_result,
+            failure_label="Auto model scan failed",
+        )
+        return
+    if result.validation_result is None:
+        sys.stderr.write("Auto model validation failed: validator did not run\n")
+        return
+    _write_model_command_failure(
+        result.validation_result,
+        failure_label="Auto model validation failed",
+    )
+
+
 def _write_missing_validation_report_status(
     args: argparse.Namespace,
     workspace_path: Path,
@@ -333,7 +362,7 @@ def _write_missing_validation_report_status(
                 f"- workspace: {workspace_path.expanduser().resolve()}",
                 "- checked validation report paths:",
                 checked,
-                "Use --validation-report <path> or --allow-unvalidated to open offline shell mode.",
+                "Use --validation-report <path>, --auto-validate-model, or --allow-unvalidated to open offline shell mode.",
                 "",
             )
         )
@@ -370,6 +399,29 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Build a workspace index at startup when one is required and missing",
     )
+    parser.add_argument(
+        "--auto-validate-model",
+        action="store_true",
+        help="Run David's standalone scanner and validator into workspace .david artifacts before boot",
+    )
+
+
+def _write_model_command_failure(
+    result: ModelCommandResult,
+    *,
+    failure_label: str,
+) -> None:
+    command_text = " ".join(result.command)
+    sys.stderr.write(f"{failure_label} (rc={result.returncode})\n")
+    sys.stderr.write(f"command: {command_text}\n")
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+        if not result.stderr.endswith("\n"):
+            sys.stderr.write("\n")
+    if result.stdout:
+        sys.stderr.write(result.stdout)
+        if not result.stdout.endswith("\n"):
+            sys.stderr.write("\n")
 
 
 if __name__ == "__main__":  # pragma: no cover
