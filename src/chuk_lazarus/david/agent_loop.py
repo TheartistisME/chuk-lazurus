@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 import json
+from pathlib import PurePosixPath, PureWindowsPath
 import re
+import shlex
 import subprocess
+import sys
 from typing import Any, Callable
 
 from .tools import LocalTools, PathSafetyError
@@ -97,6 +100,19 @@ class AgentLoopError(ValueError):
 
 JSON_BLOCK_RE = re.compile(r"```(?:json|tool|action)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 ALLOWED_ACTIONS = {"plan", "read", "write", "run", "shell", "verify", "done", "none", "no_action"}
+WRITE_CONTENT_RE = re.compile(r"\b(?:that\s+says|with\s+content|containing|contents?\s*:)\b", re.IGNORECASE)
+OPTIONAL_RUN_RE = re.compile(r"\b(?:then|and)\s+run\s+(.+)$", re.IGNORECASE | re.DOTALL)
+QUOTED_OR_TOKEN_RE = r"`[^`]+`|\"[^\"]+\"|'[^']+'|[^\s]+"
+PROTECTED_FALLBACK_PATHS = {
+    "scripts/run_swebench_pro_parity.py",
+    "scripts/run_locobench_benchmark.py",
+    "scripts/run_ruler_benchmark.py",
+    "scripts/run_mrcr_benchmark.py",
+    "scripts/interactive_memory_chat.py",
+    "scripts/benchmark_jit_indexing.py",
+    "David/central router.py",
+    "David/decoding_prior_store.py",
+}
 
 
 def run_agent_loop(
@@ -114,6 +130,8 @@ def run_agent_loop(
 
     trace: list[AgentStepTrace] = []
     provider = _step_provider(model_step)
+    fallback_requests: tuple[ActionPayload, ...] | None = None
+    fallback_reason = ""
     for index in range(1, max_steps + 1):
         state = AgentLoopState(
             workspace_root=str(tools.workspace_root),
@@ -123,25 +141,59 @@ def run_agent_loop(
             objective=objective,
             mode=mode,
         )
-        try:
-            raw = provider(state)
-        except Exception as exc:
-            trace.append(
-                _trace(
-                    index,
-                    "refuse",
-                    False,
-                    {"error": f"model step failed: {type(exc).__name__}: {exc}"},
-                    {"provenance": "david.agent_loop.provider"},
+        if fallback_requests is not None:
+            raw = _fallback_payload_for_step(fallback_requests, index=index, reason=fallback_reason)
+            if raw is None:
+                trace.append(
+                    _trace(
+                        index,
+                        "no_action",
+                        True,
+                        {"reason": "natural-language fallback exhausted"},
+                        {"provenance": "david.agent_loop.natural_language_fallback"},
+                    )
                 )
-            )
-            return AgentLoopResult("refused", index, tuple(trace), reason=str(trace[-1].observation["error"]))
+                return AgentLoopResult("no_action", index, tuple(trace), reason="natural-language fallback exhausted")
+        else:
+            try:
+                raw = provider(state)
+            except Exception as exc:
+                fallback_requests = _fallback_plan_for_state(state, mode=mode)
+                if fallback_requests:
+                    fallback_reason = f"provider failed: {type(exc).__name__}: {exc}"
+                    raw = _fallback_payload_for_step(fallback_requests, index=index, reason=fallback_reason)
+                else:
+                    trace.append(
+                        _trace(
+                            index,
+                            "refuse",
+                            False,
+                            {"error": f"model step failed: {type(exc).__name__}: {exc}"},
+                            {"provenance": "david.agent_loop.provider"},
+                        )
+                    )
+                    return AgentLoopResult("refused", index, tuple(trace), reason=str(trace[-1].observation["error"]))
         try:
             action = parse_agent_action(raw)
         except AgentLoopError as exc:
-            trace.append(_trace(index, "refuse", False, {"error": str(exc)}, {"raw": raw}))
-            return AgentLoopResult("refused", index, tuple(trace), reason=str(exc))
+            fallback_requests = _fallback_plan_for_state(state, mode=mode)
+            if fallback_requests:
+                fallback_reason = f"unparseable model action: {exc}"
+                raw = _fallback_payload_for_step(fallback_requests, index=index, reason=fallback_reason)
+                action = parse_agent_action(raw)
+            else:
+                trace.append(_trace(index, "refuse", False, {"error": str(exc)}, {"raw": raw}))
+                return AgentLoopResult("refused", index, tuple(trace), reason=str(exc))
 
+        if action is None or action.action in {"none", "no_action"}:
+            fallback_requests = _fallback_plan_for_state(state, mode=mode)
+            if fallback_requests:
+                fallback_reason = "model returned no usable action"
+                raw = _fallback_payload_for_step(fallback_requests, index=index, reason=fallback_reason)
+                action = parse_agent_action(raw)
+            else:
+                trace.append(_trace(index, "no_action", True, {"reason": "no action requested"}, {"raw": raw}))
+                return AgentLoopResult("no_action", index, tuple(trace), reason="no action requested")
         if action is None or action.action in {"none", "no_action"}:
             trace.append(_trace(index, "no_action", True, {"reason": "no action requested"}, {"raw": raw}))
             return AgentLoopResult("no_action", index, tuple(trace), reason="no action requested")
@@ -183,6 +235,57 @@ def parse_agent_action(raw: ActionPayload) -> AgentAction | None:
     if parsed is None:
         return None
     return _action_from_mapping(parsed)
+
+
+def plan_natural_language_fallback_actions(objective: str) -> tuple[ActionPayload, ...]:
+    """Infer a tiny, fail-closed action plan for obvious write-file requests.
+
+    This is deliberately not a general planner. It only covers plain-English
+    prompts such as "create a file named hello.txt that says hello" when the
+    model backend cannot provide a JSON action. If the path, content, or an
+    optional test command cannot be inferred safely, it returns no plan.
+    """
+
+    parsed = _parse_write_file_request(objective)
+    if parsed is None:
+        return ()
+
+    path, content, command = parsed
+    actions: list[ActionPayload] = [
+        {
+            "action": "write",
+            "path": path,
+            "content": content,
+            "reason": "natural-language fallback write",
+        }
+    ]
+    if command:
+        actions.append(
+            {
+                "action": "verify",
+                "command": list(command),
+                "reason": "natural-language fallback explicit verification command",
+            }
+        )
+    else:
+        actions.append(
+            {
+                "action": "verify",
+                "command": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; import sys; "
+                        "actual = Path(sys.argv[1]).read_text(encoding='utf-8'); "
+                        "raise SystemExit(0 if actual == sys.argv[2] else 1)"
+                    ),
+                    path,
+                    content,
+                ],
+                "reason": "natural-language fallback verified written content",
+            }
+        )
+    return tuple(actions)
 
 
 def render_model_action_prompt(state: AgentLoopState) -> str:
@@ -354,6 +457,141 @@ def _parse_json_object(text: str) -> Mapping[str, Any] | None:
     if not isinstance(parsed, Mapping):
         raise AgentLoopError("action JSON must be an object")
     return parsed
+
+
+def _fallback_plan_for_state(state: AgentLoopState, *, mode: str) -> tuple[ActionPayload, ...]:
+    if mode != "model_driven" or state.trace:
+        return ()
+    return plan_natural_language_fallback_actions(state.objective)
+
+
+def _fallback_payload_for_step(
+    requests: Sequence[ActionPayload],
+    *,
+    index: int,
+    reason: str,
+) -> ActionPayload:
+    offset = index - 1
+    if offset >= len(requests):
+        return None
+    request = requests[offset]
+    if isinstance(request, Mapping):
+        payload = dict(request)
+        payload["_fallback_provenance"] = {
+            "provenance": "david.agent_loop.natural_language_fallback",
+            "reason": reason,
+            "step": index,
+        }
+        return payload
+    return request
+
+
+def _parse_write_file_request(objective: str) -> tuple[str, str, tuple[str, ...] | None] | None:
+    text = " ".join(objective.strip().split())
+    if not text:
+        return None
+    delimiter = WRITE_CONTENT_RE.search(text)
+    if delimiter is None:
+        return None
+
+    left = text[: delimiter.start()].strip()
+    content_text = text[delimiter.end() :].strip()
+    path = _extract_write_path(left)
+    if path is None:
+        return None
+
+    content, command = _split_content_and_optional_command(content_text)
+    if content is None:
+        return None
+    return path, content, command
+
+
+def _extract_write_path(left: str) -> str | None:
+    patterns = [
+        rf"\b(?:named|called|at|path)\s+(?P<path>{QUOTED_OR_TOKEN_RE})\s*$",
+        rf"\b(?:create|write|make)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?P<path>{QUOTED_OR_TOKEN_RE})\s*$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, left, re.IGNORECASE)
+        if not match:
+            continue
+        path = _clean_quoted_value(match.group("path")).rstrip(".,;:")
+        if _is_safe_fallback_path(path):
+            return path
+    return None
+
+
+def _split_content_and_optional_command(content_text: str) -> tuple[str | None, tuple[str, ...] | None]:
+    command: tuple[str, ...] | None = None
+    content = content_text.strip()
+    command_match = OPTIONAL_RUN_RE.search(content)
+    if command_match:
+        command_text = command_match.group(1).strip()
+        content = content[: command_match.start()].strip()
+        command = _parse_simple_test_command(command_text)
+        if command is None:
+            return None, None
+    content = _clean_quoted_value(content)
+    if not content:
+        return None, None
+    return content, command
+
+
+def _parse_simple_test_command(command_text: str) -> tuple[str, ...] | None:
+    cleaned = command_text.strip().rstrip(".")
+    if not cleaned or re.search(r"[;&|><`$()\{\}\n\r]", cleaned):
+        return None
+    try:
+        parts = shlex.split(cleaned)
+    except ValueError:
+        return None
+    if not parts or any(not _is_safe_command_arg(part) for part in parts):
+        return None
+
+    head = parts[0].lower()
+    if head == "pytest":
+        return tuple(parts)
+    if head in {"python", "python3", "py"} and len(parts) >= 3 and parts[1] == "-m":
+        module = parts[2]
+        if module in {"pytest", "py_compile"}:
+            return (sys.executable, "-m", *parts[2:])
+    if parts in (["npm", "test"], ["pnpm", "test"], ["yarn", "test"]):
+        return tuple(parts)
+    if len(parts) == 3 and parts[0] in {"npm", "pnpm", "yarn"} and parts[1] == "run" and parts[2] == "test":
+        return tuple(parts)
+    return None
+
+
+def _clean_quoted_value(value: str) -> str:
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"', "`"}:
+        return cleaned[1:-1]
+    return cleaned
+
+
+def _is_safe_fallback_path(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    if not normalized or normalized.lower() in {"file", "new", "a"}:
+        return False
+    if "\x00" in normalized or "\n" in normalized or "\r" in normalized:
+        return False
+    if "://" in normalized or normalized.startswith("~"):
+        return False
+    if PurePosixPath(normalized).is_absolute() or PureWindowsPath(path).is_absolute():
+        return False
+    if any(part in {"", ".", ".."} for part in normalized.split("/")):
+        return False
+    if any(char in normalized for char in "*?[]{}"):
+        return False
+    return normalized not in PROTECTED_FALLBACK_PATHS
+
+
+def _is_safe_command_arg(arg: str) -> bool:
+    if not arg or "\x00" in arg or "\n" in arg or "\r" in arg:
+        return False
+    if ".." in arg.replace("\\", "/").split("/"):
+        return False
+    return re.fullmatch(r"[\w./\\:=@+,-]+", arg) is not None
 
 
 def _step_provider(model_step: ModelStep | Sequence[ActionPayload]) -> ModelStep:

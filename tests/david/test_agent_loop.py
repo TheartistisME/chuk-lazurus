@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-from chuk_lazarus.david.agent_loop import parse_agent_action, run_agent_loop
+from chuk_lazarus.david.agent_loop import (
+    parse_agent_action,
+    plan_natural_language_fallback_actions,
+    run_agent_loop,
+)
 from chuk_lazarus.david.tools import LocalTools
 
 
@@ -144,3 +148,102 @@ def test_agent_loop_refuses_model_step_exception(tmp_path: Path) -> None:
     assert result.status == "refused"
     assert result.trace[0].action == "refuse"
     assert "backend offline" in result.reason
+
+
+def test_natural_language_fallback_plans_write_and_verify() -> None:
+    actions = plan_natural_language_fallback_actions("create a file named hello.txt that says hello")
+
+    assert len(actions) == 2
+    assert actions[0]["action"] == "write"
+    assert actions[0]["path"] == "hello.txt"
+    assert actions[0]["content"] == "hello"
+    assert actions[1]["action"] == "verify"
+    assert isinstance(actions[1]["command"], list)
+
+
+def test_model_driven_agent_loop_falls_back_from_no_json_text(tmp_path: Path) -> None:
+    def model_step(state):
+        del state
+        return "offline backend prose with no JSON"
+
+    result = run_agent_loop(
+        model_step,
+        LocalTools(tmp_path),
+        objective="create a file named hello.txt that says hello",
+        mode="model_driven",
+    )
+
+    assert result.status == "verified"
+    assert result.ok is True
+    assert [step.action for step in result.trace] == ["write", "verify"]
+    assert (tmp_path / "hello.txt").read_text(encoding="utf-8") == "hello"
+    assert result.trace[0].provenance["raw"]["_fallback_provenance"]["reason"] == "model returned no usable action"
+
+
+def test_model_driven_agent_loop_falls_back_from_provider_exception(tmp_path: Path) -> None:
+    def model_step(state):
+        del state
+        raise RuntimeError("vindex artifact is not generative")
+
+    result = run_agent_loop(
+        model_step,
+        LocalTools(tmp_path),
+        objective='write file at "notes/today.txt" with content "ship David"',
+        mode="model_driven",
+    )
+
+    assert result.status == "verified"
+    assert (tmp_path / "notes" / "today.txt").read_text(encoding="utf-8") == "ship David"
+    assert "provider failed" in result.trace[0].provenance["raw"]["_fallback_provenance"]["reason"]
+
+
+def test_natural_language_fallback_is_model_driven_only(tmp_path: Path) -> None:
+    result = run_agent_loop(
+        ["create a file named hello.txt that says hello"],
+        LocalTools(tmp_path),
+        objective="create a file named hello.txt that says hello",
+        mode="explicit",
+    )
+
+    assert result.status == "no_action"
+    assert not (tmp_path / "hello.txt").exists()
+
+
+def test_natural_language_fallback_returns_no_action_when_unsure(tmp_path: Path) -> None:
+    def model_step(state):
+        del state
+        return ""
+
+    result = run_agent_loop(
+        model_step,
+        LocalTools(tmp_path),
+        objective="make things better in the repo",
+        mode="model_driven",
+    )
+
+    assert result.status == "no_action"
+    assert result.trace[0].action == "no_action"
+
+
+def test_natural_language_fallback_rejects_unsafe_path() -> None:
+    actions = plan_natural_language_fallback_actions("create a file named ../outside.txt that says nope")
+
+    assert actions == ()
+
+
+def test_natural_language_fallback_accepts_simple_test_command() -> None:
+    actions = plan_natural_language_fallback_actions(
+        "create a file named hello.txt that says hello then run python -m py_compile hello.txt"
+    )
+
+    assert len(actions) == 2
+    assert actions[1]["action"] == "verify"
+    assert actions[1]["command"][:3] == [sys.executable, "-m", "py_compile"]
+
+
+def test_natural_language_fallback_rejects_shell_string_command() -> None:
+    actions = plan_natural_language_fallback_actions(
+        "create a file named hello.txt that says hello then run pytest; rm -rf ."
+    )
+
+    assert actions == ()
