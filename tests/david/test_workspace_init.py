@@ -5,6 +5,11 @@ from pathlib import Path
 
 import pytest
 
+from chuk_lazarus.david.config import (
+    DavidConfigSchemaError,
+    coerce_workspace_operator_config,
+    load_workspace_operator_config,
+)
 from chuk_lazarus.david.workspace_init import (
     CONFIG_SCHEMA_NAME,
     CONFIG_SCHEMA_VERSION,
@@ -29,6 +34,22 @@ def test_initialize_workspace_creates_layout_and_defaults(tmp_path: Path) -> Non
     config = json.loads(result.config_path.read_text(encoding="utf-8"))
     assert config["schema_name"] == CONFIG_SCHEMA_NAME
     assert config["schema_version"] == CONFIG_SCHEMA_VERSION
+    assert config["migration"] == {
+        "schema_name": CONFIG_SCHEMA_NAME,
+        "source_schema_version": CONFIG_SCHEMA_VERSION,
+        "target_schema_version": CONFIG_SCHEMA_VERSION,
+        "status": "current",
+        "requires_migration": False,
+        "applied": [],
+        "pending": [],
+    }
+    assert config["readiness"] == {
+        "config_schema": "current",
+        "model_config": "missing",
+        "model_validation": "required_before_boot",
+        "workspace_index": "manual",
+        "auto_load_policy": "blocked_until_validation_ready",
+    }
     assert config["model"] is None
     assert config["validation_report"] == ".david/model_validation/model_validation_report.json"
     assert config["model_attestation"] == ".david/model_validation/model_attestation.json"
@@ -67,7 +88,60 @@ def test_initialize_workspace_accepts_model_runtime_defaults(tmp_path: Path) -> 
     assert config["model_dtype"] == "bfloat16"
     assert config["model_max_new_tokens"] == 88
     assert config["auto_jit_index"] is True
+    assert config["readiness"]["model_config"] == "configured"
+    assert config["readiness"]["workspace_index"] == "jit_on_boot_enabled"
     assert "google/gemma-e2b" in result.next_steps_summary
+
+
+def test_workspace_operator_config_loader_accepts_minimal_legacy_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "model": "google/gemma-e2b",
+                "model_backend": "TORCH-RUNTIME",
+                "model_max_new_tokens": "42",
+                "operator_note": "keep me",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_workspace_operator_config(config_path)
+
+    assert config["schema_name"] == CONFIG_SCHEMA_NAME
+    assert config["schema_version"] == CONFIG_SCHEMA_VERSION
+    assert config["model"] == "google/gemma-e2b"
+    assert config["model_backend"] == "torch-runtime"
+    assert config["model_max_new_tokens"] == 42
+    assert config["validation_report"] == ".david/model_validation/model_validation_report.json"
+    assert config["model_attestation"] == ".david/model_validation/model_attestation.json"
+    assert config["operator_note"] == "keep me"
+    assert config["migration"]["source_schema_version"] == 0
+    assert config["migration"]["status"] == "coerced_legacy"
+    assert config["migration"]["requires_migration"] is False
+    assert config["readiness"]["config_schema"] == "coerced_legacy"
+    assert config["readiness"]["model_config"] == "configured"
+
+
+def test_workspace_operator_config_rejects_unknown_schema() -> None:
+    with pytest.raises(DavidConfigSchemaError, match="unsupported David config schema_name"):
+        coerce_workspace_operator_config(
+            {
+                "schema_name": "david.unknown_config",
+                "schema_version": CONFIG_SCHEMA_VERSION,
+            }
+        )
+
+
+def test_workspace_operator_config_rejects_future_schema_version() -> None:
+    with pytest.raises(DavidConfigSchemaError, match="unsupported David config schema_version"):
+        coerce_workspace_operator_config(
+            {
+                "schema_name": CONFIG_SCHEMA_NAME,
+                "schema_version": CONFIG_SCHEMA_VERSION + 1,
+            }
+        )
 
 
 def test_initialize_workspace_is_idempotent_without_overwriting(tmp_path: Path) -> None:
@@ -93,6 +167,7 @@ def test_initialize_workspace_force_overwrites_managed_files(tmp_path: Path) -> 
 
     config = json.loads(result.config_path.read_text(encoding="utf-8"))
     assert config["model"] == "second-model"
+    assert config["migration"]["status"] == "current"
     assert result.config_path in result.overwritten_paths
     assert result.next_steps_path in result.overwritten_paths
 

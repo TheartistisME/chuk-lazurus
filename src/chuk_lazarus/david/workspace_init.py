@@ -7,9 +7,17 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .config import (
+    CONFIG_SCHEMA_NAME,
+    CONFIG_SCHEMA_VERSION,
+    DEFAULT_MODEL_BACKEND,
+    DEFAULT_MODEL_DTYPE,
+    DEFAULT_MODEL_MAX_NEW_TOKENS,
+    DEFAULT_MODEL_ATTESTATION_PATH,
+    DEFAULT_VALIDATION_REPORT_PATH,
+    coerce_workspace_operator_config,
+)
 
-CONFIG_SCHEMA_NAME = "david.workspace_config"
-CONFIG_SCHEMA_VERSION = 1
 DAVID_DIR = Path(".david")
 CONFIG_PATH = DAVID_DIR / "config.json"
 NEXT_STEPS_PATH = DAVID_DIR / "NEXT_STEPS.md"
@@ -20,9 +28,6 @@ LAYOUT_DIRS = (
     DAVID_DIR / "model_validation",
     DAVID_DIR / "sessions",
 )
-DEFAULT_MODEL_BACKEND = "transformers"
-DEFAULT_MODEL_DTYPE = "auto"
-DEFAULT_MODEL_MAX_NEW_TOKENS = 160
 
 
 @dataclass(frozen=True)
@@ -149,28 +154,30 @@ def default_workspace_config(
 ) -> dict[str, Any]:
     """Return CLI-compatible defaults using relative workspace paths."""
 
-    return {
-        "schema_name": CONFIG_SCHEMA_NAME,
-        "schema_version": CONFIG_SCHEMA_VERSION,
-        "paths": {
-            "state_dir": ".david",
-            "memory_dir": ".david/memory",
-            "indexes_dir": ".david/indexes",
-            "model_validation_dir": ".david/model_validation",
-            "sessions_dir": ".david/sessions",
-        },
-        "model": _clean_optional_string(model),
-        "validation_report": ".david/model_validation/model_validation_report.json",
-        "model_attestation": ".david/model_validation/model_attestation.json",
-        "model_backend": _clean_optional_string(backend) or DEFAULT_MODEL_BACKEND,
-        "model_device": _clean_optional_string(device),
-        "model_dtype": _clean_optional_string(dtype) or DEFAULT_MODEL_DTYPE,
-        "model_max_new_tokens": _positive_int_or_default(
-            max_new_tokens,
-            DEFAULT_MODEL_MAX_NEW_TOKENS,
-        ),
-        "auto_jit_index": bool(auto_jit_index),
-    }
+    return coerce_workspace_operator_config(
+        {
+            "schema_name": CONFIG_SCHEMA_NAME,
+            "schema_version": CONFIG_SCHEMA_VERSION,
+            "paths": {
+                "state_dir": ".david",
+                "memory_dir": ".david/memory",
+                "indexes_dir": ".david/indexes",
+                "model_validation_dir": ".david/model_validation",
+                "sessions_dir": ".david/sessions",
+            },
+            "model": _clean_optional_string(model),
+            "validation_report": DEFAULT_VALIDATION_REPORT_PATH,
+            "model_attestation": DEFAULT_MODEL_ATTESTATION_PATH,
+            "model_backend": _clean_optional_string(backend) or DEFAULT_MODEL_BACKEND,
+            "model_device": _clean_optional_string(device),
+            "model_dtype": _clean_optional_string(dtype) or DEFAULT_MODEL_DTYPE,
+            "model_max_new_tokens": _positive_int_or_default(
+                max_new_tokens,
+                DEFAULT_MODEL_MAX_NEW_TOKENS,
+            ),
+            "auto_jit_index": bool(auto_jit_index),
+        }
+    )
 
 
 def format_next_steps_summary(config: dict[str, Any]) -> str:
