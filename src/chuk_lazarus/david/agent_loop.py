@@ -132,6 +132,7 @@ def run_agent_loop(
 
     trace: list[AgentStepTrace] = []
     provider = _step_provider(model_step)
+    has_repair_callback = callable(model_step)
     fallback_requests: tuple[ActionPayload, ...] | None = None
     fallback_reason = ""
     for index in range(1, max_steps + 1):
@@ -205,6 +206,21 @@ def run_agent_loop(
             return AgentLoopResult("done", index, tuple(trace), reason=reason)
 
         step_trace = execute_agent_action(action, tools, step=index, raw=raw)
+        if _should_continue_for_model_repair(
+            step_trace,
+            mode=mode,
+            has_repair_callback=has_repair_callback,
+            step=index,
+            max_steps=max_steps,
+        ):
+            step_trace = _with_repair_request(
+                step_trace,
+                next_step=index + 1,
+                max_steps=max_steps,
+                attempt=_repair_attempt_count(trace) + 1,
+            )
+            trace.append(step_trace)
+            continue
         trace.append(step_trace)
 
         if not step_trace.ok and step_trace.action == "refuse":
@@ -552,6 +568,56 @@ def _fallback_payload_for_step(
         }
         return payload
     return request
+
+
+def _should_continue_for_model_repair(
+    step_trace: AgentStepTrace,
+    *,
+    mode: str,
+    has_repair_callback: bool,
+    step: int,
+    max_steps: int,
+) -> bool:
+    if mode != "model_driven" or not has_repair_callback:
+        return False
+    if step >= max_steps or step_trace.ok:
+        return False
+    return step_trace.action in {"patch", "verify"}
+
+
+def _with_repair_request(
+    step_trace: AgentStepTrace,
+    *,
+    next_step: int,
+    max_steps: int,
+    attempt: int,
+) -> AgentStepTrace:
+    reason = f"{step_trace.action} failed; feeding observation to model callback for repair"
+    repair = {
+        "requested": True,
+        "strategy": "model_driven_callback",
+        "trigger_action": step_trace.action,
+        "failed_step": step_trace.step,
+        "next_step": next_step,
+        "attempt": attempt,
+        "max_steps": max_steps,
+        "reason": reason,
+    }
+    observation = dict(step_trace.observation)
+    observation["repair"] = repair
+    provenance = dict(step_trace.provenance)
+    provenance["repair"] = repair
+    return AgentStepTrace(
+        step=step_trace.step,
+        action=step_trace.action,
+        ok=step_trace.ok,
+        observation=observation,
+        provenance=provenance,
+    )
+
+
+def _repair_attempt_count(trace: Sequence[AgentStepTrace]) -> int:
+    return sum(1 for item in trace if isinstance(item.provenance.get("repair"), Mapping))
 
 
 def _parse_write_file_request(objective: str) -> tuple[str, str, tuple[str, ...] | None] | None:

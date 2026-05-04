@@ -184,6 +184,129 @@ new
     assert target.read_text(encoding="utf-8") == "old\n"
 
 
+def test_model_driven_patch_failure_can_repair_and_verify(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    seen_repairs: list[object] = []
+
+    def model_step(state: AgentLoopState):
+        seen_repairs.append(state.last_observation.get("repair"))
+        if state.step == 1:
+            return {
+                "action": "patch",
+                "content": """src/example.py
+<<<< SEARCH
+VALUE = 99
+==== REPLACE
+VALUE = 2
+>>>>
+""",
+            }
+        if state.step == 2:
+            assert state.last_observation["repair"]["trigger_action"] == "patch"
+            return {
+                "action": "patch",
+                "content": """src/example.py
+<<<< SEARCH
+VALUE = 1
+==== REPLACE
+VALUE = 2
+>>>>
+""",
+            }
+        return {
+            "action": "verify",
+            "command": [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    "raise SystemExit(0 if Path('src/example.py').read_text(encoding='utf-8') == 'VALUE = 2\\n' else 1)"
+                ),
+            ],
+        }
+
+    result = run_agent_loop(model_step, LocalTools(tmp_path), max_steps=3, mode="model_driven")
+
+    assert result.status == "verified"
+    assert [step.action for step in result.trace] == ["patch", "patch", "verify"]
+    assert result.trace[0].ok is False
+    assert result.trace[0].observation["repair"]["next_step"] == 2
+    assert result.trace[0].provenance["repair"]["attempt"] == 1
+    assert seen_repairs[1]["trigger_action"] == "patch"
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_model_driven_verify_failure_can_patch_repair_and_verify(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    verify_command = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            "raise SystemExit(0 if Path('src/example.py').read_text(encoding='utf-8') == 'VALUE = 2\\n' else 1)"
+        ),
+    ]
+
+    def model_step(state: AgentLoopState):
+        if state.step == 1:
+            return {"action": "verify", "command": verify_command}
+        if state.step == 2:
+            assert state.last_observation["returncode"] == 1
+            assert state.last_observation["repair"]["trigger_action"] == "verify"
+            return {
+                "action": "patch",
+                "content": """src/example.py
+<<<< SEARCH
+VALUE = 1
+==== REPLACE
+VALUE = 2
+>>>>
+""",
+            }
+        return {"action": "verify", "command": verify_command}
+
+    result = run_agent_loop(model_step, LocalTools(tmp_path), max_steps=3, mode="model_driven")
+
+    assert result.status == "verified"
+    assert result.ok is True
+    assert [step.action for step in result.trace] == ["verify", "patch", "verify"]
+    assert result.trace[0].ok is False
+    assert result.trace[0].observation["repair"]["next_step"] == 2
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_model_driven_repair_stops_at_max_steps_without_verified_status(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    def model_step(state: AgentLoopState):
+        if state.step == 1:
+            return {"action": "verify", "passed": False, "reason": "not fixed yet"}
+        return {
+            "action": "patch",
+            "content": """src/example.py
+<<<< SEARCH
+VALUE = 1
+==== REPLACE
+VALUE = 2
+>>>>
+""",
+        }
+
+    result = run_agent_loop(model_step, LocalTools(tmp_path), max_steps=2, mode="model_driven")
+
+    assert result.status == "max_steps"
+    assert result.verified is False
+    assert [step.action for step in result.trace] == ["verify", "patch"]
+    assert result.trace[0].observation["repair"]["next_step"] == 2
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
 def test_agent_loop_refuses_empty_patch_content(tmp_path: Path) -> None:
     result = run_agent_loop([{"action": "patch", "content": "  \n"}], LocalTools(tmp_path))
 
