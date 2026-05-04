@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import importlib.util
-from typing import Any, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
+
+from .materialization_replay import ReplayConsumerInput, replay_generation_metadata
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,8 @@ class ModelBackend(Protocol):
         max_new_tokens: int = 128,
         stop: Sequence[str] | None = None,
         logits_processor: Any | Sequence[Any] | None = None,
+        materialization_plan: Mapping[str, Any] | None = None,
+        replay_consumer: ReplayConsumerInput = None,
     ) -> ModelBackendResult:
         ...
 
@@ -67,15 +71,26 @@ class OfflineModelBackend:
         max_new_tokens: int = 128,
         stop: Sequence[str] | None = None,
         logits_processor: Any | Sequence[Any] | None = None,
+        materialization_plan: Mapping[str, Any] | None = None,
+        replay_consumer: ReplayConsumerInput = None,
     ) -> ModelBackendResult:
         del logits_processor
         words = prompt.split()
         clipped = " ".join(words[: max(0, max_new_tokens)])
         text = f"{self.prefix}: {clipped}".strip()
+        metadata: dict[str, Any] = {"prompt_tokens": len(words), "max_new_tokens": max_new_tokens}
+        replay_metadata = replay_generation_metadata(
+            materialization_plan,
+            replay_consumer,
+            backend_name=self.name,
+            supports_tensor_replay=False,
+        )
+        if replay_metadata is not None:
+            metadata["materialization_replay"] = replay_metadata
         return ModelBackendResult(
             text=_apply_stop(text, stop),
             backend=self.name,
-            metadata={"prompt_tokens": len(words), "max_new_tokens": max_new_tokens},
+            metadata=metadata,
         )
 
 
@@ -155,15 +170,26 @@ class TransformersCausalLMBackend:
         max_new_tokens: int = 128,
         stop: Sequence[str] | None = None,
         logits_processor: Any | Sequence[Any] | None = None,
+        materialization_plan: Mapping[str, Any] | None = None,
+        replay_consumer: ReplayConsumerInput = None,
     ) -> ModelBackendResult:
         status = self.load()
+        replay_metadata = replay_generation_metadata(
+            materialization_plan,
+            replay_consumer,
+            backend_name=self.name,
+            supports_tensor_replay=False,
+        )
         if not status.available or not status.loaded:
+            metadata = dict(status.metadata)
+            if replay_metadata is not None:
+                metadata["materialization_replay"] = replay_metadata
             return ModelBackendResult(
                 text="",
                 backend=self.name,
                 ok=False,
                 error=status.reason,
-                metadata=status.metadata,
+                metadata=metadata,
             )
         try:
             torch = __import__("torch")
@@ -177,23 +203,29 @@ class TransformersCausalLMBackend:
             with torch.no_grad():
                 output_ids = self._model.generate(**generation_kwargs)
             text = self._tokenizer.decode(output_ids[0], skip_special_tokens=True)
+            metadata = {
+                **self._metadata(),
+                "max_new_tokens": max_new_tokens,
+                "logits_processor_count": len(processors),
+                "stop_count": len(stop or ()),
+            }
+            if replay_metadata is not None:
+                metadata["materialization_replay"] = replay_metadata
             return ModelBackendResult(
                 text=_apply_stop(text, stop),
                 backend=self.name,
-                metadata={
-                    **self._metadata(),
-                    "max_new_tokens": max_new_tokens,
-                    "logits_processor_count": len(processors),
-                    "stop_count": len(stop or ()),
-                },
+                metadata=metadata,
             )
         except Exception as exc:  # pragma: no cover - defensive fail-close path
+            metadata = self._metadata()
+            if replay_metadata is not None:
+                metadata["materialization_replay"] = replay_metadata
             return ModelBackendResult(
                 text="",
                 backend=self.name,
                 ok=False,
                 error=f"{type(exc).__name__}: {exc}",
-                metadata=self._metadata(),
+                metadata=metadata,
             )
 
     def _metadata(self) -> dict[str, Any]:

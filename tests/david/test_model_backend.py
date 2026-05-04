@@ -21,6 +21,61 @@ def test_offline_backend_is_deterministic_and_applies_stop() -> None:
     assert stopped.text == "test: alpha "
 
 
+def test_offline_backend_records_replay_plan_as_refused_metadata() -> None:
+    backend = OfflineModelBackend(prefix="test")
+    plan = {
+        "version": 1,
+        "strategy": "kv_sidecar",
+        "requested_strategy": "kv_sidecar",
+        "requires_runtime_replay": True,
+        "memory_family": "task",
+        "tier": "hot",
+        "session_id": "s1",
+        "runtime_replay": {
+            "strategy": "kv_sidecar",
+            "requires_runtime_replay": True,
+            "required_capability": "materialization.replay.kv_cache.v1",
+            "adapter_scope": {
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-a",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+            },
+            "memory_family": "task",
+        },
+        "sidecars": [{"artifact_id": "hot-window-1"}],
+        "replay_refs": [{"kind": "kv_cache"}],
+    }
+
+    result = backend.generate("alpha", materialization_plan=plan)
+
+    replay = result.metadata["materialization_replay"]
+    assert result.ok is True
+    assert replay["attempted"] is True
+    assert replay["refused"] is True
+    assert replay["ignored"] is True
+    assert replay["applied"] is False
+    assert replay["tensor_replay"] is False
+    assert replay["required_capability"] == "materialization.replay.kv_cache.v1"
+    assert replay["plan"]["sidecar_count"] == 1
+    assert "runtime replay consumer required for kv_sidecar" in replay["reason"]
+    assert "offline-deterministic has no tensor replay hook for kv_sidecar" in replay["reason"]
+
+
+def test_offline_backend_records_replay_consumer_without_plan() -> None:
+    backend = OfflineModelBackend(prefix="test")
+
+    result = backend.generate("alpha", replay_consumer={"consumer_id": "metadata-only"})
+
+    replay = result.metadata["materialization_replay"]
+    assert replay["attempted"] is False
+    assert replay["refused"] is False
+    assert replay["ignored"] is True
+    assert replay["consumer"]["consumer_id"] == "metadata-only"
+    assert replay["reason"] == "no runtime replay required"
+
+
 def test_transformers_backend_reports_missing_optional_packages(monkeypatch) -> None:
     def fake_find_spec(name: str):
         if name in {"torch", "transformers"}:
@@ -123,7 +178,44 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
 
     load_status = backend.load()
     fake_processor = object()
-    result = backend.generate("prompt", max_new_tokens=7, stop=["STOP"], logits_processor=fake_processor)
+    materialization_plan = {
+        "version": 1,
+        "strategy": "residual_sidecar",
+        "requested_strategy": "residual_sidecar",
+        "requires_runtime_replay": True,
+        "memory_family": "task",
+        "runtime_replay": {
+            "strategy": "residual_sidecar",
+            "requires_runtime_replay": True,
+            "required_capability": "materialization.replay.residual_stream.v1",
+            "adapter_scope": {
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-a",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+            },
+            "memory_family": "task",
+        },
+    }
+    replay_consumer = {
+        "consumer_id": "compatible-replay-hook",
+        "capabilities": ["materialization.replay.residual_stream.v1"],
+        "model_id": "model-a",
+        "tokenizer_id": "tokenizer-a",
+        "model_revision": "rev-a",
+        "adapter_family": "family-a",
+        "insertion_families": ["kv_direct"],
+        "memory_families": ["task"],
+    }
+    result = backend.generate(
+        "prompt",
+        max_new_tokens=7,
+        stop=["STOP"],
+        logits_processor=fake_processor,
+        materialization_plan=materialization_plan,
+        replay_consumer=replay_consumer,
+    )
 
     assert load_status.available is True
     assert load_status.loaded is True
@@ -140,7 +232,19 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     assert generate_call[2]["max_new_tokens"] == 7
     assert generate_call[2]["input_ids"].moved_to == "cpu"
     assert generate_call[2]["logits_processor"] == [fake_processor]
+    assert "materialization_plan" not in generate_call[2]
+    assert "replay_consumer" not in generate_call[2]
     assert result.metadata["logits_processor_count"] == 1
+    replay = result.metadata["materialization_replay"]
+    assert replay["backend"] == "transformers-causal-lm"
+    assert replay["required_capability"] == "materialization.replay.residual_stream.v1"
+    assert replay["consumer"]["consumer_id"] == "compatible-replay-hook"
+    assert replay["refused"] is True
+    assert replay["applied"] is False
+    assert replay["tensor_replay"] is False
+    assert replay["refusal_reasons"] == [
+        "transformers-causal-lm has no tensor replay hook for residual_sidecar"
+    ]
 
 
 def test_transformers_backend_reports_local_asset_load_errors(monkeypatch) -> None:
