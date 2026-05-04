@@ -6,7 +6,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from chuk_lazarus.david.residual_store import LoadedResidualTensor, ResidualStore, ResidualStoreError
+from chuk_lazarus.david.residual_store import (
+    LoadedResidualTensor,
+    ResidualSidecarCatalog,
+    ResidualSidecarCatalogEntry,
+    ResidualSidecarCatalogKey,
+    ResidualStore,
+    ResidualStoreError,
+)
 
 
 def _manifest_payload(**overrides: object) -> dict[str, object]:
@@ -233,3 +240,163 @@ def test_residual_store_rejects_pickle_object_npy(tmp_path: Path) -> None:
 
     with pytest.raises(ResidualStoreError, match="cannot safely load"):
         ResidualStore().load_tensor(path)
+
+
+def test_sidecar_catalog_adds_saves_loads_and_resolves_manifest(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "boundary-sidecar.json"
+    manifest_path.write_text(json.dumps(_manifest_payload()), encoding="utf-8")
+    catalog_path = tmp_path / "catalog.json"
+    catalog = ResidualSidecarCatalog(base_path=tmp_path)
+    catalog.add_entry(
+        ResidualSidecarCatalogEntry(
+            key=ResidualSidecarCatalogKey(
+                workspace_id="workspace-a",
+                session_id="session-a",
+                window_id="window-a",
+                artifact_family="boundary_residual",
+            ),
+            manifest_ref="boundary-sidecar.json",
+            scope={"model_id": "m", "tokenizer_id": "t", "insertion_family": "full_attention"},
+        )
+    )
+    catalog.save(catalog_path)
+
+    loaded = ResidualSidecarCatalog.load(catalog_path)
+    resolved = loaded.resolve(
+        workspace_id="workspace-a",
+        session_id="session-a",
+        window_id="window-a",
+        artifact_family="boundary_residual",
+    )
+
+    assert resolved.ready is True
+    assert resolved.action == "use_sidecar_metadata"
+    assert resolved.manifest is not None
+    assert resolved.manifest.artifact_id == "a1"
+    assert [ref.kind for ref in resolved.refs] == ["boundary_residual"]
+    assert resolved.metadata_only is True
+    assert resolved.kv_replay_ready is False
+
+
+def test_sidecar_catalog_resolves_window_metadata_by_family(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "boundary-sidecar.json"
+    manifest_path.write_text(json.dumps(_manifest_payload()), encoding="utf-8")
+    catalog = ResidualSidecarCatalog(base_path=tmp_path)
+    entries = catalog.add_from_window_metadata(
+        {
+            "window_id": "hot-window-1",
+            "sidecar_refs": {"boundary_residual": "boundary-sidecar.json"},
+        },
+        workspace_id="workspace-a",
+        session_id="session-a",
+        scope={"model_id": "m", "tokenizer_id": "t"},
+    )
+
+    resolved = catalog.resolve(
+        workspace_id="workspace-a",
+        session_id="session-a",
+        window_id="hot-window-1",
+        artifact_family="boundary_residual",
+    )
+
+    assert len(entries) == 1
+    assert resolved.ready is True
+    assert resolved.refs[0].layer == 3
+
+
+def test_sidecar_catalog_marks_scope_mismatch_stale(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "boundary-sidecar.json"
+    manifest_path.write_text(json.dumps(_manifest_payload()), encoding="utf-8")
+    catalog = ResidualSidecarCatalog(base_path=tmp_path)
+    catalog.add_manifest(
+        manifest_path,
+        workspace_id="workspace-a",
+        session_id="session-a",
+        window_id="hot-window-1",
+        artifact_family="boundary_residual",
+    )
+
+    resolved = catalog.resolve(
+        workspace_id="workspace-a",
+        session_id="session-a",
+        window_id="hot-window-1",
+        artifact_family="boundary_residual",
+        expected_scope={"model_id": "different-model"},
+    )
+
+    assert resolved.ready is False
+    assert resolved.stale is True
+    assert resolved.action == "recapture_sidecar"
+    assert "scope mismatch" in resolved.reason
+
+
+def test_sidecar_catalog_exposes_missing_sidecar_action_from_readiness() -> None:
+    catalog = ResidualSidecarCatalog()
+    catalog.add_from_readiness_metadata(
+        {
+            "workspace_root": "workspace-a",
+            "adapter_scope": {"model_id": "m", "tokenizer_id": "t"},
+            "artifact_families": {
+                "boundary_residual": {
+                    "status": "missing",
+                    "capture_action": "recapture_hot_windows",
+                    "missing_window_ids": ["hot-window-1"],
+                }
+            },
+        },
+        session_id="session-a",
+    )
+
+    resolved = catalog.resolve(
+        workspace_id="workspace-a",
+        session_id="session-a",
+        window_id="hot-window-1",
+        artifact_family="boundary_residual",
+    )
+
+    assert resolved.ready is False
+    assert resolved.missing is True
+    assert resolved.action == "recapture_hot_windows"
+    assert "missing boundary_residual sidecar" in resolved.reason
+
+
+def test_sidecar_catalog_keeps_kv_sidecars_metadata_only(tmp_path: Path) -> None:
+    kv_manifest = _manifest_payload(
+        artifact_id="kv-a",
+        kv_source_layer=6,
+        kv_target_layer=7,
+        refs=[
+            {
+                "kind": "kv_cache",
+                "layer": 7,
+                "dtype": "float16",
+                "shape": [2, 4, 8],
+                "metadata": {"layout": "metadata-only"},
+            }
+        ],
+    )
+    manifest_path = tmp_path / "kv-sidecar.json"
+    manifest_path.write_text(json.dumps(kv_manifest), encoding="utf-8")
+    catalog = ResidualSidecarCatalog(base_path=tmp_path)
+    catalog.add_from_window_metadata(
+        {
+            "window_id": "hot-window-1",
+            "sidecar_refs": {"kv_cache": "kv-sidecar.json"},
+        },
+        workspace_id="workspace-a",
+        session_id="session-a",
+        scope={"model_id": "m", "tokenizer_id": "t", "kv_target_layer": 7},
+    )
+
+    resolved = catalog.resolve(
+        workspace_id="workspace-a",
+        session_id="session-a",
+        window_id="hot-window-1",
+        artifact_family="kv_cache",
+    )
+
+    assert resolved.ready is True
+    assert resolved.refs[0].kind == "kv_cache"
+    assert resolved.refs[0].uri is None
+    assert resolved.metadata_only is True
+    assert resolved.kv_replay_ready is False
