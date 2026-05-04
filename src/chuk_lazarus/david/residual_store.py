@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Mapping
+
+import numpy as np
 
 
 SIDECAR_SCHEMA_VERSION = 1
 MAX_INLINE_ARRAY_VALUES = 4096
+DEFAULT_MAX_TENSOR_BYTES = 16 * 1024 * 1024
 REFERENCE_KINDS = {"boundary_residual", "residual_stream", "kv_cache"}
+SUPPORTED_TENSOR_DTYPES = {"float16", "bfloat16", "float32"}
 
 
 class ResidualStoreError(ValueError):
@@ -55,6 +59,25 @@ class ResidualReference:
             "inline_values": list(self.inline_values),
             "metadata": dict(self.metadata),
         }
+
+
+@dataclass(frozen=True)
+class LoadedResidualTensor:
+    kind: str
+    layer: int | None
+    dtype: str
+    shape: tuple[int, ...]
+    array: Any
+    ref: ResidualReference
+    manifest: "ResidualSidecarManifest"
+
+    def has_hidden_size(self, hidden_size: int) -> bool:
+        return bool(self.shape) and self.shape[-1] == hidden_size
+
+    def matches_manifest_hidden_size(self) -> bool:
+        if self.manifest.hidden_size is None:
+            return True
+        return self.has_hidden_size(self.manifest.hidden_size)
 
 
 @dataclass(frozen=True)
@@ -134,6 +157,15 @@ class ResidualSidecarManifest:
 class ResidualStore:
     """Loads small manifest metadata for captured residual/KV sidecars."""
 
+    def __init__(self, *, max_tensor_bytes: int = DEFAULT_MAX_TENSOR_BYTES) -> None:
+        if (
+            not isinstance(max_tensor_bytes, int)
+            or isinstance(max_tensor_bytes, bool)
+            or max_tensor_bytes <= 0
+        ):
+            raise ResidualStoreError("max_tensor_bytes must be a positive integer")
+        self.max_tensor_bytes = max_tensor_bytes
+
     def load_manifest(self, manifest: str | Path | Mapping[str, Any]) -> ResidualSidecarManifest:
         if isinstance(manifest, Mapping):
             return ResidualSidecarManifest.from_json(manifest)
@@ -145,6 +177,56 @@ class ResidualStore:
         except json.JSONDecodeError as exc:
             raise ResidualStoreError(f"invalid sidecar manifest JSON {path}: {exc}") from exc
         return ResidualSidecarManifest.from_json(_mapping(payload, "manifest"), manifest_path=path)
+
+    def load_tensor(
+        self,
+        manifest: ResidualSidecarManifest | str | Path | Mapping[str, Any],
+        ref: ResidualReference | int = 0,
+        *,
+        max_tensor_bytes: int | None = None,
+    ) -> LoadedResidualTensor:
+        loaded_manifest = (
+            manifest if isinstance(manifest, ResidualSidecarManifest) else self.load_manifest(manifest)
+        )
+        loaded_ref = _select_ref(loaded_manifest, ref)
+        dtype_name = _validated_dtype_name(loaded_ref)
+        np_dtype = _numpy_dtype(dtype_name)
+        has_inline = bool(loaded_ref.inline_values)
+        has_uri = loaded_ref.uri is not None
+        if has_inline and has_uri:
+            raise ResidualStoreError("sidecar ref must use only one tensor source")
+        if has_inline:
+            array = np.asarray(loaded_ref.inline_values, dtype=np_dtype)
+        elif has_uri:
+            array = self._load_npy_ref(loaded_manifest, loaded_ref)
+        else:
+            raise ResidualStoreError("sidecar ref requires inline_values or manifest-relative uri")
+        _validate_tensor_array(
+            array,
+            loaded_ref,
+            dtype_name=dtype_name,
+            max_tensor_bytes=self.max_tensor_bytes if max_tensor_bytes is None else max_tensor_bytes,
+        )
+        return LoadedResidualTensor(
+            kind=loaded_ref.kind,
+            layer=loaded_ref.layer,
+            dtype=dtype_name,
+            shape=tuple(int(dim) for dim in array.shape),
+            array=array,
+            ref=loaded_ref,
+            manifest=loaded_manifest,
+        )
+
+    def _load_npy_ref(
+        self, manifest: ResidualSidecarManifest, ref: ResidualReference
+    ) -> Any:
+        path = _resolve_manifest_relative_ref(manifest, ref)
+        if path.suffix != ".npy":
+            raise ResidualStoreError("sidecar tensor uri must point to a .npy file")
+        try:
+            return np.load(path, allow_pickle=False, mmap_mode="r")
+        except (OSError, ValueError) as exc:
+            raise ResidualStoreError(f"cannot safely load sidecar tensor {ref.uri}: {exc}") from exc
 
 
 def _required_str(payload: Mapping[str, Any], key: str) -> str:
@@ -205,6 +287,93 @@ def _nested_value_count(value: Any) -> int:
     if isinstance(value, list):
         return sum(_nested_value_count(item) for item in value)
     return 1
+
+
+def _select_ref(
+    manifest: ResidualSidecarManifest, ref: ResidualReference | int
+) -> ResidualReference:
+    if isinstance(ref, ResidualReference):
+        if ref not in manifest.refs:
+            raise ResidualStoreError("sidecar ref does not belong to manifest")
+        return ref
+    if not isinstance(ref, int) or isinstance(ref, bool):
+        raise ResidualStoreError("sidecar ref selector must be a ref or integer index")
+    try:
+        return manifest.refs[ref]
+    except IndexError as exc:
+        raise ResidualStoreError(f"sidecar ref index out of range: {ref}") from exc
+
+
+def _validated_dtype_name(ref: ResidualReference) -> str:
+    if ref.dtype is None:
+        raise ResidualStoreError("sidecar tensor ref requires dtype")
+    dtype_name = ref.dtype.strip().lower()
+    if dtype_name not in SUPPORTED_TENSOR_DTYPES:
+        raise ResidualStoreError(f"unsupported sidecar tensor dtype: {ref.dtype}")
+    return dtype_name
+
+
+def _numpy_dtype(dtype_name: str) -> Any:
+    if dtype_name == "bfloat16":
+        try:
+            return np.dtype("bfloat16")
+        except TypeError as exc:
+            raise ResidualStoreError("bfloat16 sidecar tensors are not supported by this numpy build") from exc
+    return np.dtype(dtype_name)
+
+
+def _resolve_manifest_relative_ref(
+    manifest: ResidualSidecarManifest, ref: ResidualReference
+) -> Path:
+    if not manifest.manifest_path:
+        raise ResidualStoreError("sidecar uri refs require a manifest file path")
+    if not ref.uri:
+        raise ResidualStoreError("sidecar ref requires uri")
+    candidate = Path(ref.uri)
+    windows_candidate = PureWindowsPath(ref.uri)
+    if candidate.is_absolute() or windows_candidate.is_absolute():
+        raise ResidualStoreError("sidecar tensor uri must be manifest-relative")
+    if any(part == ".." for part in candidate.parts) or any(
+        part == ".." for part in windows_candidate.parts
+    ):
+        raise ResidualStoreError("sidecar tensor uri cannot escape the manifest directory")
+    base = Path(manifest.manifest_path).parent.resolve()
+    resolved = (base / candidate).resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError as exc:
+        raise ResidualStoreError("sidecar tensor uri cannot escape the manifest directory") from exc
+    return resolved
+
+
+def _validate_tensor_array(
+    array: Any,
+    ref: ResidualReference,
+    *,
+    dtype_name: str,
+    max_tensor_bytes: int,
+) -> None:
+    if (
+        not isinstance(max_tensor_bytes, int)
+        or isinstance(max_tensor_bytes, bool)
+        or max_tensor_bytes <= 0
+    ):
+        raise ResidualStoreError("max_tensor_bytes must be a positive integer")
+    expected_dtype = _numpy_dtype(dtype_name)
+    if array.dtype != expected_dtype:
+        raise ResidualStoreError(
+            f"sidecar tensor dtype mismatch: manifest {dtype_name}, tensor {array.dtype}"
+        )
+    if not ref.shape:
+        raise ResidualStoreError("sidecar tensor ref requires shape")
+    if tuple(int(dim) for dim in array.shape) != ref.shape:
+        raise ResidualStoreError(
+            f"sidecar tensor shape mismatch: manifest {ref.shape}, tensor {tuple(array.shape)}"
+        )
+    if int(array.nbytes) > max_tensor_bytes:
+        raise ResidualStoreError(
+            f"sidecar tensor exceeds size cap: {array.nbytes} > {max_tensor_bytes}"
+        )
 
 
 def _dict(value: Any) -> dict[str, Any]:
