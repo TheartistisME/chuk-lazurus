@@ -41,7 +41,7 @@ from .product_router import ProductRoutePacket, ProductRouter
 from .resume import SessionSnapshot, load_session_snapshot, save_session_snapshot, summarize_result
 from .routing import CentralRouter, MethodDetector, RoutePacket
 from .source_index import SourceIndexManifest, load_source_index
-from .steering import DecoderSteeringPolicy, build_decoder_logits_processor
+from .steering import DecoderSteeringPolicy, TOKEN_FAMILY_MARKERS, build_decoder_logits_processor
 from .tools import LocalTools
 from .torch_backend import TorchRuntimeModelBackend
 from .verifier import VerificationResult, Verifier
@@ -411,6 +411,86 @@ def _decoder_with_route_metadata(decoder: DecoderPlan, route: RoutePacket) -> De
     return DecoderPlan(constraints=constraints, prior_scope=prior_scope)
 
 
+def _scope_value(scope: dict[str, Any], *names: str) -> Any | None:
+    for name in names:
+        value = scope.get(name)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _adapter_decoder_prior_layer(adapter: AdapterSessionMetadata) -> int:
+    for value in (adapter.kv_target_layer, adapter.boundary_layer, adapter.route_layer):
+        if value is not None:
+            return int(value)
+    return 0
+
+
+def _decoder_prior_scope_from_plan(
+    decoder: DecoderPlan,
+    adapter: AdapterSessionMetadata,
+) -> DecoderPriorScope:
+    prior_scope = dict(decoder.prior_scope)
+    steering = decoder.constraints.get("steering")
+    steering_scope = steering if isinstance(steering, dict) else {}
+    layer = _scope_value(prior_scope, "layer", "kv_target_layer", "injection_layer", "boundary_layer", "route_layer")
+    task_type = (
+        _scope_value(prior_scope, "task_type")
+        or steering_scope.get("task_type")
+        or prior_scope.get("method")
+        or "unknown"
+    )
+    steering_version = _scope_value(prior_scope, "steering_version") or steering_scope.get("policy") or "unknown"
+    return DecoderPriorScope(
+        model_id=str(_scope_value(prior_scope, "model_id") or adapter.model_id),
+        tokenizer_id=str(_scope_value(prior_scope, "tokenizer_id") or adapter.tokenizer_id),
+        adapter_family=str(_scope_value(prior_scope, "adapter_family") or adapter.adapter_family),
+        layer=int(layer) if layer is not None else _adapter_decoder_prior_layer(adapter),
+        task_type=str(task_type),
+        steering_version=str(steering_version),
+        model_revision=str(_scope_value(prior_scope, "model_revision") or adapter.model_revision),
+        adapter_config_id=str(_scope_value(prior_scope, "adapter_config_id") or ""),
+        insertion_family=str(_scope_value(prior_scope, "insertion_family") or adapter.insertion_family),
+    )
+
+
+def _empty_prior_lookup_metadata(*, refused_reason: str | None = None) -> dict[str, Any]:
+    return {
+        "attempted": False,
+        "hit": False,
+        "miss_reason": None,
+        "refused_reason": refused_reason,
+        "scope": None,
+        "seed_alpha": None,
+        "applied_seed_alpha": None,
+    }
+
+
+def _decoder_temptation_event(decoder: DecoderPlan, generated_text: str) -> bool:
+    if not generated_text:
+        return False
+    steering = decoder.constraints.get("steering")
+    if not isinstance(steering, dict):
+        return False
+    lowered = generated_text.lower()
+    for family in steering.get("forbidden_token_families") or ():
+        for marker in TOKEN_FAMILY_MARKERS.get(str(family), ()):
+            marker_text = str(marker).lower()
+            if marker_text and marker_text in lowered:
+                return True
+    return False
+
+
+def _decoder_prior_for_capability_verifier(decoder_prior: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(decoder_prior, dict):
+        return decoder_prior
+    verifier_prior = dict(decoder_prior)
+    scope = verifier_prior.pop("scope", None)
+    if isinstance(scope, dict):
+        verifier_prior["product_scope"] = scope
+    return verifier_prior
+
+
 def _index_runtime_metadata(
     readiness: IndexReadiness,
     *,
@@ -754,6 +834,7 @@ class DavidRuntime:
             evidence=evidence,
             metadata={
                 **writeback_metadata,
+                "decoder_prior": _decoder_prior_for_capability_verifier(decoder_prior),
                 "writeback": artifact.to_json(),
             },
         )
@@ -1492,6 +1573,35 @@ class DavidRuntime:
         except Exception:
             return None
 
+    def _decoder_prior_lookup(
+        self,
+        decoder: DecoderPlan,
+    ) -> tuple[DecoderPriorScope | None, Any | None, dict[str, Any]]:
+        metadata = _empty_prior_lookup_metadata()
+        metadata["attempted"] = True
+        try:
+            scope = _decoder_prior_scope_from_plan(decoder, self.adapter)
+        except Exception as exc:
+            metadata["refused_reason"] = f"{type(exc).__name__}: {exc}"
+            return None, None, metadata
+        metadata["scope"] = scope.to_json()
+        try:
+            record = self.decoder_prior_store.get(scope)
+        except Exception as exc:
+            metadata["refused_reason"] = f"{type(exc).__name__}: {exc}"
+            return scope, None, metadata
+        if record is None:
+            metadata["miss_reason"] = "no compatible prior record"
+            return scope, None, metadata
+        metadata.update(
+            {
+                "hit": True,
+                "miss_reason": None,
+                "seed_alpha": record.seed_alpha,
+            }
+        )
+        return scope, record, metadata
+
     def _decoder_steering_processor(self, decoder: DecoderPlan) -> dict[str, Any]:
         steering = decoder.constraints.get("steering")
         metadata: dict[str, Any] = {
@@ -1499,6 +1609,7 @@ class DavidRuntime:
             "applied": False,
             "processor_count": 0,
             "refused_reason": None,
+            "prior_lookup": _empty_prior_lookup_metadata(),
         }
         if isinstance(steering, dict):
             metadata.update(
@@ -1511,6 +1622,13 @@ class DavidRuntime:
             )
         else:
             metadata["refused_reason"] = "decoder plan has no steering metadata"
+            metadata["prior_lookup"]["refused_reason"] = "decoder plan has no steering metadata"
+            return {"processors": None, "metadata": metadata}
+
+        _prior_scope, prior_record, prior_lookup = self._decoder_prior_lookup(decoder)
+        metadata["prior_lookup"] = prior_lookup
+        if prior_lookup.get("refused_reason"):
+            metadata["refused_reason"] = f"decoder prior lookup refused: {prior_lookup['refused_reason']}"
             return {"processors": None, "metadata": metadata}
 
         if not isinstance(self.backend, TransformersCausalLMBackend):
@@ -1546,22 +1664,29 @@ class DavidRuntime:
                     or "unknown"
                 ),
             )
+            prior_alpha = prior_record.seed_alpha if prior_record is not None else None
             processor = build_decoder_logits_processor(
                 policy=policy,
                 adapter=self.adapter,
                 tokenizer=tokenizer,
+                alpha=prior_alpha,
                 scope=decoder.prior_scope,
             )
         except Exception as exc:
             metadata["refused_reason"] = f"{type(exc).__name__}: {exc}"
             return {"processors": None, "metadata": metadata}
 
+        applied_alpha = processor.spec.alpha
+        if prior_record is not None:
+            metadata["prior_lookup"]["applied_seed_alpha"] = applied_alpha
         metadata.update(
             {
                 "applied": True,
                 "processor_count": 1,
                 "refused_reason": None,
                 "forbidden_token_count": len(processor.forbidden_token_ids),
+                "alpha": applied_alpha,
+                "prior_seed_alpha_applied": prior_record is not None,
             }
         )
         return {"processors": [processor], "metadata": metadata}
@@ -1639,22 +1764,27 @@ class DavidRuntime:
         verification: VerificationResult,
         model_result: ModelBackendResult,
     ) -> dict[str, Any]:
-        layer = self.adapter.kv_target_layer or self.adapter.boundary_layer or self.adapter.route_layer or 0
-        scope = DecoderPriorScope(
-            model_id=self.adapter.model_id,
-            tokenizer_id=self.adapter.tokenizer_id,
-            adapter_family=self.adapter.adapter_family,
-            layer=int(layer),
-            task_type=method,
-            steering_version="david-decoder-v1",
-            model_revision=self.adapter.model_revision,
-            adapter_config_id=str(decoder.prior_scope.get("adapter_config_id") or ""),
-            insertion_family=self.adapter.insertion_family,
+        del method
+        scope = _decoder_prior_scope_from_plan(decoder, self.adapter)
+        steering_applied = self._live_steering_applied(model_result)
+        temptation_event = _decoder_temptation_event(decoder, model_result.text)
+        steering_metadata = model_result.metadata.get("decoder_steering")
+        steering_refused_reason = (
+            steering_metadata.get("refused_reason") if isinstance(steering_metadata, dict) else None
         )
         record = self.decoder_prior_store.update(
             scope,
             accepted=verification.ok,
-            steering_applied=self._live_steering_applied(model_result),
+            temptation_event=temptation_event,
+            steering_applied=steering_applied,
+        )
+        record.metadata.update(
+            {
+                "last_scope_source": "decoder.prior_scope",
+                "last_steering_applied": steering_applied,
+                "last_steering_refused_reason": steering_refused_reason,
+                "last_temptation_event": temptation_event,
+            }
         )
         self.decoder_prior_store.save()
         return record.to_json()

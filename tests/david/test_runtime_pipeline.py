@@ -7,6 +7,7 @@ from pathlib import Path
 from chuk_lazarus.david import runtime as runtime_module
 from chuk_lazarus.david import DavidConfig, DavidRuntime
 from chuk_lazarus.david.config import AdapterSessionMetadata
+from chuk_lazarus.david.decoder_prior_store import DecoderPriorRecord, DecoderPriorScope
 from chuk_lazarus.david.materialization_replay import ReplayConsumerCapabilities, replay_generation_metadata
 from chuk_lazarus.david.model_backend import (
     ModelBackendResult,
@@ -171,6 +172,15 @@ def test_repo_patch_routing_and_task_writeback(tmp_path: Path) -> None:
     assert steering["applied"] is False
     assert steering["processor_count"] == 0
     assert steering["refused_reason"] == "backend does not expose tokenizer for live steering"
+    assert steering["prior_lookup"]["attempted"] is True
+    assert steering["prior_lookup"]["hit"] is False
+    assert steering["prior_lookup"]["miss_reason"] == "no compatible prior record"
+    assert steering["prior_lookup"]["refused_reason"] is None
+    assert result.decoder_prior["scope"]["task_type"] == "code_patch"
+    assert result.decoder_prior["scope"]["steering_version"] == "david-decoder-steering-v1"
+    assert result.decoder_prior["metadata"]["last_steering_refused_reason"] == (
+        "backend does not expose tokenizer for live steering"
+    )
     assert result.materialized.materialization_plan["strategy"] == "boundary_text"
     replay = result.model_result.metadata["materialization_replay"]
     assert replay["attempted"] is True
@@ -332,6 +342,17 @@ def test_runtime_applies_live_decoder_steering_for_transformers_backend(tmp_path
     source.parent.mkdir()
     source.write_text("const value = require('x')\n", encoding="utf-8")
     runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    prior_scope = DecoderPriorScope(
+        model_id=runtime.adapter.model_id,
+        tokenizer_id=runtime.adapter.tokenizer_id,
+        adapter_family=runtime.adapter.adapter_family,
+        layer=0,
+        task_type="code_patch",
+        steering_version="david-decoder-steering-v1",
+        model_revision=runtime.adapter.model_revision,
+        insertion_family=runtime.adapter.insertion_family,
+    )
+    runtime.decoder_prior_store.put(DecoderPriorRecord(scope=prior_scope, seed_alpha=0.22))
     captured: dict[str, object] = {}
 
     class FakeTokenizer:
@@ -360,6 +381,7 @@ def test_runtime_applies_live_decoder_steering_for_transformers_backend(tmp_path
             captured.update(kwargs)
             processors = kwargs.get("logits_processor")
             processor_count = len(processors) if isinstance(processors, list) else 0
+            captured["processor_alpha"] = processors[0].spec.alpha if isinstance(processors, list) else None
             return ModelBackendResult(
                 text="live answer",
                 backend=self.name,
@@ -381,6 +403,12 @@ def test_runtime_applies_live_decoder_steering_for_transformers_backend(tmp_path
     assert steering["processor_count"] == 1
     assert steering["refused_reason"] is None
     assert steering["forbidden_token_count"] >= 1
+    assert steering["prior_lookup"]["attempted"] is True
+    assert steering["prior_lookup"]["hit"] is True
+    assert steering["prior_lookup"]["seed_alpha"] == 0.22
+    assert steering["prior_lookup"]["applied_seed_alpha"] == 0.22
+    assert steering["prior_seed_alpha_applied"] is True
+    assert captured["processor_alpha"] == 0.22
 
 
 def test_runtime_passes_backend_replay_consumer_to_materializer_and_generate(tmp_path: Path) -> None:
@@ -1099,6 +1127,10 @@ def test_runtime_uses_validated_harness_adapter_for_prior_scope(tmp_path: Path) 
     assert result.decoder_prior is not None
     assert result.decoder_prior["scope"]["layer"] == 23
     assert result.decoder_prior["scope"]["model_id"] == "gemma-runtime-test"
+    assert result.decoder_prior["scope"]["task_type"] == result.decoder.prior_scope["task_type"]
+    assert result.decoder_prior["scope"]["steering_version"] == result.decoder.prior_scope["steering_version"]
+    assert result.decoder_prior["scope"]["model_revision"] == result.decoder.prior_scope["model_revision"]
+    assert result.decoder_prior["metadata"]["last_scope_source"] == "decoder.prior_scope"
 
 
 def test_runtime_uses_manual_reviewed_attestation_for_standard_decode_only(tmp_path: Path) -> None:
