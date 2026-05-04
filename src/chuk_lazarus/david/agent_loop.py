@@ -59,6 +59,8 @@ class AgentLoopState:
     step: int
     max_steps: int
     trace: tuple[AgentStepTrace, ...] = ()
+    objective: str = ""
+    mode: str = "explicit"
 
     @property
     def last_observation(self) -> Mapping[str, Any]:
@@ -102,6 +104,8 @@ def run_agent_loop(
     tools: LocalTools,
     *,
     max_steps: int = 8,
+    objective: str = "",
+    mode: str = "explicit",
 ) -> AgentLoopResult:
     """Run a bounded action loop using model text or direct tool requests."""
 
@@ -116,17 +120,35 @@ def run_agent_loop(
             step=index,
             max_steps=max_steps,
             trace=tuple(trace),
+            objective=objective,
+            mode=mode,
         )
-        raw = provider(state)
+        try:
+            raw = provider(state)
+        except Exception as exc:
+            trace.append(
+                _trace(
+                    index,
+                    "refuse",
+                    False,
+                    {"error": f"model step failed: {type(exc).__name__}: {exc}"},
+                    {"provenance": "david.agent_loop.provider"},
+                )
+            )
+            return AgentLoopResult("refused", index, tuple(trace), reason=str(trace[-1].observation["error"]))
         try:
             action = parse_agent_action(raw)
         except AgentLoopError as exc:
             trace.append(_trace(index, "refuse", False, {"error": str(exc)}, {"raw": raw}))
             return AgentLoopResult("refused", index, tuple(trace), reason=str(exc))
 
-        if action is None or action.action in {"done", "none", "no_action"}:
+        if action is None or action.action in {"none", "no_action"}:
             trace.append(_trace(index, "no_action", True, {"reason": "no action requested"}, {"raw": raw}))
             return AgentLoopResult("no_action", index, tuple(trace), reason="no action requested")
+        if action.action == "done":
+            reason = action.reason or "done"
+            trace.append(_trace(index, "done", True, {"reason": reason}, {"raw": raw, "action": action.to_dict()}))
+            return AgentLoopResult("done", index, tuple(trace), reason=reason)
 
         step_trace = execute_agent_action(action, tools, step=index, raw=raw)
         trace.append(step_trace)
@@ -161,6 +183,36 @@ def parse_agent_action(raw: ActionPayload) -> AgentAction | None:
     if parsed is None:
         return None
     return _action_from_mapping(parsed)
+
+
+def render_model_action_prompt(state: AgentLoopState) -> str:
+    """Render the bounded JSON-action contract for a model-driven step."""
+
+    observations = [
+        {
+            "step": item.step,
+            "action": item.action,
+            "ok": item.ok,
+            "observation": _clip_observation(item.observation),
+        }
+        for item in state.trace
+    ]
+    return (
+        "You are David's terminal coding-agent action planner.\n"
+        "Return exactly one JSON object and no prose.\n"
+        "Allowed actions: plan, read, write, run, shell, verify, done, none.\n"
+        "Use run/shell only with command as an array of arguments, never a shell string.\n"
+        "Use relative workspace paths only. Do not request deletion or path escapes.\n"
+        "Prefer read/plan before write. Verify with passed or a command array when work is complete.\n"
+        "JSON schema: "
+        '{"action":"plan|read|write|run|verify|done|none","path":"relative/path",'
+        '"content":"text","command":["program","arg"],"cwd":".","timeout":30,'
+        '"passed":true,"reason":"short reason"}\n'
+        f"Workspace: {state.workspace_root}\n"
+        f"Objective: {state.objective}\n"
+        f"Step: {state.step} of {state.max_steps}\n"
+        f"Prior observations: {json.dumps(observations, sort_keys=True)}"
+    )
 
 
 def execute_agent_action(
@@ -332,3 +384,13 @@ def _trace(
         observation=dict(observation),
         provenance=dict(provenance),
     )
+
+
+def _clip_observation(observation: Mapping[str, Any], *, max_chars: int = 1_500) -> dict[str, Any]:
+    clipped: dict[str, Any] = {}
+    for key, value in observation.items():
+        if isinstance(value, str) and len(value) > max_chars:
+            clipped[key] = value[:max_chars] + "...[truncated]"
+        else:
+            clipped[key] = value
+    return clipped

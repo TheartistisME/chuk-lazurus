@@ -116,3 +116,31 @@ def test_agent_loop_refuses_path_escape(tmp_path: Path) -> None:
     assert result.status == "refused"
     assert result.trace[0].action == "refuse"
     assert "escapes workspace" in result.reason
+
+
+def test_agent_loop_feeds_observations_to_model_callback(tmp_path: Path) -> None:
+    seen: list[object] = []
+
+    def model_step(state):
+        seen.append(state.last_observation.get("bytes"))
+        if state.step == 1:
+            return {"action": "write", "path": "note.txt", "content": "ok\n"}
+        return {"action": "verify", "passed": state.last_observation.get("bytes") == 3}
+
+    result = run_agent_loop(model_step, LocalTools(tmp_path), objective="write note")
+
+    assert result.status == "verified"
+    assert seen == [None, 3]
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "ok\n"
+
+
+def test_agent_loop_refuses_model_step_exception(tmp_path: Path) -> None:
+    def model_step(state):
+        del state
+        raise RuntimeError("backend offline")
+
+    result = run_agent_loop(model_step, LocalTools(tmp_path))
+
+    assert result.status == "refused"
+    assert result.trace[0].action == "refuse"
+    assert "backend offline" in result.reason

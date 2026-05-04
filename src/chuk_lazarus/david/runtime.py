@@ -9,7 +9,14 @@ from pathlib import Path
 import subprocess
 from typing import Any, Sequence
 
-from .agent_loop import ActionPayload, AgentLoopResult, run_agent_loop as run_agent_loop_core
+from .agent_loop import (
+    ActionPayload,
+    AgentLoopResult,
+    AgentLoopState,
+    parse_agent_action,
+    render_model_action_prompt,
+    run_agent_loop as run_agent_loop_core,
+)
 from .config import AdapterSessionMetadata, DavidConfig
 from .decoder import DecoderController, DecoderPlan
 from .decoder_prior_store import DecoderPriorProductStore, DecoderPriorScope
@@ -282,8 +289,23 @@ class DavidRuntime:
         persist: bool = True,
     ) -> RuntimeAgentLoopResult:
         requests = self._agent_loop_requests(prompt)
-        loop = run_agent_loop_core(requests, self.tools, max_steps=max_steps)
         original_prompt = prompt if isinstance(prompt, str) else repr(list(prompt))
+        if requests is None:
+            loop = run_agent_loop_core(
+                self._model_driven_agent_step(original_prompt),
+                self.tools,
+                max_steps=max_steps,
+                objective=original_prompt,
+                mode="model_driven",
+            )
+        else:
+            loop = run_agent_loop_core(
+                requests,
+                self.tools,
+                max_steps=max_steps,
+                objective=original_prompt,
+                mode="explicit",
+            )
         writeback: dict[str, Any] | None = None
         if persist:
             artifact = self.memory.writeback(
@@ -409,21 +431,58 @@ class DavidRuntime:
         written = self.tools.write(path, content)
         return f"wrote {written.relative_to(self.config.workspace_root)}"
 
-    def _agent_loop_requests(self, prompt: str | Sequence[ActionPayload]) -> Sequence[ActionPayload]:
-        if isinstance(prompt, str):
-            stripped = prompt.strip()
-            if not stripped:
-                return []
-            try:
-                parsed = json.loads(stripped)
-            except json.JSONDecodeError:
-                return [prompt]
+    def _agent_loop_requests(self, prompt: str | Sequence[ActionPayload]) -> Sequence[ActionPayload] | None:
+        if not isinstance(prompt, str):
+            return prompt
+
+        stripped = prompt.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+        else:
             if isinstance(parsed, list):
                 return parsed
             if isinstance(parsed, dict):
                 return [parsed]
             return [prompt]
-        return prompt
+
+        try:
+            if parse_agent_action(stripped) is not None:
+                return [prompt]
+        except Exception:
+            return [prompt]
+        return None
+
+    def _model_driven_agent_step(self, objective: str):
+        def next_action(state: AgentLoopState) -> ActionPayload:
+            model_prompt = render_model_action_prompt(state)
+            model_result = self.backend.generate(model_prompt, max_new_tokens=320)
+            if not model_result.ok:
+                raise RuntimeError(f"backend refused action generation: {model_result.error or 'unknown error'}")
+
+            raw_text = model_result.text.strip()
+            try:
+                action = parse_agent_action(raw_text)
+            except Exception:
+                return raw_text
+            if action is None:
+                return raw_text
+            payload = action.to_dict()
+            payload["_model_provenance"] = {
+                "backend": model_result.backend,
+                "ok": model_result.ok,
+                "error": model_result.error,
+                "metadata": model_result.metadata,
+                "prompt": model_prompt,
+                "objective": objective,
+            }
+            payload["_model_text"] = raw_text
+            return payload
+
+        return next_action
 
     def _recall(
         self,

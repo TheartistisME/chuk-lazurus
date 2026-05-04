@@ -309,6 +309,46 @@ def test_runtime_agent_loop_executes_actions_and_persists_trace(tmp_path: Path) 
     assert (tmp_path / "state" / "resume.json").exists()
 
 
+def test_runtime_agent_loop_uses_backend_for_natural_language_prompt(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    prompts: list[str] = []
+
+    class ActionBackend:
+        name = "fake-action-backend"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del kwargs
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return ModelBackendResult(
+                    text=json.dumps(
+                        {"action": "write", "path": "src/generated.py", "content": "VALUE = 11\n"}
+                    ),
+                    backend=self.name,
+                    metadata={"step": 1},
+                )
+            assert '"bytes": 11' in prompt
+            return ModelBackendResult(
+                text='```json\n{"action": "verify", "passed": true, "reason": "observed write"}\n```',
+                backend=self.name,
+                metadata={"step": 2},
+            )
+
+    runtime.backend = ActionBackend()
+
+    result = runtime.run_agent_loop("Create src/generated.py with VALUE = 11")
+
+    assert result.loop.status == "verified"
+    assert result.loop.steps == 2
+    assert len(prompts) == 2
+    assert "Return exactly one JSON object" in prompts[0]
+    assert result.loop.trace[0].provenance["raw"]["_model_provenance"]["backend"] == "fake-action-backend"
+    assert (tmp_path / "src" / "generated.py").read_text(encoding="utf-8") == "VALUE = 11\n"
+
+
 def test_runtime_auto_jit_builds_bounded_source_index(tmp_path: Path) -> None:
     source = tmp_path / "src" / "agent.py"
     source.parent.mkdir()
