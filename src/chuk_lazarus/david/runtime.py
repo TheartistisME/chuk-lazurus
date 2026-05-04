@@ -694,6 +694,311 @@ class RuntimeAgentLoopResult:
         return data
 
 
+@dataclass(frozen=True)
+class RuntimeQualityGateCandidate:
+    name: str
+    command: tuple[str, ...]
+    reason: str
+    source: str = "runtime.discovery"
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "command": list(self.command),
+            "display_command": _display_command(self.command),
+            "reason": self.reason,
+            "source": self.source,
+        }
+
+
+def _display_command(command: Sequence[str]) -> str:
+    return subprocess.list2cmdline([str(part) for part in command])
+
+
+def _candidate_gate(
+    name: str,
+    command: Sequence[str],
+    reason: str,
+    *,
+    source: str = "runtime.discovery",
+) -> RuntimeQualityGateCandidate:
+    return RuntimeQualityGateCandidate(
+        name=name,
+        command=tuple(str(part) for part in command),
+        reason=reason,
+        source=source,
+    )
+
+
+def _coerce_quality_gate_candidates(value: Any, *, source: str) -> list[RuntimeQualityGateCandidate]:
+    if value is None:
+        return []
+    raw_items = value
+    if isinstance(value, dict):
+        raw_items = value.get("candidates") or value.get("gates") or value.get("commands") or []
+    if isinstance(raw_items, (str, bytes)) or not isinstance(raw_items, Sequence):
+        return []
+
+    candidates: list[RuntimeQualityGateCandidate] = []
+    for index, item in enumerate(raw_items, start=1):
+        if isinstance(item, RuntimeQualityGateCandidate):
+            candidates.append(item)
+            continue
+        to_json = getattr(item, "to_json", None)
+        if callable(to_json):
+            item = to_json()
+        if isinstance(item, dict):
+            raw_command = item.get("command") or item.get("argv") or item.get("args")
+            if isinstance(raw_command, str):
+                command: tuple[str, ...] = (raw_command,)
+            elif isinstance(raw_command, Sequence) and not isinstance(raw_command, (bytes, bytearray)):
+                command = tuple(str(part) for part in raw_command if str(part))
+            else:
+                command = ()
+            if not command:
+                continue
+            candidates.append(
+                RuntimeQualityGateCandidate(
+                    name=str(item.get("name") or item.get("id") or f"candidate-{index}"),
+                    command=command,
+                    reason=str(item.get("reason") or item.get("description") or "quality gate candidate"),
+                    source=str(item.get("source") or source),
+                )
+            )
+    return candidates
+
+
+def _quality_gates_module_candidates(workspace_root: Path) -> list[RuntimeQualityGateCandidate]:
+    try:
+        from . import quality_gates  # type: ignore[attr-defined]
+    except ImportError:
+        return []
+
+    for name in (
+        "discover_quality_gates",
+        "discover_candidate_gates",
+        "discover_gates",
+        "candidate_gates",
+    ):
+        discover = getattr(quality_gates, name, None)
+        if not callable(discover):
+            continue
+        try:
+            raw = discover(workspace_root=workspace_root)
+        except TypeError:
+            raw = discover(workspace_root)
+        return _coerce_quality_gate_candidates(raw, source=f"quality_gates.{name}")
+    return []
+
+
+def _safe_read_text(path: Path, *, max_bytes: int = 256_000) -> str:
+    try:
+        if path.stat().st_size > max_bytes:
+            return ""
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _python_quality_gate_candidates(workspace_root: Path) -> list[RuntimeQualityGateCandidate]:
+    markers = (
+        "pyproject.toml",
+        "pytest.ini",
+        "tox.ini",
+        "setup.cfg",
+        "setup.py",
+    )
+    has_python_marker = any((workspace_root / marker).exists() for marker in markers)
+    has_tests_dir = (workspace_root / "tests").is_dir()
+    if not (has_python_marker or has_tests_dir):
+        return []
+    reason_parts = []
+    if has_python_marker:
+        reason_parts.append("Python project metadata found")
+    if has_tests_dir:
+        reason_parts.append("tests/ directory found")
+    return [
+        _candidate_gate(
+            "pytest",
+            ("python", "-m", "pytest", "-q"),
+            "; ".join(reason_parts),
+        )
+    ]
+
+
+def _node_quality_gate_candidates(workspace_root: Path) -> list[RuntimeQualityGateCandidate]:
+    package_json = workspace_root / "package.json"
+    if not package_json.exists():
+        return []
+    try:
+        package = json.loads(_safe_read_text(package_json) or "{}")
+    except json.JSONDecodeError:
+        return [
+            _candidate_gate(
+                "npm-test",
+                ("npm", "test"),
+                "package.json found, but scripts could not be parsed",
+            )
+        ]
+    scripts = package.get("scripts") if isinstance(package, dict) else {}
+    if not isinstance(scripts, dict):
+        scripts = {}
+    candidates: list[RuntimeQualityGateCandidate] = []
+    test_script = str(scripts.get("test") or "").strip()
+    if test_script and "no test specified" not in test_script.lower():
+        candidates.append(
+            _candidate_gate(
+                "npm-test",
+                ("npm", "test"),
+                "package.json defines a test script",
+            )
+        )
+    for script_name, command in (
+        ("lint", ("npm", "run", "lint")),
+        ("typecheck", ("npm", "run", "typecheck")),
+        ("check", ("npm", "run", "check")),
+    ):
+        if scripts.get(script_name):
+            candidates.append(
+                _candidate_gate(
+                    f"npm-{script_name}",
+                    command,
+                    f"package.json defines a {script_name} script",
+                )
+            )
+    if not candidates:
+        candidates.append(
+            _candidate_gate(
+                "npm-test",
+                ("npm", "test"),
+                "package.json found; no explicit test-like scripts discovered",
+            )
+        )
+    return candidates
+
+
+def _makefile_quality_gate_candidates(workspace_root: Path) -> list[RuntimeQualityGateCandidate]:
+    for filename in ("Makefile", "makefile"):
+        makefile = workspace_root / filename
+        if not makefile.exists():
+            continue
+        text = _safe_read_text(makefile)
+        if "\ntest:" in f"\n{text}" or "\ncheck:" in f"\n{text}":
+            target = "test" if "\ntest:" in f"\n{text}" else "check"
+            return [
+                _candidate_gate(
+                    f"make-{target}",
+                    ("make", target),
+                    f"{filename} defines a {target} target",
+                )
+            ]
+    return []
+
+
+def _bounded_builtin_quality_gate_candidates(workspace_root: Path) -> list[RuntimeQualityGateCandidate]:
+    candidates: list[RuntimeQualityGateCandidate] = []
+    candidates.extend(_python_quality_gate_candidates(workspace_root))
+    candidates.extend(_node_quality_gate_candidates(workspace_root))
+    if (workspace_root / "Cargo.toml").exists():
+        candidates.append(_candidate_gate("cargo-test", ("cargo", "test"), "Cargo.toml found"))
+    if (workspace_root / "go.mod").exists():
+        candidates.append(_candidate_gate("go-test", ("go", "test", "./..."), "go.mod found"))
+    candidates.extend(_makefile_quality_gate_candidates(workspace_root))
+
+    unique: dict[tuple[str, ...], RuntimeQualityGateCandidate] = {}
+    for candidate in candidates:
+        unique.setdefault(candidate.command, candidate)
+    return list(unique.values())
+
+
+def _quality_gate_evidence(candidates: Sequence[RuntimeQualityGateCandidate]) -> list[dict[str, Any]]:
+    return [
+        {
+            "kind": "quality_gate_candidate",
+            "name": candidate.name,
+            "command": list(candidate.command),
+            "display_command": _display_command(candidate.command),
+            "reason": candidate.reason,
+            "source": candidate.source,
+        }
+        for candidate in candidates
+    ]
+
+
+def _builtin_verification_result(
+    *,
+    capability: str,
+    candidates: Sequence[RuntimeQualityGateCandidate],
+    selected: Sequence[RuntimeQualityGateCandidate],
+    run_reason: str,
+) -> VerificationResult:
+    checks = {
+        "candidate_quality_gates": {
+            "ok": True,
+            "candidate_count": len(candidates),
+            "selected_count": len(selected),
+            "commands_run": 0,
+            "run_reason": run_reason,
+            "discovered_commands": [_display_command(candidate.command) for candidate in candidates],
+            "selected_commands": [_display_command(candidate.command) for candidate in selected],
+        }
+    }
+    reason = "candidate quality gates discovered" if candidates else "no candidate quality gates discovered"
+    return VerificationResult(
+        ok=True,
+        capability=capability,
+        evidence=_quality_gate_evidence(candidates),
+        reason=reason,
+        checks=checks,
+    )
+
+
+def _format_builtin_verify_report(
+    *,
+    workspace_root: Path,
+    mode: str,
+    verification: VerificationResult,
+    candidates: Sequence[RuntimeQualityGateCandidate],
+    selected: Sequence[RuntimeQualityGateCandidate],
+    run_reason: str,
+) -> str:
+    lines = [
+        "David verification",
+        f"mode: {mode}",
+        f"workspace: {workspace_root}",
+        "selected commands:",
+    ]
+    if selected:
+        lines.extend(f"- {_display_command(candidate.command)} ({candidate.reason})" for candidate in selected)
+    else:
+        lines.append("- none")
+
+    lines.append("discovered candidate gates:")
+    if candidates:
+        lines.extend(
+            f"- {candidate.name}: {_display_command(candidate.command)} ({candidate.reason})"
+            for candidate in candidates
+        )
+    else:
+        lines.append("- none")
+
+    lines.extend(
+        [
+            "commands run:",
+            "- none",
+            f"reason: {run_reason}",
+            "verification metadata:",
+            f"- capability: {verification.capability}",
+            f"- ok: {str(verification.ok).lower()}",
+            f"- reason: {verification.reason}",
+            f"- candidate_count: {len(candidates)}",
+            f"- selected_count: {len(selected)}",
+            "- command_count: 0",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _agent_loop_repair_summary(loop: AgentLoopResult) -> dict[str, Any]:
     """Summarize repair/retry signals from current and future loop trace metadata."""
 
@@ -1111,13 +1416,59 @@ class DavidRuntime:
             return f"index: ready at {readiness.manifest_path}\n{source_line}"
         return f"index: {readiness.reason}\nplan: {readiness.jit_plan}\n{source_line}"
 
+    def discover_verify_gates(self) -> list[RuntimeQualityGateCandidate]:
+        candidates = _quality_gates_module_candidates(self.config.workspace_root)
+        if candidates:
+            return candidates
+        return _bounded_builtin_quality_gate_candidates(self.config.workspace_root)
+
+    def verify_patch(self) -> str:
+        return self._builtin_verify_report(
+            mode="built-in patch verification",
+            capability="repo_patch",
+            select_candidates=True,
+        )
+
     def verify(self, command: str | None = None) -> str:
         command = command or getattr(self.config, "verify_command", None)
         if not command:
-            result = self.run_once("Verify quality gate")
-            return result.answer
+            return self._builtin_verify_report(
+                mode="candidate discovery",
+                capability="verify",
+                select_candidates=False,
+            )
         shell = self.run_shell(command)
         return shell
+
+    def _builtin_verify_report(
+        self,
+        *,
+        mode: str,
+        capability: str,
+        select_candidates: bool,
+    ) -> str:
+        candidates = self.discover_verify_gates()
+        selected = list(candidates) if select_candidates else []
+        if selected:
+            run_reason = "built-in verification selected candidate gates but did not execute them without --cmd"
+        elif candidates:
+            run_reason = "candidate gates were discovered but not executed without --cmd"
+        else:
+            run_reason = "no candidate quality gates were discovered in the workspace root"
+        verification = _builtin_verification_result(
+            capability=capability,
+            candidates=candidates,
+            selected=selected,
+            run_reason=run_reason,
+        )
+        return _format_builtin_verify_report(
+            workspace_root=self.config.workspace_root,
+            mode=mode,
+            verification=verification,
+            candidates=candidates,
+            selected=selected,
+            run_reason=run_reason,
+        )
 
     def jit_index(self) -> str:
         self.index.jit()

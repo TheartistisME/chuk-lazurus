@@ -140,8 +140,11 @@ class _FallbackDavidRuntime:
     def verify(self, command: str | None = None) -> str:
         command = command or self.config.verify_command
         if not command:
-            return "verify: no command configured"
+            return _fallback_verify_report(self.config.workspace_path, patch=False)
         return self.run_shell(command)
+
+    def verify_patch(self) -> str:
+        return _fallback_verify_report(self.config.workspace_path, patch=True)
 
     def run_shell(self, command: str) -> str:
         timeout = self.config.command_timeout_seconds
@@ -480,7 +483,7 @@ def format_capabilities_status() -> str:
 
 def _run_verify_command(args: argparse.Namespace, runtime: Any) -> int:
     command = args.cmd
-    text = runtime.verify(command) if command else _run_builtin_verify(runtime)
+    text = runtime.verify(command) if command else _run_builtin_verify(runtime, patch=bool(args.patch))
     if command is None and text and "David verification" not in text:
         text = f"David verification\n{text}"
     if text:
@@ -516,15 +519,73 @@ def _run_resume_command(args: argparse.Namespace, runtime: Any) -> int:
     return 0
 
 
-def _run_builtin_verify(runtime: Any) -> str:
+def _run_builtin_verify(runtime: Any, *, patch: bool = False) -> str:
+    if patch:
+        for name in ("verify_patch", "patch_verify", "verify_builtin_patch"):
+            method = getattr(runtime, name, None)
+            if callable(method):
+                return _stringify_runtime_value(method())
+    verify = getattr(runtime, "verify", None)
+    if callable(verify):
+        return _stringify_runtime_value(verify(None))
     run_once = getattr(runtime, "run_once", None)
     if callable(run_once):
         result = run_once("Verify quality gate")
-        answer = getattr(result, "answer", None)
-        if answer is not None:
-            return str(answer)
-        return str(result)
-    return runtime.verify(None)
+        return _stringify_runtime_value(result)
+    return "verify: runtime hook unavailable"
+
+
+def _fallback_verify_report(workspace_path: Path, *, patch: bool) -> str:
+    workspace = workspace_path.expanduser().resolve()
+    candidates: list[str] = []
+    if (workspace / "tests").is_dir() or any(
+        (workspace / marker).exists()
+        for marker in ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "setup.py")
+    ):
+        candidates.append("python -m pytest -q")
+    if (workspace / "package.json").exists():
+        candidates.append("npm test")
+    if (workspace / "Cargo.toml").exists():
+        candidates.append("cargo test")
+    if (workspace / "go.mod").exists():
+        candidates.append("go test ./...")
+    selected = candidates if patch else []
+    if selected:
+        reason = "fallback built-in verification selected candidate gates but did not execute them without --cmd"
+    elif candidates:
+        reason = "candidate gates were discovered but not executed without --cmd"
+    else:
+        reason = "no candidate quality gates were discovered in the workspace root"
+    lines = [
+        "David verification",
+        f"mode: {'built-in patch verification' if patch else 'candidate discovery'}",
+        f"workspace: {workspace}",
+        "selected commands:",
+    ]
+    if selected:
+        lines.extend(f"- {command}" for command in selected)
+    else:
+        lines.append("- none")
+    lines.append("discovered candidate gates:")
+    if candidates:
+        lines.extend(f"- {command}" for command in candidates)
+    else:
+        lines.append("- none")
+    lines.extend(
+        [
+            "commands run:",
+            "- none",
+            f"reason: {reason}",
+            "verification metadata:",
+            f"- capability: {'repo_patch' if patch else 'verify'}",
+            "- ok: true",
+            f"- reason: {'candidate quality gates discovered' if candidates else 'no candidate quality gates discovered'}",
+            f"- candidate_count: {len(candidates)}",
+            f"- selected_count: {len(selected)}",
+            "- command_count: 0",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _runtime_call(

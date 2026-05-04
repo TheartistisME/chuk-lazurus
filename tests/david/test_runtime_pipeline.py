@@ -796,6 +796,56 @@ def test_verification_command_behavior(tmp_path: Path) -> None:
     assert "ok" in result.verification.command_result["stdout"]
 
 
+def test_runtime_verify_none_discovers_candidate_gates_without_shell_execution(tmp_path: Path) -> None:
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_sample.py").write_text("def test_sample():\n    assert True\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    calls: list[str] = []
+
+    def fail_if_shell_runs(command: str) -> str:
+        calls.append(command)
+        raise AssertionError("verify(None) should not execute shell commands")
+
+    runtime.run_shell = fail_if_shell_runs  # type: ignore[method-assign]
+
+    text = runtime.verify(None)
+
+    assert calls == []
+    assert "David verification" in text
+    assert "mode: candidate discovery" in text
+    assert "discovered candidate gates:" in text
+    assert "python -m pytest -q" in text
+    assert "commands run:" in text
+    assert "reason: candidate gates were discovered but not executed without --cmd" in text
+    assert "verification metadata:" in text
+    assert "candidate_count: 1" in text
+
+
+def test_runtime_verify_patch_selects_discovered_gates_with_metadata(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    calls: list[str] = []
+
+    def fail_if_shell_runs(command: str) -> str:
+        calls.append(command)
+        raise AssertionError("verify_patch should not execute discovered commands")
+
+    runtime.run_shell = fail_if_shell_runs  # type: ignore[method-assign]
+
+    text = runtime.verify_patch()
+
+    assert calls == []
+    assert "mode: built-in patch verification" in text
+    assert "selected commands:" in text
+    assert "python -m pytest -q" in text
+    assert "commands run:" in text
+    assert "built-in verification selected candidate gates but did not execute them without --cmd" in text
+    assert "verification metadata:" in text
+    assert "capability: repo_patch" in text
+    assert "selected_count: 1" in text
+
+
 def test_runtime_status_and_shell_commands_are_available_to_tui(tmp_path: Path) -> None:
     runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
 

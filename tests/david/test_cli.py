@@ -32,6 +32,7 @@ def clear_operator_env(monkeypatch):
 class FakeRuntime:
     created_with: cli.DavidConfig | None = None
     verified_command: str | None = None
+    patch_verified: bool = False
     index_action: str | None = None
 
     def __init__(self, config: cli.DavidConfig) -> None:
@@ -58,7 +59,37 @@ class FakeRuntime:
             return "$ fail\nrc=7\nfailed"
         if command is not None:
             return f"$ {command}\nrc=0\nverified"
-        return "David verification fallback: ok"
+        return (
+            "David verification\n"
+            "mode: candidate discovery\n"
+            "selected commands:\n"
+            "- none\n"
+            "discovered candidate gates:\n"
+            "- python -m pytest -q\n"
+            "commands run:\n"
+            "- none\n"
+            "reason: candidate gates were discovered but not executed without --cmd\n"
+            "verification metadata:\n"
+            "- ok: true"
+        )
+
+    def verify_patch(self) -> str:
+        type(self).patch_verified = True
+        type(self).verified_command = None
+        return (
+            "David verification\n"
+            "mode: built-in patch verification\n"
+            "selected commands:\n"
+            "- python -m pytest -q\n"
+            "discovered candidate gates:\n"
+            "- python -m pytest -q\n"
+            "commands run:\n"
+            "- none\n"
+            "reason: built-in verification selected candidate gates but did not execute them without --cmd\n"
+            "verification metadata:\n"
+            "- capability: repo_patch\n"
+            "- ok: true"
+        )
 
     def index_status(self) -> str:
         type(self).index_action = "status"
@@ -821,12 +852,14 @@ def test_verify_command_prints_output_and_returns_command_rc(monkeypatch, tmp_pa
     monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
     FakeRuntime.created_with = None
     FakeRuntime.verified_command = None
+    FakeRuntime.patch_verified = False
 
     rc = cli.main(["verify", str(tmp_path), "--cmd", "echo ok", "--allow-unvalidated", "--no-color"])
 
     assert rc == 0
     assert FakeRuntime.created_with is not None
     assert FakeRuntime.verified_command == "echo ok"
+    assert FakeRuntime.patch_verified is False
     output = capsys.readouterr().out
     assert "$ echo ok" in output
     assert "rc=0" in output
@@ -837,12 +870,14 @@ def test_verify_command_returns_nonzero_command_rc(monkeypatch, tmp_path, capsys
     monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
     FakeRuntime.created_with = None
     FakeRuntime.verified_command = None
+    FakeRuntime.patch_verified = False
 
     rc = cli.main(["verify", str(tmp_path), "--cmd", "fail", "--allow-unvalidated", "--no-color"])
 
     assert rc == 7
     assert FakeRuntime.created_with is not None
     assert FakeRuntime.verified_command == "fail"
+    assert FakeRuntime.patch_verified is False
     assert "rc=7" in capsys.readouterr().out
 
 
@@ -850,13 +885,21 @@ def test_verify_patch_runs_builtin_verifier_without_tui(monkeypatch, tmp_path, c
     monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
     FakeRuntime.created_with = None
     FakeRuntime.verified_command = "stale"
+    FakeRuntime.patch_verified = False
 
     rc = cli.main(["verify", str(tmp_path), "--patch", "--allow-unvalidated", "--no-color"])
 
     assert rc == 0
     assert FakeRuntime.created_with is not None
     assert FakeRuntime.verified_command is None
-    assert "David verification fallback: ok" in capsys.readouterr().out
+    assert FakeRuntime.patch_verified is True
+    output = capsys.readouterr().out
+    assert "mode: built-in patch verification" in output
+    assert "selected commands:" in output
+    assert "discovered candidate gates:" in output
+    assert "commands run:" in output
+    assert "verification metadata:" in output
+    assert "capability: repo_patch" in output
 
 
 def test_index_status_command_calls_runtime_without_tui(monkeypatch, tmp_path, capsys):
