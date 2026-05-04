@@ -18,6 +18,8 @@ class FakeIndex:
 class FakeRuntime:
     def __init__(self) -> None:
         self.index = FakeIndex()
+        self.respond_calls: list[str] = []
+        self.agent_loop_calls: list[str] = []
         self.resume_snapshot = SessionSnapshot(
             session_id="session-1",
             workspace="C:/workspace/project",
@@ -35,6 +37,7 @@ class FakeRuntime:
         }
 
     def respond(self, prompt: str) -> str:
+        self.respond_calls.append(prompt)
         return f"prompt={prompt}"
 
     def memory_status(self) -> str:
@@ -59,6 +62,7 @@ class FakeRuntime:
         return f"applied {patch_text}"
 
     def run_agent_loop(self, prompt: str) -> dict[str, object]:
+        self.agent_loop_calls.append(prompt)
         return {
             "loop": {
                 "status": "verified",
@@ -101,6 +105,34 @@ def test_once_outputs_startup_readiness_and_prompt_response():
     assert "updated: 2026-05-04T01:02:03+00:00" in text
     assert "last result: patched the David TUI" in text
     assert "prompt=hello" in text
+
+
+def test_plain_safe_write_prompt_runs_agent_loop():
+    output = StringIO()
+    runtime = FakeRuntime()
+    tui = DavidTui(runtime, color=False, output_stream=output)
+
+    rc = tui.run(once="create a file named hello.txt that says hello")
+
+    assert rc == 0
+    text = output.getvalue()
+    assert "agent loop: verified steps=2 verified=True" in text
+    assert "- 1: write ok=True path=src/app.py bytes=4" in text
+    assert runtime.agent_loop_calls == ["create a file named hello.txt that says hello"]
+    assert runtime.respond_calls == []
+
+
+def test_plain_arbitrary_prompt_stays_runtime_response():
+    output = StringIO()
+    runtime = FakeRuntime()
+    tui = DavidTui(runtime, color=False, output_stream=output)
+
+    rc = tui.run(once="summarize this repo")
+
+    assert rc == 0
+    assert "prompt=summarize this repo" in output.getvalue()
+    assert runtime.respond_calls == ["summarize this repo"]
+    assert runtime.agent_loop_calls == []
 
 
 def test_slash_commands_cover_terminal_surface():

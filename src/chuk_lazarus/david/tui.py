@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
+from .agent_loop import plan_natural_language_fallback_actions
 from .resume import SessionSnapshot, format_resume_snapshot, load_session_snapshot
 
 
 HELP_TEXT = """David commands:
-  prompt text              Send a one-shot prompt to the runtime
+  prompt text              Send a prompt; obvious safe file writes may agent-run
   /status, /readiness      Show model validation, index, and memory readiness
   /resume                  Show last saved session summary
   /memory                  Show user/task memory readiness and artifact details
@@ -73,6 +74,8 @@ class DavidTui:
         if not text:
             return CommandResult("")
         if not text.startswith("/"):
+            if self._plain_prompt_can_agent_run(text):
+                return CommandResult(self._agent_loop_command(text))
             return CommandResult(self._runtime_call(("respond", "ask", "prompt", "run_once"), text))
 
         command, _, arg = text.partition(" ")
@@ -126,6 +129,9 @@ class DavidTui:
             if callable(method):
                 return self._format_agent_loop_result(method(arg))
         return "agent: runtime loop hook unavailable"
+
+    def _plain_prompt_can_agent_run(self, prompt: str) -> bool:
+        return bool(plan_natural_language_fallback_actions(prompt))
 
     def _format_agent_loop_result(self, value: Any) -> str:
         loop = getattr(value, "loop", None)

@@ -100,6 +100,28 @@ def test_agent_loop_plain_english_writes_file_without_model_json(tmp_path: Path,
     assert (repo / ".david" / "memory" / "task-default.jsonl").exists()
 
 
+def test_plain_terminal_safe_write_prompt_runs_agent_loop(tmp_path: Path, capsys) -> None:
+    repo = _tiny_repo(tmp_path)
+
+    rc = david_main(
+        [
+            "code",
+            str(repo),
+            "--once",
+            "create a file named hello.txt that says hello",
+            "--allow-unvalidated",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "agent loop: verified steps=2 verified=True" in output
+    assert "path=hello.txt bytes=5" in output
+    assert (repo / "hello.txt").read_text(encoding="utf-8") == "hello"
+    assert (repo / ".david" / "memory" / "task-default.jsonl").exists()
+
+
 def test_repo_patch_prompt_routes_to_patch_target_and_selected_file(tmp_path: Path) -> None:
     repo = _tiny_repo(tmp_path)
     runtime = _runtime(repo)
