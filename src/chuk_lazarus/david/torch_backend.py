@@ -13,7 +13,12 @@ from .materialization_replay import (
     ReplayConsumerInput,
     replay_generation_metadata,
 )
-from .model_backend import ModelBackendResult, ModelBackendStatus, _apply_stop
+from .model_backend import (
+    ModelBackendResult,
+    ModelBackendStatus,
+    _apply_stop,
+    format_prompt_with_chat_template,
+)
 
 
 _SUPPORTED_DTYPE_STRINGS = {"auto", "float16", "bfloat16", "float32", "none"}
@@ -217,9 +222,11 @@ class TorchRuntimeModelBackend:
             )
 
         try:
-            generation = self._generate_standard(prompt, max_new_tokens=max_new_tokens)
+            formatted_prompt = format_prompt_with_chat_template(self._tokenizer, prompt)
+            generation = self._generate_standard(formatted_prompt.prompt, max_new_tokens=max_new_tokens)
             metadata = {
                 **self._metadata(),
+                **formatted_prompt.metadata,
                 "max_new_tokens": max_new_tokens,
                 "temperature": 0.0,
                 "use_plugins": False,
@@ -242,6 +249,8 @@ class TorchRuntimeModelBackend:
             )
         except Exception as exc:  # pragma: no cover - defensive fail-close path.
             metadata = self._metadata()
+            if self._tokenizer is not None:
+                metadata.update(format_prompt_with_chat_template(self._tokenizer, prompt).metadata)
             metadata["logits_processor_count"] = len(processors)
             metadata["logits_processor_applied"] = False
             if replay_metadata is not None:

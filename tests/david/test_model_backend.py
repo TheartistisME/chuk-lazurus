@@ -155,6 +155,23 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
             return self.ids
 
     class FakeTokenizer:
+        def apply_chat_template(
+            self,
+            messages: list[dict[str, str]],
+            *,
+            tokenize: bool,
+            add_generation_prompt: bool,
+        ) -> str:
+            calls.append(
+                (
+                    "chat_template",
+                    repr(messages),
+                    {"tokenize": tokenize, "add_generation_prompt": add_generation_prompt},
+                )
+            )
+            assert messages == [{"role": "user", "content": "prompt"}]
+            return "<start_of_turn>user\nprompt<end_of_turn>\n<start_of_turn>model\n"
+
         def __call__(self, prompt: str, *, return_tensors: str) -> dict[str, FakeTensor]:
             calls.append(("tokenize", prompt, {"return_tensors": return_tensors}))
             return {"input_ids": FakeTensor([101, 102])}
@@ -271,12 +288,19 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     assert result.metadata["requested_dtype"] == "float16"
     assert result.metadata["resolved_dtype"] == "float16"
     assert result.metadata["max_new_tokens"] == 7
+    assert result.metadata["prompt_format"] == "chat_template"
+    assert result.metadata["prompt_format_source"] == "tokenizer.apply_chat_template"
     assert result.metadata["prompt_token_count"] == 2
     assert result.metadata["input_token_count"] == 2
     assert result.metadata["generated_token_count"] == 3
     assert ("tokenizer", "local/test-model", {"local_files_only": True}) in calls
     assert ("model", "local/test-model", {"local_files_only": True, "torch_dtype": "torch.float16"}) in calls
     assert ("model.to", "cpu", {}) in calls
+    assert (
+        "tokenize",
+        "<start_of_turn>user\nprompt<end_of_turn>\n<start_of_turn>model\n",
+        {"return_tensors": "pt"},
+    ) in calls
     generate_call = next(call for call in calls if call[0] == "generate")
     assert generate_call[2]["max_new_tokens"] == 7
     assert generate_call[2]["input_ids"].moved_to == "cpu"
@@ -294,6 +318,64 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     assert replay["refusal_reasons"] == [
         "transformers-causal-lm has no tensor replay hook for residual_sidecar"
     ]
+
+
+def test_transformers_backend_falls_back_to_raw_prompt_when_chat_template_fails(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    class FakeTokenizer:
+        def apply_chat_template(self, *args: object, **kwargs: object) -> str:
+            raise ValueError("chat template is not set")
+
+        def __call__(self, prompt: str, *, return_tensors: str) -> dict[str, object]:
+            calls.append(("tokenize", prompt, {"return_tensors": return_tensors}))
+            return {"input_ids": [101, 102]}
+
+        def decode(self, output_ids: list[int], *, skip_special_tokens: bool) -> str:
+            return "raw answer"
+
+    class FakeTokenizerFactory:
+        @staticmethod
+        def from_pretrained(model_id: str, **kwargs: object) -> FakeTokenizer:
+            return FakeTokenizer()
+
+    class FakeModel:
+        def eval(self) -> None:
+            pass
+
+        def generate(self, **kwargs: object) -> list[list[int]]:
+            return [[101, 102, 201]]
+
+    class FakeModelFactory:
+        @staticmethod
+        def from_pretrained(model_id: str, **kwargs: object) -> FakeModel:
+            return FakeModel()
+
+    class FakeNoGrad:
+        def __enter__(self) -> None:
+            pass
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoTokenizer = FakeTokenizerFactory
+    fake_transformers.AutoModelForCausalLM = FakeModelFactory
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.no_grad = FakeNoGrad
+
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(model_backend, "_missing_optional_packages", lambda *names: [])
+
+    backend = TransformersCausalLMBackend("local/test-model")
+    result = backend.generate("raw prompt")
+
+    assert result.ok is True
+    assert result.metadata["prompt_format"] == "raw"
+    assert result.metadata["prompt_format_fallback_reason"] == "ValueError: chat template is not set"
+    assert ("tokenize", "raw prompt", {"return_tensors": "pt"}) in calls
 
 
 def test_transformers_backend_rejects_invalid_dtype_without_loading(monkeypatch) -> None:

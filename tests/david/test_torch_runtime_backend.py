@@ -136,7 +136,22 @@ def test_torch_runtime_backend_loads_local_model_and_uses_standard_generation_co
     fake_torch.bfloat16 = "torch.bfloat16"
 
     class FakeTokenizer:
-        pass
+        def apply_chat_template(
+            self,
+            messages: list[dict[str, str]],
+            *,
+            tokenize: bool,
+            add_generation_prompt: bool,
+        ) -> str:
+            calls.append(
+                (
+                    "chat_template",
+                    repr(messages),
+                    {"tokenize": tokenize, "add_generation_prompt": add_generation_prompt},
+                )
+            )
+            assert messages == [{"role": "user", "content": "prompt"}]
+            return "<start_of_turn>user\nprompt<end_of_turn>\n<start_of_turn>model\n"
 
     class FakeTokenizerFactory:
         @staticmethod
@@ -246,8 +261,12 @@ def test_torch_runtime_backend_loads_local_model_and_uses_standard_generation_co
     ) in calls
     assert ("model.to", "cuda:0", {"non_blocking": True}) in calls
     assert ("runtime", "FakeModel", {"device": "cuda:0", "engine": "standard"}) in calls
+    runtime_generate_call = next(call for call in calls if call[0] == "runtime.generate")
+    assert runtime_generate_call[1] == "<start_of_turn>user\nprompt<end_of_turn>\n<start_of_turn>model\n"
     assert result.backend == "torch-runtime"
     assert result.metadata["max_new_tokens"] == 9
+    assert result.metadata["prompt_format"] == "chat_template"
+    assert result.metadata["prompt_format_source"] == "tokenizer.apply_chat_template"
     assert result.metadata["temperature"] == 0.0
     assert result.metadata["use_plugins"] is False
     assert result.metadata["generation_path"] == "torch.generate.standard"
@@ -259,6 +278,61 @@ def test_torch_runtime_backend_loads_local_model_and_uses_standard_generation_co
     assert replay["tensor_replay"] is False
     assert replay["applied"] is False
     assert replay["refused"] is True
+
+
+def test_torch_runtime_backend_falls_back_to_raw_prompt_when_chat_template_fails(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = FakeCuda
+
+    class FakeTokenizer:
+        def apply_chat_template(self, *args: object, **kwargs: object) -> str:
+            raise ValueError("no template")
+
+    class FakeGenerationConfig:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    fake_generation = types.ModuleType("chuk_lazarus.inference.generation")
+    fake_generation.GenerationConfig = FakeGenerationConfig
+
+    class FakeGenerationResult:
+        text = "fallback"
+        stats = None
+        stop_reason = None
+
+    class FakeRuntime:
+        last_generation_path = "torch.generate.standard"
+
+        def generate(self, prompt: str, config: object) -> FakeGenerationResult:
+            calls.append(("runtime.generate", prompt, {"config": config}))
+            return FakeGenerationResult()
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "chuk_lazarus.inference.generation", fake_generation)
+    monkeypatch.setattr(torch_backend.importlib, "import_module", lambda name: types.ModuleType(name))
+    monkeypatch.setattr(
+        "chuk_lazarus.david.torch_backend._missing_optional_packages",
+        lambda *names: [],
+    )
+
+    backend = TorchRuntimeModelBackend("local/test-model", device="cpu")
+    backend._tokenizer = FakeTokenizer()
+    backend._runtime = FakeRuntime()
+
+    result = backend.generate("raw prompt")
+
+    assert result.ok is True
+    assert result.text == "fallback"
+    assert result.metadata["prompt_format"] == "raw"
+    assert result.metadata["prompt_format_fallback_reason"] == "ValueError: no template"
+    assert calls[0][1] == "raw prompt"
 
 
 def test_torch_runtime_backend_fails_closed_when_cuda_requested_but_unavailable(monkeypatch) -> None:

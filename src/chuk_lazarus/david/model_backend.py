@@ -36,6 +36,12 @@ class ModelBackendResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PromptFormatResult:
+    prompt: str
+    metadata: dict[str, Any]
+
+
 class ModelBackend(Protocol):
     """Minimal generation contract used by the harness layer."""
 
@@ -312,7 +318,8 @@ class TransformersCausalLMBackend:
             )
         try:
             torch = __import__("torch")
-            inputs = self._tokenizer(prompt, return_tensors="pt")
+            formatted_prompt = format_prompt_with_chat_template(self._tokenizer, prompt)
+            inputs = self._tokenizer(formatted_prompt.prompt, return_tensors="pt")
             if self.device:
                 inputs = {key: value.to(self.device) for key, value in inputs.items()}
             generation_kwargs: dict[str, Any] = {**inputs, "max_new_tokens": max_new_tokens}
@@ -327,6 +334,7 @@ class TransformersCausalLMBackend:
             text = self._tokenizer.decode(generated_ids, skip_special_tokens=True)
             metadata = {
                 **self._metadata(),
+                **formatted_prompt.metadata,
                 "max_new_tokens": max_new_tokens,
                 "logits_processor_count": len(processors),
                 "stop_count": len(stop or ()),
@@ -345,6 +353,8 @@ class TransformersCausalLMBackend:
             )
         except Exception as exc:  # pragma: no cover - defensive fail-close path
             metadata = self._metadata()
+            if self._tokenizer is not None:
+                metadata.update(format_prompt_with_chat_template(self._tokenizer, prompt).metadata)
             if replay_metadata is not None:
                 metadata["materialization_replay"] = replay_metadata
             return ModelBackendResult(
@@ -391,6 +401,53 @@ class TransformersCausalLMBackend:
 
 def _missing_optional_packages(*names: str) -> list[str]:
     return [name for name in names if importlib.util.find_spec(name) is None]
+
+
+def format_prompt_with_chat_template(tokenizer: Any, prompt: str) -> PromptFormatResult:
+    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+    if not callable(apply_chat_template):
+        return PromptFormatResult(
+            prompt=prompt,
+            metadata={
+                "prompt_format": "raw",
+                "prompt_format_fallback_reason": "tokenizer has no apply_chat_template",
+            },
+        )
+
+    try:
+        formatted_prompt = apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    except Exception as exc:
+        return PromptFormatResult(
+            prompt=prompt,
+            metadata={
+                "prompt_format": "raw",
+                "prompt_format_fallback_reason": f"{type(exc).__name__}: {exc}",
+            },
+        )
+
+    if not isinstance(formatted_prompt, str):
+        return PromptFormatResult(
+            prompt=prompt,
+            metadata={
+                "prompt_format": "raw",
+                "prompt_format_fallback_reason": (
+                    "tokenizer.apply_chat_template returned "
+                    f"{type(formatted_prompt).__name__}, expected str"
+                ),
+            },
+        )
+
+    return PromptFormatResult(
+        prompt=formatted_prompt,
+        metadata={
+            "prompt_format": "chat_template",
+            "prompt_format_source": "tokenizer.apply_chat_template",
+        },
+    )
 
 
 def _no_tensor_replay_capabilities(
