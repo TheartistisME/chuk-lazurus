@@ -136,6 +136,12 @@ def test_repo_patch_routing_and_task_writeback(tmp_path: Path) -> None:
     assert steering["applied"] is False
     assert steering["processor_count"] == 0
     assert steering["refused_reason"] == "backend does not expose tokenizer for live steering"
+    assert result.materialized.materialization_plan["strategy"] == "boundary_text"
+    replay = result.model_result.metadata["materialization_replay"]
+    assert replay["attempted"] is True
+    assert replay["applied"] is False
+    assert replay["tensor_replay"] is False
+    assert result.writeback["metadata"]["materialized"]["materialization_replay"] == replay
     assert (tmp_path / "state" / "memory" / "task-default.jsonl").exists()
     assert not (tmp_path / "state" / "memory" / "user-default.jsonl").exists()
 
@@ -221,6 +227,7 @@ def test_runtime_applies_live_decoder_steering_for_transformers_backend(tmp_path
     assert result.model_result is not None
     assert result.method == "repo_patch"
     assert isinstance(captured["logits_processor"], list)
+    assert captured["materialization_plan"] == result.materialized.materialization_plan
     assert result.model_result.metadata["logits_processor_count"] == 1
     steering = result.model_result.metadata["decoder_steering"]
     assert steering["attempted"] is True

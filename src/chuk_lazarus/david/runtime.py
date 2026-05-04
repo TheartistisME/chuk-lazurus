@@ -42,6 +42,13 @@ except ImportError:  # pragma: no cover - only used if harness package is unavai
     boot_harness = None
 
 
+def _materialization_replay_metadata(model_result: ModelBackendResult | None) -> dict[str, Any] | None:
+    if model_result is None:
+        return None
+    replay = model_result.metadata.get("materialization_replay")
+    return replay if isinstance(replay, dict) else None
+
+
 @dataclass(frozen=True)
 class RuntimeResult:
     prompt: str
@@ -81,6 +88,8 @@ class RuntimeResult:
                 "compatibility": self.materialized.compatibility,
                 "refused": self.materialized.refused,
                 "reason": self.materialized.reason,
+                "materialization_plan": self.materialized.materialization_plan,
+                "materialization_replay": _materialization_replay_metadata(self.model_result),
             },
             "decoder": {
                 "constraints": self.decoder.constraints,
@@ -209,7 +218,7 @@ class DavidRuntime:
         )
         materialized = self.materializer.materialize(route, self.adapter)
         decoder = self.decoder.plan(route=route, adapter=self.adapter, session_id=self.config.session_id)
-        model_result = self._generate(prompt, method, product_route, decoder)
+        model_result = self._generate(prompt, method, product_route, materialized, decoder)
         verification = self.verifier.verify(
             capability=method,
             evidence=evidence,
@@ -746,6 +755,7 @@ class DavidRuntime:
         prompt: str,
         method: str,
         product_route: ProductRoutePacket,
+        materialized: MaterializedContext,
         decoder: DecoderPlan,
     ) -> ModelBackendResult:
         generation_prompt = (
@@ -760,6 +770,7 @@ class DavidRuntime:
             generation_prompt,
             max_new_tokens=160,
             logits_processor=steering["processors"],
+            materialization_plan=materialized.materialization_plan,
         )
         return ModelBackendResult(
             text=model_result.text,
@@ -864,7 +875,11 @@ class DavidRuntime:
             ),
             "refused": materialized.refused,
             "reason": materialized.reason,
+            "materialization_plan": materialized.materialization_plan,
         }
+        materialization_replay = _materialization_replay_metadata(model_result)
+        if materialization_replay is not None:
+            materialized_json["materialization_replay"] = materialization_replay
         return {
             "adapter": self.adapter.scope(),
             "adapter_scope": self.adapter.scope(),
