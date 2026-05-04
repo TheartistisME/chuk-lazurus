@@ -34,6 +34,91 @@ Status labels:
 - `PARTIAL`: product-shaped, but shallow, offline, or metadata-only.
 - `TO DO`: proven in scripts or designed, but not product-wired yet.
 
+### Current Operator Workflow
+
+Install David from the repo as an editable package so the `david` entrypoint is
+on PATH:
+
+```bash
+uv pip install -e .
+david --help
+```
+
+Workspace defaults live in `.david/config.json`. CLI flags and `DAVID_*`
+environment variables override these values. Supported keys are:
+
+```json
+{
+  "model": "google/gemma-4-E2B-it or ./local-model",
+  "validation_report": ".david/model_validation_report.json",
+  "model_attestation": ".david/model_attestation.json",
+  "model_backend": "torch",
+  "model_device": "cuda",
+  "model_dtype": "bfloat16",
+  "model_max_new_tokens": 256,
+  "auto_jit_index": false
+}
+```
+
+The normal local workflow is:
+
+```bash
+david doctor --workspace . --model ./models/gemma --validation-report .david/model_validation_report.json
+david code .
+david verify --cmd "pytest tests/david"
+```
+
+Inside `david code .`, the TUI exposes:
+
+- `/status` or `/readiness`: model validation, index, and memory status.
+- `/memory`: durable user/task memory artifact status.
+- `/index`, `/index jit`, or `/index build`: inspect or refresh workspace
+  index surfaces.
+- `/resume`: show the last session snapshot.
+- `/verify [cmd]`: run the configured verifier or a workspace command.
+- `/agent <action>`: run the deterministic local agent/action loop.
+- `/read`, `/write`, `/apply`, and `/run`: path-safe local tools. Plain
+  prompts that clearly ask for safe file writes may route through the agent
+  loop instead of free-form generation.
+
+For a live Gemma run today, use an accepted validator report for auto-load, or
+a manual-reviewed `model_attestation.json` for standard decode only:
+
+```bash
+david model scan ./models/gemma --output .david/model/model_config_report.json
+david model validate .david/model/model_config_report.json --model ./models/gemma --output .david/model_validation_report.json
+david code . --model ./models/gemma --model-backend torch --model-device cuda --model-dtype bfloat16
+```
+
+Manual attestations do not enable unsafe tensor capabilities. They are an
+operator-reviewed path for standard decode when the validator needs human
+review, and David must still refuse KV/residual replay that is not proven
+compatible for the active model, tokenizer, layers, insertion family, and
+memory family.
+
+### Wired Versus Guarded
+
+Wired today:
+
+- CLI/TUI entrypoint, workspace config defaults, `doctor`, `code`, `verify`,
+  and explicit `model scan` / `model validate`.
+- Torch-runtime live local decode when validated assets or an accepted manual
+  standard-decode attestation are supplied.
+- Direct verifier path, safe plain-write prompts, deterministic `/agent`
+  action loop, path-safe file tools, strict patch application, routed context,
+  memory, resume, and workspace index surfaces.
+
+Guarded or still TODO:
+
+- Production tensor KV/residual replay. Current product surfaces carry
+  compatibility metadata and fail-closed checks; they must not be described as
+  completed tensor replay.
+- Arbitrary autonomous repo patching. David can route, propose, apply guarded
+  patches, and verify, but broad multi-step repo autonomy remains constrained.
+- Benchmark proof rigs. MRCR, RULER, LoCoBench, SWE-bench, and chat rows remain
+  proof rigs for methodology validation, not product modules or operator
+  commands.
+
 ### Top-Level System
 
 ```mermaid
