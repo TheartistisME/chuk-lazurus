@@ -13,6 +13,7 @@ from chuk_lazarus.david.model_backend import (
     ModelBackendStatus,
     TransformersCausalLMBackend,
 )
+from chuk_lazarus.david.product_router import ProductRoutePacket
 from chuk_lazarus.david.routing import RoutePacket
 
 
@@ -174,6 +175,90 @@ def test_repo_patch_routing_and_task_writeback(tmp_path: Path) -> None:
     assert result.writeback["metadata"]["materialized"]["materialization_replay"] == replay
     assert (tmp_path / "state" / "memory" / "task-default.jsonl").exists()
     assert not (tmp_path / "state" / "memory" / "user-default.jsonl").exists()
+
+
+def test_runtime_bridges_product_route_metadata_to_materializer_decoder_and_verifier(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "service.py"
+    source.parent.mkdir()
+    source.write_text("def broken_service():\n    return None\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    def product_route_stub(
+        prompt: str,
+        *,
+        session_id: str,
+        evidence: object,
+        files: object,
+        source_index: object = None,
+        method: str,
+        max_tokens: int,
+    ) -> ProductRoutePacket:
+        del prompt, evidence, files, source_index, max_tokens
+        return ProductRoutePacket(
+            method=method,
+            methodology="patch_target",
+            capability="repo patch-target routing",
+            proof_rig="SWE-bench patch-target routing",
+            selected_windows=["scripts/run_swebench_pro_parity.py\nPROTECTED", "src/service.py\nsafe evidence"],
+            memory_family="task",
+            session_id=session_id,
+            tier="hot",
+            route_reason="unit product route selected patch target",
+            route_reasons=["unit selected src/service.py", "protected proof-rig path excluded"],
+            evidence=[
+                {
+                    "artifact_id": "workspace:scripts/run_swebench_pro_parity.py",
+                    "family": "task",
+                    "kind": "patch_target",
+                    "path": "scripts/run_swebench_pro_parity.py",
+                    "text": "PROTECTED_SENTINEL",
+                    "provenance": "unit",
+                },
+                {
+                    "artifact_id": "workspace:src/service.py",
+                    "family": "task",
+                    "kind": "patch_target",
+                    "path": "src/service.py",
+                    "text": "src/service.py\nsafe evidence",
+                    "provenance": "unit",
+                    "route_reason": "unit selected src/service.py",
+                },
+            ],
+            token_cost=4,
+            lexical_score=1.0,
+            recency_score=1.0,
+            selected_paths=["src/service.py"],
+            selected_tests=["tests/test_service.py"],
+            selected_symbols=["broken_service"],
+            import_tokens=["pytest"],
+            patch_rejected_paths={
+                "scripts/run_swebench_pro_parity.py": ["protected proof-rig path"],
+            },
+            provenance={"router": "unit.product_router", "proof_router_available": True},
+        )
+
+    runtime.product_router.route = product_route_stub  # type: ignore[method-assign]
+
+    result = runtime.run_once("Fix the repo bug by patching src/service.py")
+
+    assert [item["path"] for item in result.route.evidence] == ["src/service.py"]
+    assert all("PROTECTED_SENTINEL" not in window for window in result.route.selected_windows)
+    route_metadata = result.route.provenance["product_route"]
+    assert route_metadata["methodology"] == "patch_target"
+    assert route_metadata["selected_paths"] == ["src/service.py"]
+    assert route_metadata["selected_tests"] == ["tests/test_service.py"]
+    assert route_metadata["protected_path_exclusions"] == [
+        {"path": "scripts/run_swebench_pro_parity.py", "reasons": ["protected proof-rig path"]}
+    ]
+    assert result.materialized.compatibility["route_metadata"]["methodology"] == "patch_target"
+    assert result.materialized.materialization_plan["route_metadata"]["selected_paths"] == ["src/service.py"]
+    assert result.decoder.constraints["route_metadata"]["selected_symbols"] == ["broken_service"]
+    assert result.writeback["metadata"]["methodology"] == "patch_target"
+    assert result.writeback["metadata"]["selected_paths"] == ["src/service.py"]
+    assert result.writeback["metadata"]["protected_path_exclusions"][0]["path"] == (
+        "scripts/run_swebench_pro_parity.py"
+    )
+    assert result.verification.checks["product_route"]["selected_paths"] == ["src/service.py"]
 
 
 def test_runtime_surfaces_unsafe_materialization_in_writeback_verification(tmp_path: Path) -> None:

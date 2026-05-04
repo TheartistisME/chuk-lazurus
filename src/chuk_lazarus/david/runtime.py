@@ -182,6 +182,154 @@ def _render_patch_action_guidance(method: str, selected_tests: Sequence[str], pa
     return "\n".join(lines)
 
 
+def _protected_path_exclusions(product_route: ProductRoutePacket) -> list[dict[str, Any]]:
+    exclusions: dict[str, dict[str, Any]] = {}
+    for path, reasons in product_route.patch_rejected_paths.items():
+        normalized = str(path or "").replace("\\", "/").strip()
+        if not normalized:
+            continue
+        reason_items = [str(reason) for reason in reasons]
+        if is_protected_path(normalized) or any("protected" in reason.lower() for reason in reason_items):
+            exclusions[normalized] = {"path": normalized, "reasons": reason_items or ["protected path excluded"]}
+    for item in product_route.evidence:
+        path = str(item.get("path") or item.get("artifact_id") or "").removeprefix("workspace:")
+        normalized = path.replace("\\", "/").strip()
+        if normalized and is_protected_path(normalized):
+            exclusions.setdefault(
+                normalized,
+                {"path": normalized, "reasons": ["protected route evidence excluded"]},
+            )
+    return list(exclusions.values())
+
+
+def _product_route_runtime_metadata(product_route: ProductRoutePacket) -> dict[str, Any]:
+    return {
+        "method": product_route.method,
+        "methodology": product_route.methodology,
+        "capability": product_route.capability,
+        "proof_rig": product_route.proof_rig,
+        "selected_paths": list(product_route.selected_paths),
+        "selected_tests": list(product_route.selected_tests),
+        "selected_symbols": list(product_route.selected_symbols),
+        "import_tokens": list(product_route.import_tokens),
+        "dependency_source_hints": list(product_route.dependency_source_hints),
+        "source_index_paths": list(product_route.source_index_paths),
+        "source_hint_paths": list(product_route.source_hint_paths),
+        "triad_augmented_paths": list(product_route.triad_augmented_paths),
+        "route_reasons": list(product_route.route_reasons),
+        "evidence_count": len(product_route.evidence),
+        "protected_path_exclusions": _protected_path_exclusions(product_route),
+        "provenance": dict(product_route.provenance),
+    }
+
+
+def _text_windows_from_evidence(evidence: Sequence[dict[str, Any]], *, limit: int = 3) -> list[str]:
+    windows: list[str] = []
+    for item in evidence:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        windows.append(text)
+        if len(windows) >= limit:
+            break
+    return windows
+
+
+def _bridge_product_route_packet(route: RoutePacket, product_route: ProductRoutePacket) -> RoutePacket:
+    """Keep the simple RoutePacket API while carrying product route metadata forward."""
+
+    safe_evidence = _unprotected_route_evidence(product_route.evidence)
+    if not safe_evidence:
+        safe_evidence = _unprotected_route_evidence(route.evidence)
+    selected_windows = _text_windows_from_evidence(safe_evidence) or list(route.selected_windows)
+    product_metadata = _product_route_runtime_metadata(product_route)
+    provenance = {
+        **route.provenance,
+        **product_route.provenance,
+        "product_methodology": product_route.methodology,
+        "product_capability": product_route.capability,
+        "product_proof_rig": product_route.proof_rig,
+        "selected_paths": list(product_route.selected_paths),
+        "selected_tests": list(product_route.selected_tests),
+        "route_reasons": list(product_route.route_reasons),
+        "protected_path_exclusions": product_metadata["protected_path_exclusions"],
+        "product_route": product_metadata,
+    }
+    return RoutePacket(
+        method=product_route.method or route.method,
+        selected_windows=selected_windows,
+        memory_family=product_route.memory_family or route.memory_family,
+        session_id=product_route.session_id or route.session_id,
+        tier=product_route.tier or route.tier,
+        route_reason=product_route.route_reason or route.route_reason,
+        evidence=safe_evidence,
+        token_cost=product_route.token_cost,
+        activation_score=max(route.activation_score, product_route.activation_score),
+        lexical_score=max(route.lexical_score, product_route.lexical_score),
+        ordinal_score=max(route.ordinal_score, product_route.ordinal_score),
+        recency_score=max(route.recency_score, product_route.recency_score),
+        residual_available=route.residual_available or product_route.residual_available,
+        kv_ready=route.kv_ready or product_route.kv_ready,
+        provenance=provenance,
+    )
+
+
+def _route_runtime_metadata(route: RoutePacket) -> dict[str, Any]:
+    product = route.provenance.get("product_route")
+    if isinstance(product, dict):
+        return dict(product)
+    return {
+        "method": route.method,
+        "methodology": route.provenance.get("product_methodology"),
+        "capability": route.provenance.get("product_capability"),
+        "proof_rig": route.provenance.get("product_proof_rig"),
+        "selected_paths": list(route.provenance.get("selected_paths") or ()),
+        "selected_tests": list(route.provenance.get("selected_tests") or ()),
+        "route_reasons": list(route.provenance.get("route_reasons") or ()),
+        "evidence_count": len(route.evidence),
+        "protected_path_exclusions": list(route.provenance.get("protected_path_exclusions") or ()),
+        "provenance": dict(route.provenance),
+    }
+
+
+def _materialized_with_route_metadata(
+    materialized: MaterializedContext,
+    route: RoutePacket,
+) -> MaterializedContext:
+    route_metadata = _route_runtime_metadata(route)
+    compatibility = {
+        **materialized.compatibility,
+        "route_metadata": route_metadata,
+        "route_provenance": dict(route.provenance),
+    }
+    plan = {
+        **materialized.materialization_plan,
+        "route_metadata": route_metadata,
+        "route_provenance": dict(route.provenance),
+    }
+    return MaterializedContext(
+        strategy=materialized.strategy,
+        text_context=materialized.text_context,
+        compatibility=compatibility,
+        refused=materialized.refused,
+        reason=materialized.reason,
+        materialization_plan=plan,
+    )
+
+
+def _decoder_with_route_metadata(decoder: DecoderPlan, route: RoutePacket) -> DecoderPlan:
+    route_metadata = _route_runtime_metadata(route)
+    constraints = {
+        **decoder.constraints,
+        "route_metadata": route_metadata,
+    }
+    prior_scope = dict(decoder.prior_scope)
+    methodology = route_metadata.get("methodology")
+    if methodology:
+        prior_scope.setdefault("methodology", methodology)
+    return DecoderPlan(constraints=constraints, prior_scope=prior_scope)
+
+
 @dataclass(frozen=True)
 class RuntimeResult:
     prompt: str
@@ -350,9 +498,12 @@ class DavidRuntime:
             method=method,
             max_tokens=self.config.max_route_tokens,
         )
+        route = _bridge_product_route_packet(route, product_route)
         replay_consumer = self._backend_replay_consumer()
         materialized = self.materializer.materialize(route, self.adapter, replay_consumer=replay_consumer)
+        materialized = _materialized_with_route_metadata(materialized, route)
         decoder = self.decoder.plan(route=route, adapter=self.adapter, session_id=self.config.session_id)
+        decoder = _decoder_with_route_metadata(decoder, route)
         model_result = self._generate(prompt, method, product_route, materialized, decoder, replay_consumer)
         verification = self.verifier.verify(
             capability=method,
@@ -654,6 +805,12 @@ class DavidRuntime:
             "evidence_count_included": 0,
             "selected_paths": [],
             "selected_tests": [],
+            "protected_path_exclusions": [],
+            "methodology": None,
+            "capability": None,
+            "proof_rig": None,
+            "route_reasons": [],
+            "route_provenance": {},
             "patch_context_count": 0,
             "product_route_available": False,
             "omitted": False,
@@ -682,14 +839,21 @@ class DavidRuntime:
             product_route = None
         route_evidence = product_route.evidence if product_route is not None else evidence
         safe_evidence = _unprotected_route_evidence(route_evidence)
+        route_metadata = _product_route_runtime_metadata(product_route) if product_route is not None else {}
         selected_tests = _bounded_selected_tests(
             product_route.selected_tests if product_route is not None else (),
             safe_evidence,
         )
         patch_context_count = len(safe_evidence[:8])
         metadata["evidence_count_available"] = len(route_evidence)
-        metadata["selected_paths"] = _bounded_selected_paths(safe_evidence)
+        metadata["selected_paths"] = list(route_metadata.get("selected_paths") or _bounded_selected_paths(safe_evidence))
         metadata["selected_tests"] = selected_tests
+        metadata["protected_path_exclusions"] = list(route_metadata.get("protected_path_exclusions") or ())
+        metadata["methodology"] = route_metadata.get("methodology")
+        metadata["capability"] = route_metadata.get("capability")
+        metadata["proof_rig"] = route_metadata.get("proof_rig")
+        metadata["route_reasons"] = list(route_metadata.get("route_reasons") or ())
+        metadata["route_provenance"] = dict(route_metadata.get("provenance") or {})
         metadata["patch_context_count"] = patch_context_count
         metadata["product_route_available"] = product_route is not None
         patch_guidance = _render_patch_action_guidance(method, selected_tests, patch_context_count)
@@ -1068,6 +1232,7 @@ class DavidRuntime:
         product_route: ProductRoutePacket,
         materialized: MaterializedContext,
     ) -> dict[str, Any]:
+        route_metadata = _product_route_runtime_metadata(product_route)
         metadata: dict[str, Any] = {
             "context_char_count": 0,
             "context_char_budget": _generation_context_char_budget(self.config.max_route_tokens),
@@ -1078,6 +1243,13 @@ class DavidRuntime:
             "refused": materialized.refused,
             "truncated": False,
             "source": "none",
+            "methodology": product_route.methodology,
+            "capability": product_route.capability,
+            "selected_paths": route_metadata["selected_paths"],
+            "selected_tests": route_metadata["selected_tests"],
+            "protected_path_exclusions": route_metadata["protected_path_exclusions"],
+            "route_reasons": route_metadata["route_reasons"],
+            "route_provenance": route_metadata["provenance"],
         }
         if materialized.refused:
             metadata.update({"omitted": True, "omitted_reason": "materializer_refused"})
@@ -1207,10 +1379,17 @@ class DavidRuntime:
         materialization_replay = _materialization_replay_metadata(model_result)
         if materialization_replay is not None:
             materialized_json["materialization_replay"] = materialization_replay
+        route_metadata = _route_runtime_metadata(route)
         return {
             "adapter": self.adapter.scope(),
             "adapter_scope": self.adapter.scope(),
             "route": route.to_json(),
+            "route_metadata": route_metadata,
+            "route_provenance": dict(route.provenance),
+            "methodology": route_metadata.get("methodology"),
+            "selected_paths": list(route_metadata.get("selected_paths") or ()),
+            "selected_tests": list(route_metadata.get("selected_tests") or ()),
+            "protected_path_exclusions": list(route_metadata.get("protected_path_exclusions") or ()),
             "route_evidence_chain": [
                 {
                     "artifact_id": item.get("artifact_id"),
