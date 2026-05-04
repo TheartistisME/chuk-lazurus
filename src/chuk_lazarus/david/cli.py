@@ -22,7 +22,9 @@ from .model_validation import (
     run_model_scan,
     run_model_validate,
 )
+from .model_onboarding import ModelOnboardingResult, onboard_model
 from .tui import DavidTui
+from .workspace_init import WorkspaceInitError, WorkspaceInitResult, initialize_workspace
 
 try:  # Prefer the real harness objects when another worker has provided them.
     from .config import DavidConfig as _RuntimeDavidConfig
@@ -174,6 +176,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_options(parser)
     subparsers = parser.add_subparsers(dest="command")
+    init = subparsers.add_parser(
+        "init",
+        help="Initialize David workspace state without model load or indexing",
+    )
+    init.add_argument("workspace", nargs="?", default=".", help="Workspace path")
+    init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite David-managed config and next-steps files",
+    )
+    _add_common_options(init, suppress_defaults=True)
     code = subparsers.add_parser("code", help="Open David in a workspace")
     code.add_argument("workspace", nargs="?", default=".", help="Workspace path")
     _add_common_options(code, suppress_defaults=True)
@@ -257,6 +270,17 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("report", help="Path to a model scan report JSON")
     validate.add_argument("--output", required=True, help="Path for the validation report JSON")
     validate.add_argument("--model", default=None, help="Optional model path/id override")
+    onboard = model_subparsers.add_parser(
+        "onboard",
+        help="Plan or execute safe scanner/validator onboarding for a model",
+    )
+    onboard.add_argument("model", help="HF model id or local model path to onboard")
+    onboard.add_argument("--workspace", required=True, help="Workspace path for onboarding artifacts")
+    onboard.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run scan/validate wrappers; does not create or accept attestations",
+    )
     return parser
 
 
@@ -264,6 +288,10 @@ def main(argv: list[str] | None = None) -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(argv_list)
+    if getattr(args, "command", None) == "init":
+        explicit_args = _explicit_common_args(argv_list)
+        _apply_operator_defaults(args, explicit_args=explicit_args)
+        return _run_init_command(args)
     if getattr(args, "command", None) == "doctor":
         explicit_args = _explicit_common_args(argv_list)
         workspace_path = Path(args.workspace)
@@ -348,7 +376,38 @@ def _run_model_command(args: argparse.Namespace) -> int:
             failure_label="Model validation failed",
         )
 
+    if args.model_command == "onboard":
+        result = onboard_model(
+            model=args.model,
+            workspace_path=Path(args.workspace).expanduser(),
+            execute=args.execute,
+        )
+        _write_model_onboarding_result(result)
+        return 0 if result.status in {"planned", "accepted", "needs_review"} else 2
+
     raise AssertionError(f"Unhandled model command: {args.model_command}")
+
+
+def _run_init_command(args: argparse.Namespace) -> int:
+    workspace_path = Path(args.workspace)
+    try:
+        result = initialize_workspace(
+            workspace_path,
+            force=args.force,
+            model=getattr(args, "model", None),
+            backend=getattr(args, "model_backend", None),
+            device=getattr(args, "model_device", None),
+            dtype=getattr(args, "model_dtype", None),
+            max_new_tokens=getattr(args, "model_max_new_tokens", None),
+            auto_jit_index=bool(getattr(args, "auto_jit_index", False)),
+        )
+    except WorkspaceInitError as exc:
+        sys.stderr.write("David init failed\n")
+        sys.stderr.write(f"{exc}\n")
+        return 2
+
+    _write_workspace_init_result(result)
+    return 0
 
 
 def _run_doctor_command(args: argparse.Namespace) -> int:
@@ -522,6 +581,61 @@ def _returncode_from_verify_text(text: str) -> int:
         except ValueError:
             return 1
     return 1
+
+
+def _write_workspace_init_result(result: WorkspaceInitResult) -> None:
+    lines = [
+        "David init",
+        f"workspace: {result.workspace_root}",
+        f"config: {result.config_path}",
+        f"next steps: {result.next_steps_path}",
+    ]
+    lines.extend(_format_path_group("created", result.created_paths))
+    lines.extend(_format_path_group("skipped", result.existing_paths))
+    lines.extend(_format_path_group("overwritten", result.overwritten_paths))
+    lines.extend(
+        [
+            "next actions:",
+            f"- review {result.config_path}",
+            "- run david model onboard <model> --workspace <workspace> before execution",
+            "- add --execute only when you want scanner/validator wrappers to run",
+        ]
+    )
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
+def _write_model_onboarding_result(result: ModelOnboardingResult) -> None:
+    plan = result.plan
+    lines = [
+        "David model onboarding",
+        f"status: {result.status}",
+        f"summary: {result.summary}",
+        f"model: {plan.model}",
+        f"workspace: {plan.workspace_path}",
+        f"scan report: {plan.scan_report_path}",
+        f"validation report: {plan.validation_report_path}",
+        f"execute: {str(result.execute).lower()}",
+        "attestation: not created or accepted by this command",
+    ]
+    if result.scan_result is not None:
+        lines.append(f"scan rc: {result.scan_result.returncode}")
+    if result.validation_result is not None:
+        lines.append(f"validation rc: {result.validation_result.returncode}")
+    if result.errors:
+        lines.append("errors:")
+        lines.extend(f"- {error}" for error in result.errors)
+    lines.append("next actions:")
+    lines.extend(f"- {action}" for action in result.next_actions)
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
+def _format_path_group(label: str, paths: tuple[Path, ...]) -> list[str]:
+    lines = [f"{label} paths:"]
+    if not paths:
+        lines.append("- none")
+        return lines
+    lines.extend(f"- {path}" for path in paths)
+    return lines
 
 
 def _write_model_command_result(

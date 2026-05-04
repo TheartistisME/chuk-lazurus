@@ -12,6 +12,7 @@ from chuk_lazarus.david.model_validation import (
     ModelCommandResult,
     ValidationReportDiscovery,
 )
+from chuk_lazarus.david.model_onboarding import ModelOnboardingPlan, ModelOnboardingResult
 
 
 @pytest.fixture(autouse=True)
@@ -642,6 +643,141 @@ def test_parser_adds_index_memory_resume_subcommands():
     assert capabilities_args.command == "capabilities"
 
 
+def test_parser_adds_init_command():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "init",
+            ".",
+            "--force",
+            "--model",
+            "google/gemma-e2b",
+            "--model-backend",
+            "torch-runtime",
+            "--model-device",
+            "cpu",
+            "--model-dtype",
+            "float32",
+            "--model-max-new-tokens",
+            "55",
+            "--auto-jit-index",
+        ]
+    )
+
+    assert args.command == "init"
+    assert args.workspace == "."
+    assert args.force is True
+    assert args.model == "google/gemma-e2b"
+    assert args.model_backend == "torch-runtime"
+    assert args.model_device == "cpu"
+    assert args.model_dtype == "float32"
+    assert args.model_max_new_tokens == 55
+    assert args.auto_jit_index is True
+
+
+def test_init_command_invokes_workspace_initializer_without_runtime(monkeypatch, tmp_path, capsys):
+    FakeRuntime.created_with = None
+    calls = []
+
+    def fake_initialize(workspace_path, **kwargs):
+        calls.append({"workspace_path": workspace_path, **kwargs})
+        david_dir = tmp_path / ".david"
+        return cli.WorkspaceInitResult(
+            workspace_root=tmp_path.resolve(),
+            david_dir=david_dir,
+            config_path=david_dir / "config.json",
+            next_steps_path=david_dir / "NEXT_STEPS.md",
+            config={"model": kwargs["model"]},
+            created_paths=(david_dir,),
+            existing_paths=(david_dir / "memory",),
+            overwritten_paths=(david_dir / "config.json",),
+            next_steps_summary="next",
+        )
+
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    monkeypatch.setattr(cli, "initialize_workspace", fake_initialize)
+
+    rc = cli.main(
+        [
+            "init",
+            str(tmp_path),
+            "--force",
+            "--model",
+            "google/gemma-e2b",
+            "--model-backend",
+            "torch-runtime",
+            "--model-device",
+            "cpu",
+            "--model-dtype",
+            "float32",
+            "--model-max-new-tokens",
+            "55",
+            "--auto-jit-index",
+        ]
+    )
+
+    assert rc == 0
+    assert FakeRuntime.created_with is None
+    assert calls == [
+        {
+            "workspace_path": Path(tmp_path),
+            "force": True,
+            "model": "google/gemma-e2b",
+            "backend": "torch-runtime",
+            "device": "cpu",
+            "dtype": "float32",
+            "max_new_tokens": 55,
+            "auto_jit_index": True,
+        }
+    ]
+    output = capsys.readouterr().out
+    assert "David init" in output
+    assert f"workspace: {tmp_path.resolve()}" in output
+    assert "created paths:" in output
+    assert "skipped paths:" in output
+    assert "overwritten paths:" in output
+    assert "david model onboard <model> --workspace <workspace>" in output
+
+
+def test_init_command_explicit_args_override_operator_env(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_initialize(workspace_path, **kwargs):
+        calls.append({"workspace_path": workspace_path, **kwargs})
+        david_dir = tmp_path / ".david"
+        return cli.WorkspaceInitResult(
+            workspace_root=tmp_path.resolve(),
+            david_dir=david_dir,
+            config_path=david_dir / "config.json",
+            next_steps_path=david_dir / "NEXT_STEPS.md",
+            config={},
+            created_paths=(),
+            existing_paths=(),
+            overwritten_paths=(),
+            next_steps_summary="",
+        )
+
+    monkeypatch.setenv("DAVID_MODEL", "env-model")
+    monkeypatch.setenv("DAVID_MODEL_BACKEND", "env-backend")
+    monkeypatch.setattr(cli, "initialize_workspace", fake_initialize)
+
+    rc = cli.main(
+        [
+            "--model",
+            "root-model",
+            "init",
+            str(tmp_path),
+            "--model-backend",
+            "cli-backend",
+        ]
+    )
+
+    assert rc == 0
+    assert calls[0]["model"] == "root-model"
+    assert calls[0]["backend"] == "cli-backend"
+
+
 def test_capabilities_command_prints_truthful_status_without_runtime(monkeypatch, capsys):
     monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
     FakeRuntime.created_with = None
@@ -805,6 +941,27 @@ def test_parser_adds_explicit_model_scan_command():
     assert args.model_command == "scan"
     assert args.model == "google/gemma-e2b"
     assert args.output == "scan.json"
+
+
+def test_parser_adds_model_onboard_command():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "model",
+            "onboard",
+            "google/gemma-e2b",
+            "--workspace",
+            ".",
+            "--execute",
+        ]
+    )
+
+    assert args.command == "model"
+    assert args.model_command == "onboard"
+    assert args.model == "google/gemma-e2b"
+    assert args.workspace == "."
+    assert args.execute is True
 
 
 def test_parser_adds_doctor_command():
@@ -1061,6 +1218,130 @@ def test_model_scan_command_invokes_wrapper_without_runtime(monkeypatch, capsys)
         }
     ]
     assert "scanner output" in capsys.readouterr().out
+
+
+def test_model_onboard_plan_command_invokes_wrapper_without_runtime(monkeypatch, tmp_path, capsys):
+    FakeRuntime.created_with = None
+    calls = []
+    plan = ModelOnboardingPlan(
+        model="google/gemma-e2b",
+        workspace_path=tmp_path.resolve(),
+        scan_report_path=tmp_path / ".david" / "model_validation" / "model_config_report.json",
+        validation_report_path=tmp_path / ".david" / "model_validation" / "model_validation_report.json",
+        next_actions=("run again with --execute when ready",),
+    )
+
+    def fake_onboard(**kwargs):
+        calls.append(kwargs)
+        return ModelOnboardingResult(
+            plan=plan,
+            execute=False,
+            status="planned",
+            summary="planned only",
+            next_actions=plan.next_actions,
+        )
+
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    monkeypatch.setattr(cli, "onboard_model", fake_onboard)
+
+    rc = cli.main(["model", "onboard", "google/gemma-e2b", "--workspace", str(tmp_path)])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is None
+    assert calls == [
+        {
+            "model": "google/gemma-e2b",
+            "workspace_path": Path(tmp_path),
+            "execute": False,
+        }
+    ]
+    output = capsys.readouterr().out
+    assert "David model onboarding" in output
+    assert "status: planned" in output
+    assert "execute: false" in output
+    assert "attestation: not created or accepted by this command" in output
+    assert "run again with --execute when ready" in output
+
+
+def test_model_onboard_execute_command_reports_scan_validate_without_attestation(monkeypatch, tmp_path, capsys):
+    calls = []
+    plan = ModelOnboardingPlan(
+        model="local-model",
+        workspace_path=tmp_path.resolve(),
+        scan_report_path=tmp_path / ".david" / "model_validation" / "model_config_report.json",
+        validation_report_path=tmp_path / ".david" / "model_validation" / "model_validation_report.json",
+        next_actions=(),
+    )
+
+    def fake_onboard(**kwargs):
+        calls.append(kwargs)
+        return ModelOnboardingResult(
+            plan=plan,
+            execute=True,
+            status="needs_review",
+            summary="needs_review: fail closed",
+            next_actions=("create manual attestation only after review",),
+            scan_result=ModelCommandResult(
+                returncode=0,
+                command=("python", "David/get_model_config.py"),
+                stdout="",
+                stderr="",
+            ),
+            validation_result=ModelCommandResult(
+                returncode=0,
+                command=("python", "David/validate_model_config.py"),
+                stdout="",
+                stderr="",
+            ),
+        )
+
+    monkeypatch.setattr(cli, "onboard_model", fake_onboard)
+
+    rc = cli.main(["model", "onboard", "local-model", "--workspace", str(tmp_path), "--execute"])
+
+    assert rc == 0
+    assert calls == [
+        {
+            "model": "local-model",
+            "workspace_path": Path(tmp_path),
+            "execute": True,
+        }
+    ]
+    output = capsys.readouterr().out
+    assert "status: needs_review" in output
+    assert "execute: true" in output
+    assert "scan rc: 0" in output
+    assert "validation rc: 0" in output
+    assert "attestation: not created or accepted by this command" in output
+
+
+def test_model_onboard_rejected_returns_failure(monkeypatch, tmp_path, capsys):
+    plan = ModelOnboardingPlan(
+        model="bad-model",
+        workspace_path=tmp_path.resolve(),
+        scan_report_path=tmp_path / ".david" / "model_validation" / "model_config_report.json",
+        validation_report_path=tmp_path / ".david" / "model_validation" / "model_validation_report.json",
+        next_actions=(),
+    )
+
+    def fake_onboard(**_kwargs):
+        return ModelOnboardingResult(
+            plan=plan,
+            execute=True,
+            status="rejected",
+            summary="rejected: fail closed",
+            next_actions=("fix scanner evidence",),
+            errors=("model scan failed with returncode 7",),
+        )
+
+    monkeypatch.setattr(cli, "onboard_model", fake_onboard)
+
+    rc = cli.main(["model", "onboard", "bad-model", "--workspace", str(tmp_path), "--execute"])
+
+    assert rc == 2
+    output = capsys.readouterr().out
+    assert "status: rejected" in output
+    assert "model scan failed with returncode 7" in output
 
 
 def test_model_validate_failure_is_readable(monkeypatch, capsys):
