@@ -788,6 +788,120 @@ def test_doctor_reports_complete_wsl_hf_snapshot_for_hf_model_id(monkeypatch, tm
     assert calls[1][1]["timeout"] == 8.0
 
 
+def test_doctor_checks_wsl_absolute_model_path_as_local_path(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "path": "/home/jehma/models/gemma",
+                    "exists": True,
+                    "is_dir": True,
+                    "complete": True,
+                    "detail": "config, tokenizer, and weights present",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda item: "wsl.exe" if item == "wsl" else None)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "review", "CPU-only torch"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_python_packages_check",
+        lambda: doctor.DoctorCheck("WSL Python packages", "review", "disabled"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_auto_validate_check",
+        lambda **_kwargs: doctor.DoctorCheck("--auto-validate-model", "review", "disabled"),
+    )
+
+    report = doctor.run_doctor(model="/home/jehma/models/gemma", workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["model location"].status == "ready"
+    assert "WSL local HF-style model directory" in checks["model location"].detail
+    assert checks["HF snapshot"].status == "review"
+    assert "not applicable for WSL local model path" in checks["HF snapshot"].detail
+    assert checks["WSL HF snapshot"].status == "review"
+    assert "not applicable; model is not an HF id" in checks["WSL HF snapshot"].detail
+    assert calls[0][1]["timeout"] == 5.0
+
+
+def test_doctor_reports_missing_wsl_absolute_model_path_without_hf_cache_probe(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"path": "/mnt/c/models/missing-gemma", "exists": False}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda item: "wsl.exe" if item == "wsl" else None)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "review", "CPU-only torch"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_python_packages_check",
+        lambda: doctor.DoctorCheck("WSL Python packages", "review", "disabled"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_auto_validate_check",
+        lambda **_kwargs: doctor.DoctorCheck("--auto-validate-model", "review", "disabled"),
+    )
+
+    report = doctor.run_doctor(model="/mnt/c/models/missing-gemma", workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["model location"].status == "missing"
+    assert "WSL local model path does not exist" in checks["model location"].detail
+    assert "HF model id" not in checks["model location"].detail
+    assert checks["HF snapshot"].status == "review"
+    assert "not applicable for WSL local model path" in checks["HF snapshot"].detail
+    assert checks["WSL HF snapshot"].status == "review"
+    assert "not applicable; model is not an HF id" in checks["WSL HF snapshot"].detail
+    assert len(calls) == 1
+
+
+def test_unix_absolute_model_paths_are_not_hf_model_ids():
+    assert doctor._looks_like_hf_model_id("google/gemma-e2b") is True
+    assert doctor._looks_like_hf_model_id("/home/jehma/models/gemma") is False
+    assert doctor._looks_like_hf_model_id("/mnt/c/models/gemma") is False
+    assert doctor._looks_like_hf_model_id("/opt/models/gemma") is False
+
+
 def test_doctor_wsl_probe_timeout_degrades_to_review(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

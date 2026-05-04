@@ -488,6 +488,8 @@ def _model_location_check(model: str | None) -> DoctorCheck:
     model_path = Path(model).expanduser()
     if _looks_like_hf_model_id(model):
         return DoctorCheck("model location", "review", "HF model id; checking local cache only")
+    if _looks_like_unix_absolute_path(model) and not model_path.exists():
+        return _wsl_model_location_check(model)
     if not model_path.exists():
         return DoctorCheck("model location", "missing", "local model path does not exist")
     if not model_path.is_dir():
@@ -530,6 +532,8 @@ def _hf_snapshot_check(model: str | None) -> DoctorCheck:
         complete, detail = _local_model_completeness(model_path)
         status = "ready" if complete else "review"
         return DoctorCheck("HF snapshot", status, detail)
+    if _looks_like_unix_absolute_path(model):
+        return DoctorCheck("HF snapshot", "review", "not applicable for WSL local model path")
     if not _looks_like_hf_model_id(model):
         return DoctorCheck("HF snapshot", "missing", "model is neither an existing path nor an HF id")
 
@@ -913,8 +917,67 @@ def _local_model_completeness(model_path: Path) -> tuple[bool, str]:
     return True, "config, tokenizer, and weights present"
 
 
+def _wsl_model_location_check(model: str) -> DoctorCheck:
+    script = f"""
+import json
+from pathlib import Path
+
+model_path = Path({model!r}).expanduser()
+payload = {{"path": str(model_path), "exists": model_path.exists()}}
+if payload["exists"]:
+    payload["is_dir"] = model_path.is_dir()
+    if payload["is_dir"]:
+        has_config = (model_path / "config.json").is_file()
+        has_tokenizer = any(
+            (model_path / name).is_file()
+            for name in ("tokenizer.json", "tokenizer.model", "spiece.model", "tokenizer_config.json")
+        )
+        has_weights = any(model_path.glob(pattern) for pattern in ("*.safetensors", "*.bin", "*.gguf"))
+        missing = []
+        if not has_config:
+            missing.append("config.json")
+        if not has_tokenizer:
+            missing.append("tokenizer files")
+        if not has_weights:
+            missing.append("weight files")
+        payload["complete"] = not missing
+        payload["detail"] = (
+            "config, tokenizer, and weights present"
+            if not missing
+            else "missing " + ", ".join(missing)
+        )
+
+print(json.dumps(payload))
+"""
+    payload, error = _run_wsl_python_json(script, timeout_seconds=5.0)
+    if error is not None:
+        return DoctorCheck("model location", "review", f"WSL local model path; {error}")
+    if payload is None:
+        return DoctorCheck("model location", "review", "WSL local model path; wsl probe returned no data")
+
+    path = str(payload.get("path") or model)
+    if not payload.get("exists"):
+        return DoctorCheck("model location", "missing", f"WSL local model path does not exist: {path}")
+    if not payload.get("is_dir"):
+        return DoctorCheck("model location", "blocked", f"WSL local model path is not a directory: {path}")
+
+    detail = str(payload.get("detail") or "HF file completeness unavailable")
+    if payload.get("complete"):
+        return DoctorCheck("model location", "ready", f"WSL local HF-style model directory: {path}; {detail}")
+    return DoctorCheck("model location", "review", f"WSL local directory exists: {path}; {detail}")
+
+
+def _looks_like_unix_absolute_path(model: str) -> bool:
+    return model.startswith("/")
+
+
 def _looks_like_hf_model_id(model: str) -> bool:
-    return "/" in model and not any(sep in model for sep in ("\\", "./", "../")) and not Path(model).exists()
+    return (
+        "/" in model
+        and not _looks_like_unix_absolute_path(model)
+        and not any(sep in model for sep in ("\\", "./", "../"))
+        and not Path(model).exists()
+    )
 
 
 def _huggingface_cache_root() -> Path:
