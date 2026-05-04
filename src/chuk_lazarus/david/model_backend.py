@@ -1,0 +1,203 @@
+"""Model backend seam for David terminal-agent harnesses."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import importlib.util
+from typing import Any, Protocol, Sequence
+
+
+@dataclass(frozen=True)
+class ModelBackendStatus:
+    name: str
+    available: bool
+    loaded: bool = False
+    reason: str = "ready"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ModelBackendResult:
+    text: str
+    backend: str
+    ok: bool = True
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class ModelBackend(Protocol):
+    """Minimal generation contract used by the harness layer."""
+
+    name: str
+
+    def status(self) -> ModelBackendStatus:
+        ...
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 128,
+        stop: Sequence[str] | None = None,
+    ) -> ModelBackendResult:
+        ...
+
+
+class OfflineModelBackend:
+    """Deterministic backend for offline tests and startup plumbing."""
+
+    name = "offline-deterministic"
+
+    def __init__(self, *, prefix: str = "offline") -> None:
+        self.prefix = prefix
+
+    def status(self) -> ModelBackendStatus:
+        return ModelBackendStatus(
+            name=self.name,
+            available=True,
+            loaded=True,
+            metadata={"deterministic": True},
+        )
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 128,
+        stop: Sequence[str] | None = None,
+    ) -> ModelBackendResult:
+        words = prompt.split()
+        clipped = " ".join(words[: max(0, max_new_tokens)])
+        text = f"{self.prefix}: {clipped}".strip()
+        return ModelBackendResult(
+            text=_apply_stop(text, stop),
+            backend=self.name,
+            metadata={"prompt_tokens": len(words), "max_new_tokens": max_new_tokens},
+        )
+
+
+class TransformersCausalLMBackend:
+    """Optional local-only Hugging Face causal-LM backend.
+
+    The backend is deliberately lazy and fail-closed: importing this module never
+    imports torch/transformers, and the default loader passes local_files_only so
+    construction and tests cannot download model assets.
+    """
+
+    name = "transformers-causal-lm"
+
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        local_files_only: bool = True,
+        device: str | None = None,
+        torch_dtype: Any | None = None,
+    ) -> None:
+        self.model_id = model_id
+        self.local_files_only = local_files_only
+        self.device = device
+        self.torch_dtype = torch_dtype
+        self._tokenizer: Any | None = None
+        self._model: Any | None = None
+        self._load_error: str | None = None
+
+    def status(self) -> ModelBackendStatus:
+        missing = _missing_optional_packages("transformers", "torch")
+        if missing:
+            return ModelBackendStatus(
+                name=self.name,
+                available=False,
+                loaded=False,
+                reason=f"missing optional packages: {', '.join(missing)}",
+                metadata=self._metadata(),
+            )
+        return ModelBackendStatus(
+            name=self.name,
+            available=self._load_error is None,
+            loaded=self._model is not None and self._tokenizer is not None,
+            reason=self._load_error or "ready",
+            metadata=self._metadata(),
+        )
+
+    def load(self) -> ModelBackendStatus:
+        status = self.status()
+        if not status.available or status.loaded:
+            return status
+        try:
+            transformers = __import__("transformers", fromlist=["AutoModelForCausalLM", "AutoTokenizer"])
+            kwargs: dict[str, Any] = {"local_files_only": self.local_files_only}
+            if self.torch_dtype is not None:
+                kwargs["torch_dtype"] = self.torch_dtype
+            self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.model_id, local_files_only=self.local_files_only)
+            self._model = transformers.AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
+            if self.device:
+                self._model = self._model.to(self.device)
+            self._model.eval()
+            self._load_error = None
+        except Exception as exc:  # pragma: no cover - exercised without model assets by status/result
+            self._tokenizer = None
+            self._model = None
+            self._load_error = f"{type(exc).__name__}: {exc}"
+        return self.status()
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 128,
+        stop: Sequence[str] | None = None,
+    ) -> ModelBackendResult:
+        status = self.load()
+        if not status.available or not status.loaded:
+            return ModelBackendResult(
+                text="",
+                backend=self.name,
+                ok=False,
+                error=status.reason,
+                metadata=status.metadata,
+            )
+        try:
+            torch = __import__("torch")
+            inputs = self._tokenizer(prompt, return_tensors="pt")
+            if self.device:
+                inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            with torch.no_grad():
+                output_ids = self._model.generate(**inputs, max_new_tokens=max_new_tokens)
+            text = self._tokenizer.decode(output_ids[0], skip_special_tokens=True)
+            return ModelBackendResult(
+                text=_apply_stop(text, stop),
+                backend=self.name,
+                metadata=self._metadata(),
+            )
+        except Exception as exc:  # pragma: no cover - defensive fail-close path
+            return ModelBackendResult(
+                text="",
+                backend=self.name,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+                metadata=self._metadata(),
+            )
+
+    def _metadata(self) -> dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "local_files_only": self.local_files_only,
+            "device": self.device,
+        }
+
+
+def _missing_optional_packages(*names: str) -> list[str]:
+    return [name for name in names if importlib.util.find_spec(name) is None]
+
+
+def _apply_stop(text: str, stop: Sequence[str] | None) -> str:
+    if not stop:
+        return text
+    cut = len(text)
+    for marker in stop:
+        if marker:
+            index = text.find(marker)
+            if index >= 0:
+                cut = min(cut, index)
+    return text[:cut]
