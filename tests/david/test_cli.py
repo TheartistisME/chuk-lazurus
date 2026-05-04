@@ -62,6 +62,12 @@ def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path,
             "root-model",
             "--validation-report",
             str(report),
+            "--model-device",
+            "cuda:0",
+            "--model-dtype",
+            "bfloat16",
+            "--model-max-new-tokens",
+            "321",
             "--once",
             "/status",
             "--no-color",
@@ -74,6 +80,9 @@ def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path,
     assert FakeRuntime.created_with is not None
     assert FakeRuntime.created_with.model_path == "root-model"
     assert FakeRuntime.created_with.validation_report_path == str(report)
+    assert FakeRuntime.created_with.model_device == "cuda:0"
+    assert FakeRuntime.created_with.model_dtype == "bfloat16"
+    assert FakeRuntime.created_with.model_max_new_tokens == 321
     assert FakeRuntime.created_with.once == "/status"
     assert FakeRuntime.created_with.color is False
     assert "model validation: ready" in capsys.readouterr().out
@@ -97,6 +106,12 @@ def test_main_keeps_common_options_after_workspace(monkeypatch, tmp_path, capsys
             "9",
             "--no-color",
             "--auto-jit-index",
+            "--model-device",
+            "cpu",
+            "--model-dtype",
+            "float32",
+            "--model-max-new-tokens",
+            "42",
         ]
     )
 
@@ -107,6 +122,9 @@ def test_main_keeps_common_options_after_workspace(monkeypatch, tmp_path, capsys
     assert FakeRuntime.created_with.once == "/status"
     assert FakeRuntime.created_with.command_timeout_seconds == 9
     assert FakeRuntime.created_with.auto_jit_index is True
+    assert FakeRuntime.created_with.model_device == "cpu"
+    assert FakeRuntime.created_with.model_dtype == "float32"
+    assert FakeRuntime.created_with.model_max_new_tokens == 42
     assert "index: ready" in capsys.readouterr().out
 
 
@@ -280,6 +298,12 @@ def test_parser_keeps_code_subcommand_and_once_option():
             "/status",
             "--auto-jit-index",
             "--auto-validate-model",
+            "--model-device",
+            "cuda",
+            "--model-dtype",
+            "float16",
+            "--model-max-new-tokens",
+            "99",
         ]
     )
 
@@ -291,6 +315,9 @@ def test_parser_keeps_code_subcommand_and_once_option():
     assert args.once == "/status"
     assert args.auto_jit_index is True
     assert args.auto_validate_model is True
+    assert args.model_device == "cuda"
+    assert args.model_dtype == "float16"
+    assert args.model_max_new_tokens == 99
 
 
 def test_parser_adds_explicit_model_scan_command():

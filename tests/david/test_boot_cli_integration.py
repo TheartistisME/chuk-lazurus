@@ -44,6 +44,12 @@ def test_main_preserves_boot_config_fields_with_real_config(monkeypatch, tmp_pat
             "python -m pytest",
             "--timeout",
             "17",
+            "--model-device",
+            "cuda:0",
+            "--model-dtype",
+            "bfloat16",
+            "--model-max-new-tokens",
+            "88",
             "--no-color",
             "--auto-jit-index",
         ]
@@ -60,11 +66,44 @@ def test_main_preserves_boot_config_fields_with_real_config(monkeypatch, tmp_pat
     assert config.once == "inspect boot config"
     assert config.verify_command == "python -m pytest"
     assert config.command_timeout_seconds == 17
+    assert config.model_device == "cuda:0"
+    assert config.model_dtype == "bfloat16"
+    assert config.model_max_new_tokens == 88
     assert config.color is False
     assert config.auto_jit_index is True
 
     output = capsys.readouterr().out
     assert "fake response: inspect boot config" in output
+
+
+def test_main_preserves_model_runtime_env_defaults(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    monkeypatch.setenv("DAVID_MODEL_DEVICE", "cuda")
+    monkeypatch.setenv("DAVID_MODEL_DTYPE", "float16")
+    monkeypatch.setenv("DAVID_MODEL_MAX_NEW_TOKENS", "77")
+
+    report_path = tmp_path / "validation.json"
+    rc = cli.main(
+        [
+            "code",
+            str(tmp_path),
+            "--model",
+            "google/gemma-e2b",
+            "--validation-report",
+            str(report_path),
+            "--allow-unvalidated",
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 0
+    config = FakeRuntime.created_with
+    assert isinstance(config, cli.DavidConfig)
+    assert config.model_device == "cuda"
+    assert config.model_dtype == "float16"
+    assert config.model_max_new_tokens == 77
 
 
 def test_main_status_uses_real_runtime_with_validation_report(tmp_path, capsys):

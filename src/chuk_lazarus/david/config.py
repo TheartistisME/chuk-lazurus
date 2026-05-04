@@ -96,18 +96,28 @@ class DavidConfig:
         verify_command: str | None,
         command_timeout_seconds: int | None,
         auto_jit_index: bool = False,
+        model_device: str | None = None,
+        model_dtype: str | None = None,
+        model_max_new_tokens: int | None = None,
     ) -> "DavidConfig":
-        return cls(
-            workspace_root=workspace_path,
-            model_path=model_path,
-            validation_report_path=validation_report_path,
-            require_validated_model=require_validated_model,
-            color=color,
-            once=once,
-            verify_command=verify_command,
-            command_timeout_seconds=command_timeout_seconds,
-            auto_jit_index=auto_jit_index,
-        )
+        kwargs: dict[str, Any] = {
+            "workspace_root": workspace_path,
+            "model_path": model_path,
+            "validation_report_path": validation_report_path,
+            "require_validated_model": require_validated_model,
+            "color": color,
+            "once": once,
+            "verify_command": verify_command,
+            "command_timeout_seconds": command_timeout_seconds,
+            "auto_jit_index": auto_jit_index,
+        }
+        if model_device is not None:
+            kwargs["model_device"] = model_device
+        if model_dtype is not None:
+            kwargs["model_dtype"] = model_dtype
+        if model_max_new_tokens is not None:
+            kwargs["model_max_new_tokens"] = model_max_new_tokens
+        return cls(**kwargs)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "workspace_root", Path(self.workspace_root).resolve())
