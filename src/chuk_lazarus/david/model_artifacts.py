@@ -25,6 +25,8 @@ class VindexArtifactMetadata:
     total_bytes: int = 0
     missing_files: list[str] = field(default_factory=list)
     binary_weight_files: list[str] = field(default_factory=list)
+    manifest_declared_files: list[str] = field(default_factory=list)
+    missing_binary_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +42,8 @@ class VindexArtifactMetadata:
             "total_bytes": self.total_bytes,
             "missing_files": list(self.missing_files),
             "binary_weight_files": list(self.binary_weight_files),
+            "manifest_declared_files": list(self.manifest_declared_files),
+            "missing_binary_files": list(self.missing_binary_files),
         }
 
 
@@ -54,11 +58,13 @@ def inspect_vindex_artifact(path: str | Path) -> VindexArtifactMetadata:
     missing = [name for name, present in file_presence.items() if not present]
     index_data = _read_json_object(artifact_path / "index.json") if file_presence["index.json"] else {}
     manifest_data = _read_json_value(artifact_path / "weight_manifest.json") if file_presence["weight_manifest.json"] else []
-    binary_files = _binary_weight_files(artifact_path, manifest_data)
+    manifest_declared_files = _manifest_declared_files(manifest_data)
+    binary_files = _binary_weight_files(artifact_path, manifest_declared_files)
+    missing_binary_files = [name for name in manifest_declared_files if not (artifact_path / name).is_file()]
 
     for name in binary_files:
         file_presence.setdefault(name, (artifact_path / name).is_file())
-    missing.extend(name for name in binary_files if not (artifact_path / name).is_file())
+    missing.extend(missing_binary_files)
 
     total_bytes = 0
     for child in artifact_path.iterdir() if artifact_path.is_dir() else ():
@@ -78,6 +84,8 @@ def inspect_vindex_artifact(path: str | Path) -> VindexArtifactMetadata:
         total_bytes=total_bytes,
         missing_files=missing,
         binary_weight_files=binary_files,
+        manifest_declared_files=manifest_declared_files,
+        missing_binary_files=missing_binary_files,
     )
 
 
@@ -102,14 +110,23 @@ def _source_hf_path(index_data: dict[str, Any]) -> str | None:
     return _string_or_none(index_data.get("model"))
 
 
-def _binary_weight_files(artifact_path: Path, manifest_data: Any) -> list[str]:
+def _manifest_declared_files(manifest_data: Any) -> list[str]:
     files: set[str] = set()
-    if isinstance(manifest_data, list):
-        for item in manifest_data:
-            if isinstance(item, dict):
-                file_name = _string_or_none(item.get("file"))
-                if file_name:
-                    files.add(file_name)
+    pending = [manifest_data]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            file_name = _string_or_none(item.get("file"))
+            if file_name:
+                files.add(file_name)
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return sorted(files)
+
+
+def _binary_weight_files(artifact_path: Path, manifest_declared_files: list[str]) -> list[str]:
+    files: set[str] = set(manifest_declared_files)
     if artifact_path.is_dir():
         files.update(child.name for child in artifact_path.glob("*.bin") if child.is_file())
     return sorted(files)

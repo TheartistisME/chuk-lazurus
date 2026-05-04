@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -271,7 +272,7 @@ def test_doctor_distinguishes_local_hf_snapshot_vindex_and_missing_report(monkey
     (model / "config.json").write_text("{}", encoding="utf-8")
     (model / "tokenizer.json").write_text("{}", encoding="utf-8")
     (model / "model.safetensors").write_text("", encoding="utf-8")
-    (workspace / "gemma.vindex.ple").mkdir()
+    _write_vindex_artifact(workspace)
 
     monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
     monkeypatch.setattr(
@@ -291,6 +292,45 @@ def test_doctor_distinguishes_local_hf_snapshot_vindex_and_missing_report(monkey
     assert checks["model location"].status == "ready"
     assert checks["HF snapshot"].status == "ready"
     assert checks[".vindex.ple artifact"].status == "ready"
+    assert checks["validation report"].status == "missing"
+    assert report.ready is False
+
+
+def test_doctor_classifies_direct_vindex_artifact_without_hf_snapshot_noise(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = _write_vindex_artifact(tmp_path)
+
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "review", "CPU-only torch"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "review", "unavailable"),
+    )
+
+    report = doctor.run_doctor(model=str(artifact), workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["model location"].status == "review"
+    assert ".vindex.ple artifact path" in checks["model location"].detail
+    assert "direct generation unsupported" in checks["model location"].detail
+    assert "HF files are incomplete" not in checks["model location"].detail
+    assert "missing config.json" not in checks["model location"].detail
+    assert checks["HF snapshot"].status == "review"
+    assert "not applicable for direct .vindex.ple artifact path" in checks["HF snapshot"].detail
+    assert "missing config.json" not in checks["HF snapshot"].detail
+    assert checks[".vindex.ple artifact"].status == "ready"
+    assert "family=gemma4" in checks[".vindex.ple artifact"].detail
+    assert "layers=35" in checks[".vindex.ple artifact"].detail
+    assert "hidden_size=1536" in checks[".vindex.ple artifact"].detail
+    assert "manifest_files=1" in checks[".vindex.ple artifact"].detail
+    assert checks["--auto-validate-model"].status == "review"
+    assert "not applicable for direct .vindex.ple artifact path" in checks["--auto-validate-model"].detail
     assert checks["validation report"].status == "missing"
     assert report.ready is False
 
@@ -324,3 +364,28 @@ def test_doctor_reports_hf_cache_snapshot_completeness(monkeypatch, tmp_path):
     assert checks["model location"].status == "review"
     assert checks["HF snapshot"].status == "ready"
     assert str(snapshot) in checks["HF snapshot"].detail
+
+
+def _write_vindex_artifact(parent: Path) -> Path:
+    artifact = parent / "gemma.vindex.ple"
+    artifact.mkdir()
+    (artifact / "index.json").write_text(
+        json.dumps(
+            {
+                "family": "gemma4",
+                "source": {"huggingface_repo": "google/gemma-4-E2B-it"},
+                "hidden_size": 1536,
+                "num_layers": 35,
+                "vocab_size": 262144,
+                "dtype": "f32",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (artifact / "weight_manifest.json").write_text(
+        json.dumps([{"key": "layers.0.self_attn.q_proj.weight", "file": "attn_weights.bin"}]),
+        encoding="utf-8",
+    )
+    (artifact / "attn_weights.bin").write_bytes(b"weights")
+    return artifact

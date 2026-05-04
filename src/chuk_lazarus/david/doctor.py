@@ -8,6 +8,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from .model_artifacts import VindexArtifactMetadata, inspect_vindex_artifact, is_vindex_artifact_path
 from .model_validation import (
     GET_MODEL_CONFIG_RELATIVE_PATH,
     VALIDATE_MODEL_CONFIG_RELATIVE_PATH,
@@ -128,6 +129,21 @@ def _model_location_check(model: str | None) -> DoctorCheck:
         return DoctorCheck("model location", "missing", "local model path does not exist")
     if not model_path.is_dir():
         return DoctorCheck("model location", "blocked", "local model path is not a directory")
+    if is_vindex_artifact_path(model_path):
+        metadata = inspect_vindex_artifact(model_path)
+        if metadata.available:
+            return DoctorCheck(
+                "model location",
+                "review",
+                ".vindex.ple artifact path; supports evidence/materialization only; "
+                f"direct generation unsupported; {_format_vindex_artifact_detail(metadata)}",
+            )
+        return DoctorCheck(
+            "model location",
+            "blocked",
+            ".vindex.ple artifact path is incomplete; "
+            f"{_format_vindex_artifact_detail(metadata)}; direct generation unsupported",
+        )
     complete, detail = _local_model_completeness(model_path)
     if complete:
         return DoctorCheck("model location", "ready", f"local HF-style model directory; {detail}")
@@ -139,6 +155,15 @@ def _hf_snapshot_check(model: str | None) -> DoctorCheck:
         return DoctorCheck("HF snapshot", "missing", "--model was not provided")
     model_path = Path(model).expanduser()
     if model_path.exists():
+        if is_vindex_artifact_path(model_path):
+            metadata = inspect_vindex_artifact(model_path)
+            source = f"; source={metadata.source_hf_path}" if metadata.source_hf_path else ""
+            return DoctorCheck(
+                "HF snapshot",
+                "review",
+                "not applicable for direct .vindex.ple artifact path"
+                f"{source}; use a local HF checkpoint for direct generation",
+            )
         complete, detail = _local_model_completeness(model_path)
         status = "ready" if complete else "review"
         return DoctorCheck("HF snapshot", status, detail)
@@ -176,15 +201,20 @@ def _vindex_check(workspace_root: Path, model: str | None) -> DoctorCheck:
     if model:
         model_path = Path(model).expanduser()
         if model_path.exists():
+            if is_vindex_artifact_path(model_path):
+                candidates.append(model_path)
             candidates.extend(model_path.parent.glob("*.vindex.ple"))
             adjacent = model_path.with_suffix(model_path.suffix + ".vindex.ple")
             if adjacent.exists():
                 candidates.append(adjacent)
     unique = tuple(dict.fromkeys(path.resolve() for path in candidates if path.exists()))
     if unique:
-        names = ", ".join(str(path) for path in unique[:3])
+        metadata = [inspect_vindex_artifact(path) for path in unique[:3]]
+        names = ", ".join(_format_vindex_artifact_detail(item) for item in metadata)
         suffix = "" if len(unique) <= 3 else f" (+{len(unique) - 3} more)"
-        return DoctorCheck(".vindex.ple artifact", "ready", f"{names}{suffix}")
+        if any(item.available for item in metadata):
+            return DoctorCheck(".vindex.ple artifact", "ready", f"{names}{suffix}")
+        return DoctorCheck(".vindex.ple artifact", "blocked", f"{names}{suffix}")
     return DoctorCheck(".vindex.ple artifact", "missing", "no model vector index artifact found nearby")
 
 
@@ -248,6 +278,14 @@ def _auto_validate_check(
         return DoctorCheck("--auto-validate-model", "blocked", "; ".join(blockers))
     if discovery.path is not None:
         return DoctorCheck("--auto-validate-model", "ready", "not needed; validation report already discovered")
+    if model and is_vindex_artifact_path(Path(model).expanduser()):
+        status = "blocked" if auto_validate_model else "review"
+        return DoctorCheck(
+            "--auto-validate-model",
+            status,
+            "not applicable for direct .vindex.ple artifact path; "
+            "run model scan/validate against the source HF checkpoint",
+        )
     prefix = "requested; " if auto_validate_model else "available; "
     return DoctorCheck(
         "--auto-validate-model",
@@ -264,6 +302,19 @@ def _wsl_tooling_check() -> DoctorCheck:
     if tinydex.exists():
         return DoctorCheck("WSL/tooling", "ready", f"wsl.exe found; tinydex found at {tinydex}")
     return DoctorCheck("WSL/tooling", "review", "wsl.exe found; tinydex path not found")
+
+
+def _format_vindex_artifact_detail(metadata: VindexArtifactMetadata) -> str:
+    missing = ", ".join(metadata.missing_files) if metadata.missing_files else "none"
+    missing_binary = ", ".join(metadata.missing_binary_files) if metadata.missing_binary_files else "none"
+    source = metadata.source_hf_path or "unknown"
+    return (
+        f"{metadata.path}; available={metadata.available}; family={metadata.family or 'unknown'}; "
+        f"layers={metadata.layers or 'unknown'}; hidden_size={metadata.hidden_size or 'unknown'}; "
+        f"total_bytes={metadata.total_bytes}; source={source}; "
+        f"manifest_files={len(metadata.manifest_declared_files)}; "
+        f"missing={missing}; missing_binary={missing_binary}"
+    )
 
 
 def _local_model_completeness(model_path: Path) -> tuple[bool, str]:
