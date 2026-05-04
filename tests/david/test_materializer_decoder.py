@@ -4,6 +4,8 @@ from pathlib import Path
 
 from chuk_lazarus.david import DavidConfig, DavidRuntime
 from chuk_lazarus.david.config import AdapterSessionMetadata
+from chuk_lazarus.david.materializer import Materializer
+from chuk_lazarus.david.routing import RoutePacket
 
 
 def test_materializer_compatibility_comes_from_adapter_metadata(tmp_path: Path) -> None:
@@ -36,3 +38,79 @@ def test_decoder_constraints_for_temporal_recall(tmp_path: Path) -> None:
     assert result.decoder.constraints["ordinal"] == "exact_occurrence_required"
     assert result.decoder.prior_scope["model_id"] == "offline-deterministic"
 
+
+def test_materializer_refuses_kv_when_adapter_layers_are_missing() -> None:
+    route = RoutePacket(
+        method="repo_patch",
+        selected_windows=["hot span"],
+        memory_family="task",
+        session_id="s1",
+        tier="hot",
+        route_reason="test",
+        evidence=[],
+        token_cost=2,
+        kv_ready=True,
+    )
+
+    materialized = Materializer().materialize(route, AdapterSessionMetadata())
+
+    assert materialized.refused is True
+    assert materialized.strategy == "refuse"
+    assert "kv_source_layer" in materialized.reason
+    assert "kv_target_layer" in materialized.reason
+    assert materialized.compatibility["materialization_safe"] is False
+
+
+def test_materializer_refuses_cross_model_scope_mixing() -> None:
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        adapter_family="family-a",
+        kv_source_layer=4,
+        kv_target_layer=5,
+        insertion_family="kv_direct",
+    )
+    route = RoutePacket(
+        method="repo_patch",
+        selected_windows=["hot span"],
+        memory_family="task",
+        session_id="s1",
+        tier="hot",
+        route_reason="test",
+        evidence=[],
+        token_cost=2,
+        kv_ready=True,
+        provenance={"materialization_scope": {"model_id": "model-b", "tokenizer_id": "tokenizer-a"}},
+    )
+
+    materialized = Materializer().materialize(route, adapter)
+
+    assert materialized.refused is True
+    assert "model_id mismatch" in materialized.reason
+
+
+def test_materializer_selects_boundary_residual_when_safe() -> None:
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        adapter_family="family-a",
+        boundary_layer=7,
+    )
+    route = RoutePacket(
+        method="source_dependency",
+        selected_windows=["source span"],
+        memory_family="task",
+        session_id="s1",
+        tier="hot",
+        route_reason="test",
+        evidence=[],
+        token_cost=2,
+        residual_available=True,
+        provenance={"materialization_scope": {"model_id": "model-a", "tokenizer_id": "tokenizer-a"}},
+    )
+
+    materialized = Materializer().materialize(route, adapter)
+
+    assert materialized.refused is False
+    assert materialized.strategy == "boundary_residual"
+    assert materialized.text_context == "source span"
