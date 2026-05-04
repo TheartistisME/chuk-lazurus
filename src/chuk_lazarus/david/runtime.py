@@ -662,27 +662,160 @@ class RuntimeAgentLoopResult:
     loop: AgentLoopResult
     writeback: dict[str, Any] | None = None
     resume_snapshot: dict[str, Any] | None = None
+    repair_summary: dict[str, Any] | None = None
 
     @property
     def answer(self) -> str:
+        summary = self._repair_summary()
+        verification = summary["verification"]["outcome"]
         return (
             f"agent_loop status={self.loop.status}; steps={self.loop.steps}; "
-            f"verified={self.loop.verified}; reason={self.loop.reason}"
+            f"verified={self.loop.verified}; failures={summary['failure_count']}; "
+            f"repairs={summary['repair_attempt_count']}; retries={summary['retry_count']}; "
+            f"verification={verification}; reason={self.loop.reason}"
         )
 
     @property
     def ok(self) -> bool:
         return self.loop.ok
 
+    def _repair_summary(self) -> dict[str, Any]:
+        return self.repair_summary or _agent_loop_repair_summary(self.loop)
+
     def to_json(self) -> dict[str, Any]:
         data = {
             "prompt": self.prompt,
             "answer": self.answer,
             "loop": self.loop.to_dict(),
+            "repair_summary": self._repair_summary(),
             "writeback": self.writeback,
             "resume_snapshot": self.resume_snapshot,
         }
         return data
+
+
+def _agent_loop_repair_summary(loop: AgentLoopResult) -> dict[str, Any]:
+    """Summarize repair/retry signals from current and future loop trace metadata."""
+
+    loop_json = loop.to_dict()
+    trace = [step.to_dict() for step in loop.trace]
+    failed_steps = [_agent_loop_step_failure(step) for step in trace if not bool(step.get("ok"))]
+    first_failed_step = failed_steps[0]["step"] if failed_steps else None
+    repair_steps = [
+        _agent_loop_step_reference(step)
+        for step in trace
+        if (
+            first_failed_step is not None
+            and int(step.get("step") or 0) > first_failed_step
+            and bool(step.get("ok"))
+            and step.get("action") not in {"verify", "done", "no_action"}
+        )
+    ]
+    verification_step = next((step for step in reversed(trace) if step.get("action") == "verify"), None)
+    verification_passed = bool(
+        verification_step.get("observation", {}).get("passed")
+        if isinstance(verification_step, dict)
+        else loop.verified
+    )
+    if verification_step is None:
+        verification_outcome = "not_run"
+    elif verification_passed:
+        verification_outcome = "passed"
+    else:
+        verification_outcome = "failed"
+
+    explicit_repair_count = _first_nested_count(
+        {key: value for key, value in loop_json.items() if key != "trace"},
+        {
+            "repair_attempt_count",
+            "repair_attempts",
+            "repair_count",
+            "repairs",
+            "recovery_attempt_count",
+            "recovery_attempts",
+        },
+    )
+    explicit_retry_count = _first_nested_count(
+        {key: value for key, value in loop_json.items() if key != "trace"},
+        {"retry_count", "retries", "retry_attempt_count", "retry_attempts"},
+    )
+    recovered = bool(failed_steps and loop.ok)
+    if recovered:
+        recovery_outcome = "verified_after_failure"
+    elif failed_steps:
+        recovery_outcome = "unrecovered_failure"
+    else:
+        recovery_outcome = "no_failure"
+    return {
+        "schema": "david.agent_loop.repair_summary.v1",
+        "source": "agent_loop.trace",
+        "status": loop.status,
+        "reason": loop.reason,
+        "trace_step_count": len(trace),
+        "failure_count": len(failed_steps),
+        "failed_step_count": len(failed_steps),
+        "failed_steps": failed_steps,
+        "repair_attempt_count": explicit_repair_count if explicit_repair_count is not None else len(repair_steps),
+        "repair_steps": repair_steps,
+        "retry_count": explicit_retry_count if explicit_retry_count is not None else 0,
+        "recovered": recovered,
+        "recovery_outcome": recovery_outcome,
+        "verification": {
+            "status": loop.status,
+            "verified": loop.verified,
+            "outcome": verification_outcome,
+            "passed": verification_passed,
+            "step": verification_step.get("step") if isinstance(verification_step, dict) else None,
+            "reason": loop.reason,
+        },
+    }
+
+
+def _agent_loop_step_reference(step: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step": step.get("step"),
+        "action": step.get("action"),
+        "ok": bool(step.get("ok")),
+    }
+
+
+def _agent_loop_step_failure(step: dict[str, Any]) -> dict[str, Any]:
+    observation = step.get("observation")
+    observation = observation if isinstance(observation, dict) else {}
+    failure = _agent_loop_step_reference(step)
+    error = observation.get("error") or observation.get("stderr") or observation.get("reason")
+    if error:
+        failure["error"] = str(error)
+    if "returncode" in observation:
+        failure["returncode"] = observation["returncode"]
+    requested_action = observation.get("requested_action")
+    if requested_action:
+        failure["requested_action"] = requested_action
+    return failure
+
+
+def _first_nested_count(value: Any, names: set[str]) -> int | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in names:
+                count = _nonnegative_int(item)
+                if count is not None:
+                    return count
+        for item in value.values():
+            count = _first_nested_count(item, names)
+            if count is not None:
+                return count
+    return None
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 class DavidRuntime:
@@ -889,30 +1022,49 @@ class DavidRuntime:
                 objective=original_prompt,
                 mode="explicit",
             )
+        repair_summary = _agent_loop_repair_summary(loop)
         writeback: dict[str, Any] | None = None
         if persist:
             artifact = self.memory.writeback(
                 method="agent_loop",
                 user_id=self.config.user_id,
                 session_id=self.config.session_id,
-                text=f"Agent loop: {original_prompt}\nStatus: {loop.status}\nReason: {loop.reason}",
+                text=(
+                    f"Agent loop: {original_prompt}\n"
+                    f"Status: {loop.status}\n"
+                    f"Reason: {loop.reason}\n"
+                    "Repair summary: "
+                    f"failures={repair_summary['failure_count']} "
+                    f"repairs={repair_summary['repair_attempt_count']} "
+                    f"retries={repair_summary['retry_count']} "
+                    f"verification={repair_summary['verification']['outcome']}"
+                ),
                 metadata={
                     "provenance": "david.runtime.run_agent_loop",
                     "adapter": self.adapter.scope(),
                     "adapter_scope": self.adapter.scope(),
                     "loop": loop.to_dict(),
+                    "repair_summary": repair_summary,
+                    "failure_recovery": repair_summary,
+                    "verification_outcome": repair_summary["verification"],
                     "harness_session_id": getattr(self.harness_session, "session_id", None),
                     "live_index_refresh": self._latest_live_index_refresh_json(),
                 },
             )
             writeback = artifact.to_json()
-        result = RuntimeAgentLoopResult(prompt=original_prompt, loop=loop, writeback=writeback)
+        result = RuntimeAgentLoopResult(
+            prompt=original_prompt,
+            loop=loop,
+            writeback=writeback,
+            repair_summary=repair_summary,
+        )
         snapshot = self._save_resume_snapshot(result)
         return RuntimeAgentLoopResult(
             prompt=original_prompt,
             loop=loop,
             writeback=writeback,
             resume_snapshot=snapshot.to_json(),
+            repair_summary=repair_summary,
         )
 
     def agent_loop(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import sys
 from pathlib import Path
 
 from chuk_lazarus.david import runtime as runtime_module
@@ -943,6 +944,92 @@ def test_runtime_agent_loop_model_driven_read_patch_verify_observes_prior_steps(
     assert "strict_search_replace" in prompts[2]
     assert "src/calculator.py" in prompts[2]
     assert source.read_text(encoding="utf-8") == "def answer():\n    return 'fixed'\n"
+
+
+def test_runtime_agent_loop_persists_repair_summary_for_model_driven_recovery(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    prompts: list[str] = []
+
+    class RepairBackend:
+        name = "repair-sequence"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del kwargs
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return ModelBackendResult(
+                    text=json.dumps(
+                        {
+                            "action": "run",
+                            "command": [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "from pathlib import Path; "
+                                    "raise SystemExit(0 if Path('src/repaired.py').exists() else 1)"
+                                ),
+                            ],
+                            "reason": "initial check should fail until repair writes the file",
+                        }
+                    ),
+                    backend=self.name,
+                    metadata={"step": 1},
+                )
+            if len(prompts) == 2:
+                assert '"action": "run"' in prompt
+                assert '"returncode": 1' in prompt
+                return ModelBackendResult(
+                    text=json.dumps(
+                        {
+                            "action": "write",
+                            "path": "src/repaired.py",
+                            "content": "VALUE = 'repaired'\n",
+                            "reason": "repair the missing file",
+                        }
+                    ),
+                    backend=self.name,
+                    metadata={"step": 2},
+                )
+            assert '"action": "write"' in prompt
+            assert "src/repaired.py" in prompt
+            return ModelBackendResult(
+                text=json.dumps({"action": "verify", "passed": True, "reason": "repair verified"}),
+                backend=self.name,
+                metadata={"step": 3},
+            )
+
+    runtime.backend = RepairBackend()
+
+    result = runtime.run_agent_loop("Repair the missing generated file", max_steps=4)
+
+    assert result.loop.status == "verified"
+    assert [step.action for step in result.loop.trace] == ["run", "write", "verify"]
+    assert [step.ok for step in result.loop.trace] == [False, True, True]
+    assert (tmp_path / "src" / "repaired.py").read_text(encoding="utf-8") == "VALUE = 'repaired'\n"
+    summary = result.repair_summary
+    assert summary is not None
+    assert summary["failure_count"] == 1
+    assert summary["failed_steps"][0]["action"] == "run"
+    assert summary["failed_steps"][0]["returncode"] == 1
+    assert summary["repair_attempt_count"] == 1
+    assert summary["repair_steps"] == [{"step": 2, "action": "write", "ok": True}]
+    assert summary["retry_count"] == 0
+    assert summary["recovered"] is True
+    assert summary["recovery_outcome"] == "verified_after_failure"
+    assert summary["verification"]["outcome"] == "passed"
+    assert result.to_json()["repair_summary"] == summary
+    assert result.writeback is not None
+    assert result.writeback["metadata"]["repair_summary"] == summary
+    assert result.writeback["metadata"]["failure_recovery"] == summary
+    assert result.writeback["metadata"]["verification_outcome"]["outcome"] == "passed"
+    assert result.resume_snapshot is not None
+    resume_summary = result.resume_snapshot["last_result_summary"]
+    assert "failures=1" in resume_summary
+    assert "repairs=1" in resume_summary
+    assert "verification=passed" in resume_summary
 
 
 def test_runtime_agent_loop_action_prompt_includes_bounded_workspace_context(tmp_path: Path) -> None:
