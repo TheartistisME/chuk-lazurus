@@ -100,6 +100,61 @@ def test_agent_loop_plain_english_writes_file_without_model_json(tmp_path: Path,
     assert (repo / ".david" / "memory" / "task-default.jsonl").exists()
 
 
+def test_agent_loop_codex_patch_failure_prints_patch_diagnostics(tmp_path: Path, capsys) -> None:
+    repo = _tiny_repo(tmp_path)
+    payload = json.dumps(
+        [
+            {
+                "action": "patch",
+                "content": """*** Begin Patch
+*** Update File: src/session.py
+@@
+-def session_cleanup(user_id):
++def session_cleanup(user_id):
+*** End Patch
+""",
+            }
+        ]
+    )
+
+    rc = david_main(["code", str(repo), "--once", f"/agent {payload}", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "agent loop: refused steps=1 verified=False" in output
+    assert "- 1: patch ok=False mode=unified_diff" in output
+    assert "failures=unified diff contains no file hunks" in output
+
+
+def test_agent_loop_protected_patch_failure_prints_patch_diagnostics(tmp_path: Path, capsys) -> None:
+    repo = _tiny_repo(tmp_path)
+    protected_path = "scripts/run_swebench_pro_parity.py"
+    payload = json.dumps(
+        [
+            {
+                "action": "patch",
+                "content": f"""{protected_path}
+<<<< SEARCH
+# protected SWE proof rig
+==== REPLACE
+# changed
+>>>>
+""",
+            }
+        ]
+    )
+
+    rc = david_main(["code", str(repo), "--once", f"/agent {payload}", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "agent loop: refused steps=1 verified=False" in output
+    assert "- 1: patch ok=False mode=strict_search_replace" in output
+    assert f"protected={protected_path}" in output
+    assert f"failures=block 1: protected proof-rig path: {protected_path}" in output
+    assert (repo / protected_path).read_text(encoding="utf-8") == "# protected SWE proof rig\n"
+
+
 def test_plain_terminal_safe_write_prompt_runs_agent_loop(tmp_path: Path, capsys) -> None:
     repo = _tiny_repo(tmp_path)
 

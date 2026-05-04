@@ -170,6 +170,9 @@ class DavidTui:
     def _agent_loop_observation_summary(self, observation: Any) -> str:
         if not isinstance(observation, dict):
             return ""
+        patch_detail = self._agent_loop_patch_observation_summary(observation)
+        if patch_detail:
+            return patch_detail
         if "path" in observation:
             if "bytes" in observation:
                 return f"path={observation['path']} bytes={observation['bytes']}"
@@ -183,6 +186,61 @@ class DavidTui:
         if "reason" in observation:
             return f"reason={observation['reason']}"
         return ""
+
+    def _agent_loop_patch_observation_summary(self, observation: dict[str, Any]) -> str:
+        if "mode" not in observation or (
+            "failures" not in observation
+            and "protected_paths" not in observation
+            and "details" not in observation
+        ):
+            return ""
+        failures = self._as_string_list(observation.get("failures"))
+        protected_paths = self._as_string_list(observation.get("protected_paths"))
+        details = observation.get("details")
+        if not failures and not protected_paths and not details:
+            return ""
+
+        parts = [f"mode={observation.get('mode', 'unknown')}"]
+        if protected_paths:
+            parts.append(f"protected={self._join_limited(protected_paths)}")
+        if failures:
+            parts.append(f"failures={self._join_limited(failures)}")
+        if isinstance(details, dict) and details:
+            parts.append(f"details={self._compact_mapping(details)}")
+        elif details:
+            parts.append(f"details={self._compact_value(details)}")
+        return " ".join(parts)
+
+    def _as_string_list(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple, set)):
+            return [str(item) for item in value if str(item)]
+        return [str(value)]
+
+    def _join_limited(self, values: list[str], *, limit: int = 2, max_chars: int = 160) -> str:
+        clipped = [self._compact_value(value, max_chars=max_chars) for value in values[:limit]]
+        if len(values) > limit:
+            clipped.append(f"+{len(values) - limit} more")
+        return "; ".join(clipped)
+
+    def _compact_mapping(self, value: dict[Any, Any], *, limit: int = 3, max_chars: int = 160) -> str:
+        items = list(value.items())
+        parts = [
+            f"{self._compact_value(key, max_chars=40)}={self._compact_value(item, max_chars=max_chars)}"
+            for key, item in items[:limit]
+        ]
+        if len(items) > limit:
+            parts.append(f"+{len(items) - limit} more")
+        return ", ".join(parts)
+
+    def _compact_value(self, value: Any, *, max_chars: int = 160) -> str:
+        text = " ".join(str(value).split())
+        if len(text) <= max_chars:
+            return text
+        return f"{text[: max_chars - 3].rstrip()}..."
 
     def format_readiness(self) -> str:
         readiness = self._readiness()
