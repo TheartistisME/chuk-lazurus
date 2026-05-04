@@ -59,6 +59,25 @@ def test_index_jit_command_builds_tiny_repo_index_via_cli_main(tmp_path: Path, c
     assert (repo / ".david" / "indexes").exists()
 
 
+def test_agent_loop_command_writes_file_via_cli_main(tmp_path: Path, capsys) -> None:
+    repo = _tiny_repo(tmp_path)
+    payload = json.dumps(
+        [
+            {"action": "write", "path": "src/agent_loop_note.txt", "content": "loop wrote this\n"},
+            {"action": "verify", "passed": True, "reason": "smoke pass"},
+        ]
+    )
+
+    rc = david_main(["code", str(repo), "--once", f"/agent {payload}", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "agent loop: verified steps=2 verified=True" in output
+    assert "path=src/agent_loop_note.txt bytes=16" in output
+    assert (repo / "src" / "agent_loop_note.txt").read_text(encoding="utf-8") == "loop wrote this\n"
+    assert (repo / ".david" / "memory" / "task-default.jsonl").exists()
+
+
 def test_repo_patch_prompt_routes_to_patch_target_and_selected_file(tmp_path: Path) -> None:
     repo = _tiny_repo(tmp_path)
     runtime = _runtime(repo)

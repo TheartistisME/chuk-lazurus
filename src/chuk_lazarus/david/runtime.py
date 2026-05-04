@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import subprocess
 from typing import Any, Sequence
 
+from .agent_loop import ActionPayload, AgentLoopResult, run_agent_loop as run_agent_loop_core
 from .config import AdapterSessionMetadata, DavidConfig
 from .decoder import DecoderController, DecoderPlan
 from .decoder_prior_store import DecoderPriorProductStore, DecoderPriorScope
@@ -102,6 +104,33 @@ class RuntimeResult:
             data["resume_snapshot"] = self.resume_snapshot
         if self.harness_session is not None:
             data["harness_session"] = self.harness_session
+        return data
+
+
+@dataclass(frozen=True)
+class RuntimeAgentLoopResult:
+    prompt: str
+    loop: AgentLoopResult
+    writeback: dict[str, Any] | None = None
+
+    @property
+    def answer(self) -> str:
+        return (
+            f"agent_loop status={self.loop.status}; steps={self.loop.steps}; "
+            f"verified={self.loop.verified}; reason={self.loop.reason}"
+        )
+
+    @property
+    def ok(self) -> bool:
+        return self.loop.ok
+
+    def to_json(self) -> dict[str, Any]:
+        data = {
+            "prompt": self.prompt,
+            "answer": self.answer,
+            "loop": self.loop.to_dict(),
+            "writeback": self.writeback,
+        }
         return data
 
 
@@ -243,6 +272,44 @@ class DavidRuntime:
             }
         )
 
+    def run_agent_loop(
+        self,
+        prompt: str | Sequence[ActionPayload],
+        *,
+        max_steps: int = 8,
+        persist: bool = True,
+    ) -> RuntimeAgentLoopResult:
+        requests = self._agent_loop_requests(prompt)
+        loop = run_agent_loop_core(requests, self.tools, max_steps=max_steps)
+        original_prompt = prompt if isinstance(prompt, str) else repr(list(prompt))
+        writeback: dict[str, Any] | None = None
+        if persist:
+            artifact = self.memory.writeback(
+                method="agent_loop",
+                user_id=self.config.user_id,
+                session_id=self.config.session_id,
+                text=f"Agent loop: {original_prompt}\nStatus: {loop.status}\nReason: {loop.reason}",
+                metadata={
+                    "provenance": "david.runtime.run_agent_loop",
+                    "adapter": self.adapter.scope(),
+                    "adapter_scope": self.adapter.scope(),
+                    "loop": loop.to_dict(),
+                    "harness_session_id": getattr(self.harness_session, "session_id", None),
+                    "live_index_refresh": self._latest_live_index_refresh_json(),
+                },
+            )
+            writeback = artifact.to_json()
+        return RuntimeAgentLoopResult(prompt=original_prompt, loop=loop, writeback=writeback)
+
+    def agent_loop(
+        self,
+        prompt: str | Sequence[ActionPayload],
+        *,
+        max_steps: int = 8,
+        persist: bool = True,
+    ) -> RuntimeAgentLoopResult:
+        return self.run_agent_loop(prompt, max_steps=max_steps, persist=persist)
+
     def readiness(self) -> dict[str, str]:
         index = self.index.check()
         backend = self.backend.status()
@@ -332,6 +399,22 @@ class DavidRuntime:
             return "write: expected /write <path> <content>"
         written = self.tools.write(path, content)
         return f"wrote {written.relative_to(self.config.workspace_root)}"
+
+    def _agent_loop_requests(self, prompt: str | Sequence[ActionPayload]) -> Sequence[ActionPayload]:
+        if isinstance(prompt, str):
+            stripped = prompt.strip()
+            if not stripped:
+                return []
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                return [prompt]
+            if isinstance(parsed, list):
+                return parsed
+            if isinstance(parsed, dict):
+                return [parsed]
+            return [prompt]
+        return prompt
 
     def _recall(
         self,

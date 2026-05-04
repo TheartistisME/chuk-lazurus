@@ -18,6 +18,7 @@ HELP_TEXT = """David commands:
   /index [jit|build]       Show or refresh the workspace index
   /verify [cmd]            Run the verifier or a workspace command as the gate
   /shell, /run <cmd>       Run a local shell command in the workspace
+  /agent, /loop <action>   Run a deterministic agent tool/action loop
   /read <path>             Read a workspace-local file
   /write <path> <text>     Write a workspace-local file
   /patch, /apply <patch>   Apply strict search/replace or unified diff text
@@ -100,6 +101,10 @@ class DavidTui:
             if not arg:
                 return CommandResult("shell: missing command")
             return CommandResult(self._runtime_call(("run_shell", "run"), arg))
+        if command in {"/agent", "/loop"}:
+            if not arg:
+                return CommandResult("agent: missing action payload")
+            return CommandResult(self._agent_loop_command(arg))
         if command == "/read":
             if not arg:
                 return CommandResult("read: missing path")
@@ -114,6 +119,64 @@ class DavidTui:
             patch_text = arg.replace("\\n", "\n")
             return CommandResult(self._runtime_call(("apply_patch",), patch_text))
         return CommandResult(f"unknown command: {command}\n{HELP_TEXT}")
+
+    def _agent_loop_command(self, arg: str) -> str:
+        for name in ("run_agent_loop", "agent_loop"):
+            method = getattr(self.runtime, name, None)
+            if callable(method):
+                return self._format_agent_loop_result(method(arg))
+        return "agent: runtime loop hook unavailable"
+
+    def _format_agent_loop_result(self, value: Any) -> str:
+        loop = getattr(value, "loop", None)
+        if loop is None and isinstance(value, dict):
+            loop = value.get("loop")
+        if loop is None:
+            return self._stringify_runtime_value(value)
+
+        if isinstance(loop, dict):
+            status = str(loop.get("status", "unknown"))
+            steps = loop.get("steps", "?")
+            verified = loop.get("verified", False)
+            reason = str(loop.get("reason", ""))
+            trace = loop.get("trace") or []
+        else:
+            status = str(getattr(loop, "status", "unknown"))
+            steps = getattr(loop, "steps", "?")
+            verified = getattr(loop, "verified", False)
+            reason = str(getattr(loop, "reason", ""))
+            trace = [step.to_dict() for step in getattr(loop, "trace", ())]
+
+        lines = [f"agent loop: {status} steps={steps} verified={verified}"]
+        if reason:
+            lines.append(f"reason: {reason}")
+        for item in trace:
+            if not isinstance(item, dict):
+                continue
+            action = item.get("action", "unknown")
+            ok = item.get("ok", False)
+            observation = item.get("observation") or {}
+            detail = self._agent_loop_observation_summary(observation)
+            suffix = f" {detail}" if detail else ""
+            lines.append(f"- {item.get('step', '?')}: {action} ok={ok}{suffix}")
+        return "\n".join(lines)
+
+    def _agent_loop_observation_summary(self, observation: Any) -> str:
+        if not isinstance(observation, dict):
+            return ""
+        if "path" in observation:
+            if "bytes" in observation:
+                return f"path={observation['path']} bytes={observation['bytes']}"
+            return f"path={observation['path']}"
+        if "returncode" in observation:
+            return f"rc={observation['returncode']}"
+        if "passed" in observation:
+            return f"passed={observation['passed']}"
+        if "error" in observation:
+            return f"error={observation['error']}"
+        if "reason" in observation:
+            return f"reason={observation['reason']}"
+        return ""
 
     def format_readiness(self) -> str:
         readiness = self._readiness()

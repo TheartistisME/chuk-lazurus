@@ -58,6 +58,30 @@ class FakeRuntime:
     def apply_patch(self, patch_text: str) -> str:
         return f"applied {patch_text}"
 
+    def run_agent_loop(self, prompt: str) -> dict[str, object]:
+        return {
+            "loop": {
+                "status": "verified",
+                "steps": 2,
+                "verified": True,
+                "reason": "verify passed",
+                "trace": [
+                    {
+                        "step": 1,
+                        "action": "write",
+                        "ok": True,
+                        "observation": {"path": "src/app.py", "bytes": 4},
+                    },
+                    {
+                        "step": 2,
+                        "action": "verify",
+                        "ok": True,
+                        "observation": {"passed": True},
+                    },
+                ],
+            }
+        }
+
 
 def test_once_outputs_startup_readiness_and_prompt_response():
     output = StringIO()
@@ -93,12 +117,19 @@ def test_slash_commands_cover_terminal_surface():
     assert tui.dispatch("/verify pytest").text == "verified pytest"
     assert tui.dispatch("/run pytest -q").text == "ran pytest -q"
     assert tui.dispatch("/shell pytest -q").text == "ran pytest -q"
+    agent = tui.dispatch('/agent {"action": "verify", "passed": true}').text
+    assert "agent loop: verified steps=2 verified=True" in agent
+    assert "- 1: write ok=True path=src/app.py bytes=4" in agent
+    assert "- 2: verify ok=True passed=True" in agent
+    loop = tui.dispatch('/loop {"action": "verify", "passed": true}').text
+    assert "agent loop: verified" in loop
     assert tui.dispatch("/read src/app.py").text == "read src/app.py"
     assert tui.dispatch("/write src/app.py pass").text == "wrote src/app.py pass"
     assert "new\nline" in tui.dispatch("/apply new\\nline").text
     assert "new\nline" in tui.dispatch("/patch new\\nline").text
     assert "/readiness" in tui.dispatch("/help").text
     assert "/resume" in tui.dispatch("/help").text
+    assert "/agent" in tui.dispatch("/help").text
 
     exit_result = tui.dispatch("/quit")
     assert exit_result.should_exit is True

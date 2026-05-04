@@ -285,6 +285,27 @@ def test_runtime_status_and_shell_commands_are_available_to_tui(tmp_path: Path) 
     assert "hello" in shell
 
 
+def test_runtime_agent_loop_executes_actions_and_persists_trace(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    result = runtime.run_agent_loop(
+        [
+            {"action": "write", "path": "src/generated.py", "content": "VALUE = 7\n"},
+            {"action": "verify", "passed": True, "reason": "deterministic pass"},
+        ]
+    )
+
+    assert result.ok is True
+    assert result.loop.status == "verified"
+    assert result.loop.steps == 2
+    assert result.writeback is not None
+    assert result.writeback["family"] == "task"
+    assert result.writeback["kind"] == "agent_loop"
+    assert result.writeback["metadata"]["loop"]["status"] == "verified"
+    assert (tmp_path / "src" / "generated.py").read_text(encoding="utf-8") == "VALUE = 7\n"
+    assert (tmp_path / "state" / "memory" / "task-default.jsonl").exists()
+
+
 def test_runtime_auto_jit_builds_bounded_source_index(tmp_path: Path) -> None:
     source = tmp_path / "src" / "agent.py"
     source.parent.mkdir()
