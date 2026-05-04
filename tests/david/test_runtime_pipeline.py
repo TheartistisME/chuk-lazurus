@@ -680,6 +680,54 @@ def test_runtime_agent_loop_uses_backend_for_natural_language_prompt(tmp_path: P
     assert (tmp_path / "src" / "generated.py").read_text(encoding="utf-8") == "VALUE = 11\n"
 
 
+def test_runtime_agent_loop_action_prompt_includes_bounded_workspace_context(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "service.py"
+    source.parent.mkdir()
+    source.write_text("def routed_agent_fact():\n    return 'workspace action evidence'\n", encoding="utf-8")
+    protected = tmp_path / "scripts" / "run_swebench_pro_parity.py"
+    protected.parent.mkdir()
+    protected.write_text("PROTECTED_PROOF_RIG_SENTINEL = True\n", encoding="utf-8")
+    runtime = DavidRuntime.create(
+        DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state", max_route_tokens=160)
+    )
+    prompts: list[str] = []
+
+    class ActionPromptCaptureBackend:
+        name = "action-prompt-capture"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del kwargs
+            prompts.append(prompt)
+            return ModelBackendResult(
+                text='{"action":"verify","passed":true,"reason":"prompt grounded"}',
+                backend=self.name,
+                metadata={"step": len(prompts)},
+            )
+
+    runtime.backend = ActionPromptCaptureBackend()
+
+    result = runtime.run_agent_loop("Fix the repo bug in src/service.py")
+
+    assert result.loop.status == "verified"
+    assert len(prompts) == 1
+    action_prompt = prompts[0]
+    assert "Routed workspace context:" in action_prompt
+    assert "src/service.py" in action_prompt
+    assert "routed_agent_fact" in action_prompt
+    assert "workspace action evidence" in action_prompt
+    assert "scripts/run_swebench_pro_parity.py" not in action_prompt
+    assert "PROTECTED_PROOF_RIG_SENTINEL" not in action_prompt
+    provenance = result.loop.trace[0].provenance["raw"]["_model_provenance"]
+    context = provenance["workspace_context"]
+    assert context["source"] == "workspace_route_evidence"
+    assert context["context_char_count"] <= context["context_char_budget"]
+    assert context["evidence_count_included"] >= 1
+    assert context["selected_paths"] == ["src/service.py"]
+
+
 def test_runtime_auto_jit_builds_bounded_source_index(tmp_path: Path) -> None:
     source = tmp_path / "src" / "agent.py"
     source.parent.mkdir()

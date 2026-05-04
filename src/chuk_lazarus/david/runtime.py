@@ -537,8 +537,17 @@ class DavidRuntime:
         return None
 
     def _model_driven_agent_step(self, objective: str):
+        action_context = self._model_action_workspace_context(objective)
+
         def next_action(state: AgentLoopState) -> ActionPayload:
             model_prompt = render_model_action_prompt(state)
+            if action_context["included"]:
+                model_prompt = (
+                    f"{model_prompt}\n"
+                    "Routed workspace context:\n"
+                    f"{action_context['text']}\n"
+                    "Use this bounded workspace context as file/path evidence when choosing read, write, or verify actions."
+                )
             model_result = self.backend.generate(model_prompt, max_new_tokens=320)
             if not model_result.ok:
                 raise RuntimeError(f"backend refused action generation: {model_result.error or 'unknown error'}")
@@ -558,11 +567,57 @@ class DavidRuntime:
                 "metadata": model_result.metadata,
                 "prompt": model_prompt,
                 "objective": objective,
+                "workspace_context": action_context["metadata"],
             }
             payload["_model_text"] = raw_text
             return payload
 
         return next_action
+
+    def _model_action_workspace_context(self, objective: str) -> dict[str, Any]:
+        method = self.detector.detect(objective)
+        budget = _generation_context_char_budget(self.config.max_route_tokens)
+        metadata: dict[str, Any] = {
+            "source": "none",
+            "method": method,
+            "context_char_count": 0,
+            "context_char_budget": budget,
+            "workspace_file_count": 0,
+            "evidence_count_available": 0,
+            "evidence_count_included": 0,
+            "selected_paths": [],
+            "omitted": False,
+            "omitted_reason": None,
+            "truncated": False,
+        }
+        if method not in {"repo_patch", "source_dependency"}:
+            metadata.update({"omitted": True, "omitted_reason": "non_workspace_method"})
+            return {"included": False, "text": "", "metadata": metadata}
+
+        workspace_files = self._workspace_text_files(max_files=40, max_bytes=6_000)
+        metadata["workspace_file_count"] = len(workspace_files)
+        evidence = self._recall(method, objective, workspace_files=workspace_files)
+        metadata["evidence_count_available"] = len(evidence)
+        metadata["selected_paths"] = [
+            str(item.get("path"))
+            for item in evidence
+            if item.get("path") and not is_protected_path(str(item.get("path")))
+        ][:8]
+        raw_context, evidence_included = _render_evidence_context(evidence[:8])
+        metadata["evidence_count_included"] = evidence_included
+        if not raw_context:
+            metadata.update({"omitted": True, "omitted_reason": "no_context_available"})
+            return {"included": False, "text": "", "metadata": metadata}
+
+        text, truncated = _truncate_generation_context(raw_context, budget)
+        metadata.update(
+            {
+                "source": "workspace_route_evidence",
+                "context_char_count": len(text),
+                "truncated": truncated,
+            }
+        )
+        return {"included": True, "text": text, "metadata": metadata}
 
     def _recall(
         self,
