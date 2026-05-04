@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from chuk_lazarus.david import DavidConfig, DavidRuntime
@@ -115,6 +116,116 @@ def test_materializer_selects_boundary_residual_when_safe() -> None:
     assert materialized.refused is False
     assert materialized.strategy == "boundary_residual"
     assert materialized.text_context == "source span"
+
+
+def test_materializer_emits_loadable_residual_sidecar_plan(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "sidecar.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_id": "hot-window-1",
+                "memory_family": "task",
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-a",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+                "boundary_layer": 7,
+                "residual_layer": 7,
+                "hidden_size": 4,
+                "refs": [
+                    {
+                        "kind": "boundary_residual",
+                        "layer": 7,
+                        "dtype": "float32",
+                        "shape": [1, 4],
+                        "inline_values": [[0.1, 0.2, 0.3, 0.4]],
+                    }
+                ],
+                "provenance": {"capture": "unit-test"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        model_revision="rev-a",
+        adapter_family="family-a",
+        hidden_size=4,
+        boundary_layer=7,
+        insertion_family="kv_direct",
+    )
+    route = RoutePacket(
+        method="source_dependency",
+        selected_windows=["source span"],
+        memory_family="task",
+        session_id="s1",
+        tier="hot",
+        route_reason="test",
+        evidence=[{"sidecar_manifest": str(manifest_path)}],
+        token_cost=2,
+        residual_available=True,
+    )
+
+    materialized = Materializer().materialize(route, adapter)
+
+    assert materialized.refused is False
+    assert materialized.strategy == "residual_sidecar"
+    assert materialized.materialization_plan["requires_runtime_replay"] is True
+    assert materialized.materialization_plan["sidecars"][0]["artifact_id"] == "hot-window-1"
+    assert materialized.compatibility["sidecar_artifact_ids"] == ["hot-window-1"]
+
+
+def test_materializer_refuses_sidecar_scope_mismatch(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "bad-sidecar.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_id": "wrong-tokenizer",
+                "memory_family": "task",
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-b",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+                "kv_source_layer": 6,
+                "kv_target_layer": 7,
+                "refs": [{"kind": "kv_cache", "layer": 7, "dtype": "float16", "shape": [2, 1, 8]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        model_revision="rev-a",
+        adapter_family="family-a",
+        kv_source_layer=6,
+        kv_target_layer=7,
+        insertion_family="kv_direct",
+    )
+    route = RoutePacket(
+        method="repo_patch",
+        selected_windows=["hot span"],
+        memory_family="task",
+        session_id="s1",
+        tier="hot",
+        route_reason="test",
+        evidence=[],
+        token_cost=2,
+        kv_ready=True,
+        provenance={"sidecar_manifest": str(manifest_path)},
+    )
+
+    materialized = Materializer().materialize(route, adapter)
+
+    assert materialized.refused is True
+    assert materialized.strategy == "refuse"
+    assert "tokenizer_id mismatch" in materialized.reason
+    assert materialized.compatibility["materialization_plan"]["refused"] is True
 
 
 def test_decoder_plan_includes_steering_constraints_and_scope_metadata() -> None:

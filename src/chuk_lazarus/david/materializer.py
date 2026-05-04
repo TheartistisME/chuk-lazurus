@@ -1,11 +1,12 @@
-"""Safe residual/KV materialization metadata for offline David."""
+"""Safe residual/KV materialization planning for offline David."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .config import AdapterSessionMetadata
+from .residual_store import ResidualSidecarManifest, ResidualStore, ResidualStoreError
 from .routing import RoutePacket
 
 
@@ -16,21 +17,32 @@ class MaterializedContext:
     compatibility: dict[str, Any]
     refused: bool = False
     reason: str = "ok"
+    materialization_plan: dict[str, Any] = field(default_factory=dict)
 
 
 class Materializer:
+    def __init__(self, residual_store: ResidualStore | None = None) -> None:
+        self.residual_store = residual_store or ResidualStore()
+
     def materialize(self, route: RoutePacket, adapter: AdapterSessionMetadata) -> MaterializedContext:
         route_scope = _route_materialization_scope(route)
+        sidecars, sidecar_refusals = _load_sidecars(route, self.residual_store)
         refusal_reasons = _compatibility_refusals(route, adapter, route_scope)
-        strategy = _select_strategy(route, adapter, refusal_reasons)
+        refusal_reasons.extend(_sidecar_refusals(route, adapter, sidecars))
+        refusal_reasons.extend(sidecar_refusals)
+        strategy = _select_strategy(route, adapter, sidecars, refusal_reasons)
+        plan = _materialization_plan(route, adapter, strategy, sidecars, refusal_reasons)
         compatibility = adapter.scope() | {
             "route_memory_family": route.memory_family,
             "route_tier": route.tier,
             "residual_available": route.residual_available,
             "kv_ready": route.kv_ready,
             "route_scope": route_scope,
+            "sidecar_count": len(sidecars),
+            "sidecar_artifact_ids": [sidecar.artifact_id for sidecar in sidecars],
             "refusal_reasons": refusal_reasons,
             "materialization_safe": not refusal_reasons,
+            "materialization_plan": plan,
         }
         if refusal_reasons:
             return MaterializedContext(
@@ -39,11 +51,13 @@ class Materializer:
                 compatibility=compatibility,
                 refused=True,
                 reason="; ".join(refusal_reasons),
+                materialization_plan=plan,
             )
         return MaterializedContext(
             strategy=strategy,
             text_context="\n".join(route.selected_windows),
             compatibility=compatibility,
+            materialization_plan=plan,
         )
 
 
@@ -72,6 +86,35 @@ def _route_materialization_scope(route: RoutePacket) -> dict[str, Any]:
         if key in route.provenance:
             scope.setdefault(key, route.provenance[key])
     return scope
+
+
+def _load_sidecars(route: RoutePacket, residual_store: ResidualStore) -> tuple[list[ResidualSidecarManifest], list[str]]:
+    sidecars: list[ResidualSidecarManifest] = []
+    refusal_reasons: list[str] = []
+    for ref in _sidecar_manifest_refs(route):
+        try:
+            sidecars.append(residual_store.load_manifest(ref))
+        except ResidualStoreError as exc:
+            refusal_reasons.append(f"sidecar load failed: {exc}")
+    return sidecars, refusal_reasons
+
+
+def _sidecar_manifest_refs(route: RoutePacket) -> list[Any]:
+    refs: list[Any] = []
+    for key in ("sidecar_manifest", "residual_sidecar_manifest", "kv_sidecar_manifest"):
+        if key in route.provenance:
+            refs.append(route.provenance[key])
+    route_refs = route.provenance.get("sidecar_manifests")
+    if isinstance(route_refs, list):
+        refs.extend(route_refs)
+    for item in route.evidence:
+        for key in ("sidecar_manifest", "residual_sidecar_manifest", "kv_sidecar_manifest"):
+            if key in item:
+                refs.append(item[key])
+        item_refs = item.get("sidecar_manifests")
+        if isinstance(item_refs, list):
+            refs.extend(item_refs)
+    return refs
 
 
 def _compatibility_refusals(
@@ -114,17 +157,97 @@ def _compatibility_refusals(
     return reasons
 
 
+def _sidecar_refusals(
+    route: RoutePacket,
+    adapter: AdapterSessionMetadata,
+    sidecars: list[ResidualSidecarManifest],
+) -> list[str]:
+    reasons: list[str] = []
+    for sidecar in sidecars:
+        scope = sidecar.scope()
+        comparisons = {
+            "model_id": adapter.model_id,
+            "tokenizer_id": adapter.tokenizer_id,
+            "model_revision": adapter.model_revision,
+            "adapter_family": adapter.adapter_family,
+            "insertion_family": adapter.insertion_family,
+            "boundary_layer": adapter.boundary_layer,
+            "kv_source_layer": adapter.kv_source_layer,
+            "kv_target_layer": adapter.kv_target_layer,
+            "hidden_size": adapter.hidden_size,
+        }
+        for key, expected in comparisons.items():
+            actual = scope.get(key)
+            if actual is None or expected is None:
+                continue
+            if str(actual) != str(expected):
+                reasons.append(f"sidecar {sidecar.artifact_id} {key} mismatch: sidecar={actual} adapter={expected}")
+        if sidecar.memory_family != route.memory_family:
+            reasons.append(
+                f"sidecar {sidecar.artifact_id} memory_family mismatch: "
+                f"sidecar={sidecar.memory_family} route={route.memory_family}"
+            )
+        if route.residual_available and not any(ref.kind in {"boundary_residual", "residual_stream"} for ref in sidecar.refs):
+            reasons.append(f"sidecar {sidecar.artifact_id} has no residual refs")
+        if route.kv_ready and not any(ref.kind == "kv_cache" for ref in sidecar.refs):
+            reasons.append(f"sidecar {sidecar.artifact_id} has no kv_cache refs")
+        for ref in sidecar.refs:
+            if ref.kind == "boundary_residual" and adapter.boundary_layer is not None and ref.layer != adapter.boundary_layer:
+                reasons.append(
+                    f"sidecar {sidecar.artifact_id} boundary ref layer mismatch: "
+                    f"ref={ref.layer} adapter={adapter.boundary_layer}"
+                )
+            if ref.kind == "residual_stream" and sidecar.residual_layer is not None and ref.layer != sidecar.residual_layer:
+                reasons.append(
+                    f"sidecar {sidecar.artifact_id} residual ref layer mismatch: "
+                    f"ref={ref.layer} manifest={sidecar.residual_layer}"
+                )
+            if ref.kind == "kv_cache" and adapter.kv_target_layer is not None and ref.layer != adapter.kv_target_layer:
+                reasons.append(
+                    f"sidecar {sidecar.artifact_id} kv ref layer mismatch: "
+                    f"ref={ref.layer} adapter={adapter.kv_target_layer}"
+                )
+    return reasons
+
+
 def _select_strategy(
     route: RoutePacket,
     adapter: AdapterSessionMetadata,
+    sidecars: list[ResidualSidecarManifest],
     refusal_reasons: list[str],
 ) -> str:
     if refusal_reasons:
         return "refuse"
+    if route.kv_ready and sidecars:
+        return "kv_sidecar"
     if route.kv_ready:
         return "kv_direct"
+    if route.residual_available and sidecars:
+        return "residual_sidecar"
     if route.residual_available and adapter.boundary_layer is not None:
         return "boundary_residual"
     if route.selected_windows:
         return "boundary_text"
     return "none"
+
+
+def _materialization_plan(
+    route: RoutePacket,
+    adapter: AdapterSessionMetadata,
+    strategy: str,
+    sidecars: list[ResidualSidecarManifest],
+    refusal_reasons: list[str],
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "strategy": strategy,
+        "refused": bool(refusal_reasons),
+        "reason": "; ".join(refusal_reasons) if refusal_reasons else "ok",
+        "session_id": route.session_id,
+        "memory_family": route.memory_family,
+        "tier": route.tier,
+        "adapter_scope": adapter.scope(),
+        "requires_runtime_replay": strategy in {"kv_sidecar", "residual_sidecar"},
+        "text_window_count": len(route.selected_windows),
+        "sidecars": [sidecar.to_plan_ref() for sidecar in sidecars],
+    }
