@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from chuk_lazarus.david.source_index import build_source_index, load_source_index, save_source_index
+from chuk_lazarus.david.indexing import (
+    ARTIFACT_FAMILY_ACTIVATION_ROUTE,
+    ARTIFACT_FAMILY_LEXICAL_SOURCE,
+)
+from chuk_lazarus.david.source_index import (
+    SourceFileRecord,
+    build_source_index,
+    index_source_file,
+    load_source_index,
+    save_source_index,
+)
 
 
 def test_source_index_records_symbols_imports_and_adapter_scope(tmp_path: Path) -> None:
@@ -23,6 +33,10 @@ def test_source_index_records_symbols_imports_and_adapter_scope(tmp_path: Path) 
     assert record.symbols == ["Worker", "run_task"]
     assert "json" in record.import_tokens
     assert "pathlib" in record.import_tokens
+    assert record.window_ids == [record.windows[0].window_id]
+    assert record.line_span == {"start_line": 1, "end_line": 8}
+    assert record.windows[0].capture_status[ARTIFACT_FAMILY_LEXICAL_SOURCE] == "captured"
+    assert record.windows[0].capture_status[ARTIFACT_FAMILY_ACTIVATION_ROUTE] == "required"
 
 
 def test_source_index_prunes_dirs_skips_large_files_and_truncates(tmp_path: Path) -> None:
@@ -68,3 +82,37 @@ def test_source_index_round_trips_manifest(tmp_path: Path) -> None:
     assert loaded.to_json() == manifest.to_json()
     assert loaded.files[0].symbols == ["main_task"]
     assert "std::path::Path" in loaded.files[0].import_tokens
+
+
+def test_source_window_id_is_stable_for_file_window_across_content_changes(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "agent.py"
+    source.parent.mkdir()
+    source.write_text("def boot_agent():\n    return 1\n", encoding="utf-8")
+
+    first = index_source_file(tmp_path, source)
+    source.write_text("def boot_agent():\n    return 2\n\n", encoding="utf-8")
+    second = index_source_file(tmp_path, source)
+
+    assert first is not None
+    assert second is not None
+    assert first.window_ids == second.window_ids
+    assert first.sha256 != second.sha256
+    assert first.line_span != second.line_span
+
+
+def test_source_record_loads_legacy_json_without_window_metadata() -> None:
+    record = SourceFileRecord.from_json(
+        {
+            "path": "src/legacy.py",
+            "size_bytes": 18,
+            "sha256": "abc123",
+            "language": "python",
+            "symbols": ["legacy"],
+            "import_tokens": [],
+        }
+    )
+
+    assert record.path == "src/legacy.py"
+    assert len(record.window_ids) == 1
+    assert record.line_span == {"start_line": 1, "end_line": 1}
+    assert record.to_json()["capture_status"][ARTIFACT_FAMILY_LEXICAL_SOURCE] == "captured"

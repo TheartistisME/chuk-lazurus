@@ -11,6 +11,10 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
+from .indexing import (
+    ARTIFACT_FAMILY_LEXICAL_SOURCE,
+    CAPTURE_REQUIRED_FAMILIES,
+)
 from .patch_routing import is_protected_path, normalize_path
 
 
@@ -61,6 +65,46 @@ DEFAULT_SUFFIXES = frozenset(
 
 
 @dataclass(frozen=True)
+class SourceWindowRecord:
+    window_id: str
+    start_line: int
+    end_line: int
+    sha256: str
+    vector_ref: str | None = None
+    sidecar_refs: dict[str, str] = field(default_factory=dict)
+    capture_status: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def line_span(self) -> dict[str, int]:
+        return {"start_line": self.start_line, "end_line": self.end_line}
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "window_id": self.window_id,
+            "line_span": self.line_span,
+            "sha256": self.sha256,
+            "vector_ref": self.vector_ref,
+            "sidecar_refs": dict(self.sidecar_refs),
+            "capture_status": _capture_status(self.capture_status),
+        }
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any], *, path: str, file_sha256: str) -> "SourceWindowRecord":
+        span = dict(data.get("line_span") or {})
+        start_line = int(span.get("start_line") or data.get("start_line") or 1)
+        end_line = int(span.get("end_line") or data.get("end_line") or start_line)
+        return cls(
+            window_id=str(data.get("window_id") or stable_source_window_id(path, start_line, end_line)),
+            start_line=start_line,
+            end_line=end_line,
+            sha256=str(data.get("sha256") or file_sha256),
+            vector_ref=_optional_str(data.get("vector_ref")),
+            sidecar_refs={str(key): str(value) for key, value in dict(data.get("sidecar_refs") or {}).items()},
+            capture_status=_capture_status(dict(data.get("capture_status") or {})),
+        )
+
+
+@dataclass(frozen=True)
 class SourceFileRecord:
     path: str
     size_bytes: int
@@ -68,8 +112,19 @@ class SourceFileRecord:
     language: str
     symbols: list[str] = field(default_factory=list)
     import_tokens: list[str] = field(default_factory=list)
+    windows: list[SourceWindowRecord] = field(default_factory=list)
+
+    @property
+    def window_ids(self) -> list[str]:
+        return [window.window_id for window in self._windows()]
+
+    @property
+    def line_span(self) -> dict[str, int]:
+        return self._windows()[0].line_span
 
     def to_json(self) -> dict[str, Any]:
+        windows = self._windows()
+        primary = windows[0]
         return {
             "path": self.path,
             "size_bytes": self.size_bytes,
@@ -77,18 +132,60 @@ class SourceFileRecord:
             "language": self.language,
             "symbols": self.symbols,
             "import_tokens": self.import_tokens,
+            "window_id": primary.window_id,
+            "window_ids": [window.window_id for window in windows],
+            "line_span": primary.line_span,
+            "vector_ref": primary.vector_ref,
+            "sidecar_refs": dict(primary.sidecar_refs),
+            "capture_status": _capture_status(primary.capture_status),
+            "windows": [window.to_json() for window in windows],
         }
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "SourceFileRecord":
+        path = str(data["path"])
+        sha256 = str(data["sha256"])
+        windows = [
+            SourceWindowRecord.from_json(dict(item), path=path, file_sha256=sha256)
+            for item in data.get("windows", [])
+        ]
+        if not windows:
+            span = dict(data.get("line_span") or {})
+            start_line = int(span.get("start_line") or 1)
+            end_line = int(span.get("end_line") or start_line)
+            windows = [
+                SourceWindowRecord(
+                    window_id=str(data.get("window_id") or stable_source_window_id(path, start_line, end_line)),
+                    start_line=start_line,
+                    end_line=end_line,
+                    sha256=sha256,
+                    vector_ref=_optional_str(data.get("vector_ref")),
+                    sidecar_refs={str(key): str(value) for key, value in dict(data.get("sidecar_refs") or {}).items()},
+                    capture_status=_capture_status(dict(data.get("capture_status") or {})),
+                )
+            ]
         return cls(
-            path=str(data["path"]),
+            path=path,
             size_bytes=int(data["size_bytes"]),
-            sha256=str(data["sha256"]),
+            sha256=sha256,
             language=str(data.get("language") or "text"),
             symbols=[str(item) for item in data.get("symbols", [])],
             import_tokens=[str(item) for item in data.get("import_tokens", [])],
+            windows=windows,
         )
+
+    def _windows(self) -> list[SourceWindowRecord]:
+        if self.windows:
+            return self.windows
+        return [
+            SourceWindowRecord(
+                window_id=stable_source_window_id(self.path, 1, 1),
+                start_line=1,
+                end_line=1,
+                sha256=self.sha256,
+                capture_status=_capture_status({}),
+            )
+        ]
 
 
 @dataclass(frozen=True)
@@ -211,14 +308,30 @@ def _index_file(root: Path, path: Path, size_bytes: int) -> SourceFileRecord | N
     relative = normalize_path(path.relative_to(root).as_posix())
     if is_protected_path(relative):
         return None
+    line_count = _line_count(text)
+    window = SourceWindowRecord(
+        window_id=stable_source_window_id(relative, 1, line_count),
+        start_line=1,
+        end_line=line_count,
+        sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        capture_status=_capture_status({}),
+    )
     return SourceFileRecord(
         path=relative,
         size_bytes=size_bytes,
-        sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        sha256=window.sha256,
         language=_language_for_suffix(path.suffix),
         symbols=_unique(_symbol_tokens(text, path.suffix)),
         import_tokens=_unique(_import_tokens(text)),
+        windows=[window],
     )
+
+
+def stable_source_window_id(path: str, start_line: int, end_line: int) -> str:
+    normalized = normalize_path(path)
+    del end_line
+    digest = hashlib.sha256(f"{normalized}:{start_line}".encode("utf-8")).hexdigest()[:16]
+    return f"source-window:{digest}"
 
 
 def _symbol_tokens(text: str, suffix: str) -> list[str]:
@@ -275,3 +388,20 @@ def _language_for_suffix(suffix: str) -> str:
         ".yaml": "yaml",
         ".yml": "yaml",
     }.get(suffix.lower(), "text")
+
+
+def _line_count(text: str) -> int:
+    return max(1, len(text.splitlines()))
+
+
+def _capture_status(overrides: dict[str, str]) -> dict[str, str]:
+    status = {ARTIFACT_FAMILY_LEXICAL_SOURCE: "captured"}
+    status.update({family: "required" for family in CAPTURE_REQUIRED_FAMILIES})
+    status.update({str(key): str(value) for key, value in overrides.items()})
+    return status
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)

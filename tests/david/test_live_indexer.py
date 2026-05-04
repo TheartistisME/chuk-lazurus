@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from chuk_lazarus.david.indexing import CAPTURE_REQUIRED_FAMILIES
 from chuk_lazarus.david.live_indexer import LiveIndexer, load_live_index_state
 from chuk_lazarus.david.source_index import load_source_index
 
@@ -18,6 +19,10 @@ def test_live_indexer_initial_refresh_writes_source_index_and_handle(tmp_path: P
     assert refresh.changed_paths == ["src/agent.py"]
     assert refresh.indexed_paths == ["src/agent.py"]
     assert refresh.deleted_paths == []
+    assert len(refresh.changed_window_ids) == 1
+    assert len(refresh.required_capture_actions) == len(CAPTURE_REQUIRED_FAMILIES)
+    assert {action["family"] for action in refresh.required_capture_actions} == set(CAPTURE_REQUIRED_FAMILIES)
+    assert {action["window_id"] for action in refresh.required_capture_actions} == set(refresh.changed_window_ids)
     assert refresh.file_count == 1
     assert len(refresh.manifest_sha256) == 64
     assert refresh.to_session_refresh_handle() == {
@@ -26,8 +31,12 @@ def test_live_indexer_initial_refresh_writes_source_index_and_handle(tmp_path: P
         "workspace_root": str(tmp_path.resolve()),
         "source_index_path": str(tmp_path.resolve() / ".david" / "indexes" / "live-source.json"),
         "changed_paths": ["src/agent.py"],
+        "changed_window_ids": refresh.changed_window_ids,
+        "required_capture_actions": refresh.required_capture_actions,
         "deleted_paths": [],
         "changed_count": 1,
+        "changed_window_count": 1,
+        "required_capture_action_count": len(CAPTURE_REQUIRED_FAMILIES),
         "indexed_count": 1,
         "deleted_count": 0,
         "file_count": 1,
@@ -38,6 +47,7 @@ def test_live_indexer_initial_refresh_writes_source_index_and_handle(tmp_path: P
     manifest = load_source_index(Path(refresh.source_index_path))
     assert manifest.files[0].path == "src/agent.py"
     assert manifest.files[0].symbols == ["boot_agent"]
+    assert manifest.files[0].window_ids == refresh.changed_window_ids
     state = load_live_index_state(Path(refresh.state_path))
     assert state.files["src/agent.py"].sha256 == manifest.files[0].sha256
 
@@ -53,6 +63,8 @@ def test_live_indexer_second_refresh_reuses_unchanged_file_state(tmp_path: Path)
 
     assert first.changed_paths == ["src/agent.py"]
     assert second.changed_paths == []
+    assert second.changed_window_ids == []
+    assert second.required_capture_actions == []
     assert second.indexed_paths == []
     assert second.unchanged_paths == ["src/agent.py"]
     assert second.manifest_sha256 != ""
@@ -75,10 +87,13 @@ def test_live_indexer_updates_changed_added_and_deleted_files(tmp_path: Path) ->
     refresh = indexer.refresh()
 
     assert refresh.changed_paths == ["src/added.py", "src/keep.py"]
+    assert len(refresh.changed_window_ids) == 2
+    assert len(refresh.required_capture_actions) == 2 * len(CAPTURE_REQUIRED_FAMILIES)
     assert refresh.indexed_paths == ["src/added.py", "src/keep.py"]
     assert refresh.deleted_paths == ["src/remove.py"]
     manifest = load_source_index(Path(refresh.source_index_path))
     assert [record.path for record in manifest.files] == ["src/added.py", "src/keep.py"]
+    assert sorted(window_id for record in manifest.files for window_id in record.window_ids) == refresh.changed_window_ids
 
 
 def test_live_indexer_bounds_workspace_and_skips_unsafe_files(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
+from .indexing import CAPTURE_REQUIRED_FAMILIES
 from .patch_routing import is_protected_path, normalize_path
 from .source_index import (
     DEFAULT_MAX_FILE_BYTES,
@@ -125,6 +126,8 @@ class LiveIndexRefresh:
     source_index_path: str
     adapter_scope: dict[str, Any]
     changed_paths: list[str]
+    changed_window_ids: list[str]
+    required_capture_actions: list[dict[str, Any]]
     indexed_paths: list[str]
     deleted_paths: list[str]
     unchanged_paths: list[str]
@@ -148,11 +151,15 @@ class LiveIndexRefresh:
             "source_index_path": self.source_index_path,
             "adapter_scope": self.adapter_scope,
             "changed_paths": self.changed_paths,
+            "changed_window_ids": self.changed_window_ids,
+            "required_capture_actions": self.required_capture_actions,
             "indexed_paths": self.indexed_paths,
             "deleted_paths": self.deleted_paths,
             "unchanged_paths": self.unchanged_paths,
             "skipped_paths": self.skipped_paths,
             "changed_count": len(self.changed_paths),
+            "changed_window_count": len(self.changed_window_ids),
+            "required_capture_action_count": len(self.required_capture_actions),
             "indexed_count": len(self.indexed_paths),
             "deleted_count": len(self.deleted_paths),
             "unchanged_count": len(self.unchanged_paths),
@@ -169,8 +176,12 @@ class LiveIndexRefresh:
             "workspace_root": self.workspace_root,
             "source_index_path": self.source_index_path,
             "changed_paths": self.changed_paths,
+            "changed_window_ids": self.changed_window_ids,
+            "required_capture_actions": self.required_capture_actions,
             "deleted_paths": self.deleted_paths,
             "changed_count": len(self.changed_paths),
+            "changed_window_count": len(self.changed_window_ids),
+            "required_capture_action_count": len(self.required_capture_actions),
             "indexed_count": len(self.indexed_paths),
             "deleted_count": len(self.deleted_paths),
             "file_count": self.file_count,
@@ -214,6 +225,8 @@ class LiveIndexer:
         previous_files = previous.files if previous is not None else {}
         next_files: dict[str, LiveFileState] = {}
         changed_paths: list[str] = []
+        changed_window_ids: list[str] = []
+        required_capture_actions: list[dict[str, Any]] = []
         indexed_paths: list[str] = []
         unchanged_paths: list[str] = []
         skipped_paths: list[str] = []
@@ -250,6 +263,13 @@ class LiveIndexer:
 
             if previous_state is None or previous_state.sha256 != record.sha256:
                 changed_paths.append(relative_path)
+                changed_window_ids.extend(record.window_ids)
+                required_capture_actions.extend(
+                    _capture_actions_for_record(
+                        record,
+                        reason="content_changed" if previous_state is not None else "added",
+                    )
+                )
             else:
                 unchanged_paths.append(relative_path)
 
@@ -274,6 +294,11 @@ class LiveIndexer:
             source_index_path=str(self.source_index_path),
             adapter_scope=dict(self.adapter_scope),
             changed_paths=sorted(changed_paths),
+            changed_window_ids=sorted(changed_window_ids),
+            required_capture_actions=sorted(
+                required_capture_actions,
+                key=lambda item: (str(item["window_id"]), str(item["family"])),
+            ),
             indexed_paths=sorted(indexed_paths),
             deleted_paths=deleted_paths,
             unchanged_paths=sorted(unchanged_paths),
@@ -319,3 +344,21 @@ def load_live_index_state(path: Path) -> LiveIndexState:
 def _json_sha256(data: dict[str, Any]) -> str:
     payload = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _capture_actions_for_record(record: SourceFileRecord, *, reason: str) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for window in record._windows():
+        for family in CAPTURE_REQUIRED_FAMILIES:
+            actions.append(
+                {
+                    "family": family,
+                    "action": "capture",
+                    "status": "required",
+                    "reason": reason,
+                    "path": record.path,
+                    "window_id": window.window_id,
+                    "line_span": window.line_span,
+                }
+            )
+    return actions
