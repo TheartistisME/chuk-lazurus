@@ -429,6 +429,99 @@ def test_runtime_generation_prompt_uses_production_response_slot(tmp_path: Path)
     assert result.model_result.text == "Ready."
 
 
+def test_runtime_generation_prompt_includes_bounded_routed_workspace_context(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "tiny.py"
+    source.parent.mkdir()
+    source.write_text("def tiny_workspace_fact():\n    return 'grounded evidence'\n", encoding="utf-8")
+    runtime = DavidRuntime.create(
+        DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state", max_route_tokens=128)
+    )
+    captured: dict[str, object] = {}
+
+    class PromptCaptureBackend:
+        name = "prompt-capture"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del kwargs
+            captured["prompt"] = prompt
+            return ModelBackendResult(text="Grounded summary.", backend=self.name)
+
+    runtime.backend = PromptCaptureBackend()
+
+    result = runtime.run_once("Summarize this tiny workspace")
+
+    generation_prompt = str(captured["prompt"])
+    assert "Routed context:" in generation_prompt
+    assert "Use the routed context above as grounding evidence" in generation_prompt
+    assert "src/tiny.py" in generation_prompt
+    assert "tiny_workspace_fact" in generation_prompt
+    assert "grounded evidence" in generation_prompt
+    assert result.model_result is not None
+    context_metadata = result.model_result.metadata["generation_context"]
+    assert context_metadata["context_char_count"] <= context_metadata["context_char_budget"]
+    assert context_metadata["context_char_budget"] == 512
+    assert context_metadata["evidence_count_available"] >= 1
+    assert context_metadata["evidence_count_included"] >= 1
+    assert context_metadata["omitted"] is False
+    assert context_metadata["refused"] is False
+
+
+def test_runtime_generation_prompt_omits_context_when_materializer_refused(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "unsafe.py"
+    source.parent.mkdir()
+    source.write_text("DO_NOT_INCLUDE_UNSAFE_CONTEXT = True\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    captured: dict[str, object] = {}
+    original_route = runtime.router.route
+
+    def route_with_mismatch(**kwargs: object) -> RoutePacket:
+        packet = original_route(**kwargs)
+        return RoutePacket(
+            **{
+                **packet.to_json(),
+                "provenance": {
+                    **packet.provenance,
+                    "materialization_scope": {
+                        "model_id": "other-model",
+                        "tokenizer_id": runtime.adapter.tokenizer_id,
+                    },
+                },
+            }
+        )
+
+    class PromptCaptureBackend:
+        name = "prompt-capture"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del kwargs
+            captured["prompt"] = prompt
+            return ModelBackendResult(text="Refused context.", backend=self.name)
+
+    runtime.router.route = route_with_mismatch  # type: ignore[method-assign]
+    runtime.backend = PromptCaptureBackend()
+
+    result = runtime.run_once("Fix the repo bug by patching src/unsafe.py")
+
+    generation_prompt = str(captured["prompt"])
+    assert "Routed context:" not in generation_prompt
+    assert "DO_NOT_INCLUDE_UNSAFE_CONTEXT" not in generation_prompt
+    assert result.materialized.refused is True
+    assert result.model_result is not None
+    context_metadata = result.model_result.metadata["generation_context"]
+    assert context_metadata["omitted"] is True
+    assert context_metadata["omitted_reason"] == "materializer_refused"
+    assert context_metadata["refused"] is True
+    assert context_metadata["context_char_count"] == 0
+    assert context_metadata["evidence_count_available"] >= 1
+    assert context_metadata["evidence_count_included"] == 0
+
+
 def test_runtime_cleans_echoed_response_slot_and_preserves_raw_model_text(tmp_path: Path) -> None:
     model_root = tmp_path / "model"
     model_root.mkdir()

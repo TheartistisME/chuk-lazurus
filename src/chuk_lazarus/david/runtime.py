@@ -53,6 +53,7 @@ except ImportError:  # pragma: no cover - only used if harness package is unavai
 
 
 DAVID_RESPONSE_SENTINEL = "David response:"
+DEFAULT_GENERATION_CONTEXT_CHARS = 8_192
 _LEGACY_GENERATION_INSTRUCTIONS = (
     "Respond with the next concise coding-agent action.",
     "Respond with the next concise coding-agent action",
@@ -86,6 +87,35 @@ def _clean_runtime_model_text(text: str) -> tuple[str, dict[str, Any]]:
     if metadata["cleaned"]:
         metadata["raw_model_text"] = raw_text
     return cleaned, metadata
+
+
+def _truncate_generation_context(text: str, max_chars: int) -> tuple[str, bool]:
+    if len(text) <= max_chars:
+        return text, False
+    marker = "\n[... routed context truncated ...]"
+    keep = max(0, max_chars - len(marker))
+    return text[:keep].rstrip() + marker, True
+
+
+def _generation_context_char_budget(max_route_tokens: int) -> int:
+    token_budget_chars = max(0, int(max_route_tokens)) * 4
+    if token_budget_chars <= 0:
+        return DEFAULT_GENERATION_CONTEXT_CHARS
+    return min(DEFAULT_GENERATION_CONTEXT_CHARS, token_budget_chars)
+
+
+def _render_evidence_context(evidence: Sequence[dict[str, Any]]) -> tuple[str, int]:
+    blocks: list[str] = []
+    included = 0
+    for ordinal, item in enumerate(evidence, start=1):
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        path = str(item.get("path") or item.get("artifact_id") or f"evidence-{ordinal}")
+        kind = str(item.get("kind") or "evidence")
+        blocks.append(f"[{ordinal}] {kind}: {path}\n{text}")
+        included += 1
+    return "\n\n".join(blocks), included
 
 
 @dataclass(frozen=True)
@@ -847,6 +877,14 @@ class DavidRuntime:
         decoder: DecoderPlan,
         replay_consumer: ReplayConsumerInput = None,
     ) -> ModelBackendResult:
+        context = self._generation_context(product_route, materialized)
+        context_block = ""
+        if context["included"]:
+            context_block = (
+                "Routed context:\n"
+                f"{context['text']}\n"
+                "Use the routed context above as grounding evidence. If it is insufficient, say what is missing.\n"
+            )
         generation_prompt = (
             "You are David, a terminal coding agent operating inside the user's workspace.\n"
             "Use the routed methodology and evidence to produce the smallest useful next answer.\n"
@@ -854,6 +892,7 @@ class DavidRuntime:
             f"Methodology: {method}\n"
             f"Capability: {product_route.capability}\n"
             f"Evidence count: {len(product_route.evidence)}\n"
+            f"{context_block}"
             "Answer only in the response slot below. Do not repeat this prompt, labels, or instructions.\n"
             f"{DAVID_RESPONSE_SENTINEL}"
         )
@@ -874,9 +913,48 @@ class DavidRuntime:
             metadata={
                 **model_result.metadata,
                 "decoder_steering": steering["metadata"],
+                "generation_context": context["metadata"],
                 "answer_postprocess": postprocess_metadata,
             },
         )
+
+    def _generation_context(
+        self,
+        product_route: ProductRoutePacket,
+        materialized: MaterializedContext,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "context_char_count": 0,
+            "context_char_budget": _generation_context_char_budget(self.config.max_route_tokens),
+            "evidence_count_available": len(product_route.evidence),
+            "evidence_count_included": 0,
+            "omitted": False,
+            "omitted_reason": None,
+            "refused": materialized.refused,
+            "truncated": False,
+            "source": "none",
+        }
+        if materialized.refused:
+            metadata.update({"omitted": True, "omitted_reason": "materializer_refused"})
+            return {"included": False, "text": "", "metadata": metadata}
+
+        raw_context = materialized.text_context.strip()
+        if raw_context:
+            metadata["source"] = "materialized.text_context"
+            metadata["evidence_count_included"] = len(product_route.evidence)
+        else:
+            raw_context, evidence_included = _render_evidence_context(product_route.evidence)
+            metadata["source"] = "product_route.evidence" if raw_context else "none"
+            metadata["evidence_count_included"] = evidence_included
+
+        if not raw_context:
+            metadata.update({"omitted": True, "omitted_reason": "no_context_available"})
+            return {"included": False, "text": "", "metadata": metadata}
+
+        text, truncated = _truncate_generation_context(raw_context, int(metadata["context_char_budget"]))
+        metadata["context_char_count"] = len(text)
+        metadata["truncated"] = truncated
+        return {"included": True, "text": text, "metadata": metadata}
 
     def _backend_replay_consumer(self) -> ReplayConsumerInput:
         reporter = getattr(self.backend, "replay_consumer_capabilities", None)
