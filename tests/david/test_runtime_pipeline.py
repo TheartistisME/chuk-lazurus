@@ -765,6 +765,77 @@ def test_runtime_agent_loop_uses_backend_for_natural_language_prompt(tmp_path: P
     assert (tmp_path / "src" / "generated.py").read_text(encoding="utf-8") == "VALUE = 11\n"
 
 
+def test_runtime_agent_loop_model_driven_read_patch_verify_observes_prior_steps(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "calculator.py"
+    source.parent.mkdir()
+    source.write_text("def answer():\n    return 'broken'\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    prompts: list[str] = []
+
+    class ReadPatchVerifyBackend:
+        name = "read-patch-verify"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del kwargs
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return ModelBackendResult(
+                    text=json.dumps(
+                        {"action": "read", "path": "src/calculator.py", "reason": "inspect target"}
+                    ),
+                    backend=self.name,
+                    metadata={"step": 1},
+                )
+            if len(prompts) == 2:
+                assert '"action": "read"' in prompt
+                assert "return 'broken'" in prompt
+                return ModelBackendResult(
+                    text=json.dumps(
+                        {
+                            "action": "patch",
+                            "content": (
+                                "src/calculator.py\n"
+                                "<<<< SEARCH\n"
+                                "def answer():\n"
+                                "    return 'broken'\n"
+                                "==== REPLACE\n"
+                                "def answer():\n"
+                                "    return 'fixed'\n"
+                                ">>>>\n"
+                            ),
+                            "reason": "strictly replace broken return",
+                        }
+                    ),
+                    backend=self.name,
+                    metadata={"step": 2},
+                )
+            assert '"action": "patch"' in prompt
+            assert '"mode": "strict_search_replace"' in prompt
+            assert '"changed_paths": ["src/calculator.py"]' in prompt
+            return ModelBackendResult(
+                text=json.dumps({"action": "verify", "passed": True, "reason": "patch applied"}),
+                backend=self.name,
+                metadata={"step": 3},
+            )
+
+    runtime.backend = ReadPatchVerifyBackend()
+
+    result = runtime.run_agent_loop("Fix the repo bug in src/calculator.py", max_steps=4)
+
+    assert result.loop.status == "verified"
+    assert [step.action for step in result.loop.trace] == ["read", "patch", "verify"]
+    assert len(prompts) == 3
+    assert "Prior observations: []" in prompts[0]
+    assert "Prior observations:" in prompts[1]
+    assert "return 'broken'" in prompts[1]
+    assert "strict_search_replace" in prompts[2]
+    assert "src/calculator.py" in prompts[2]
+    assert source.read_text(encoding="utf-8") == "def answer():\n    return 'fixed'\n"
+
+
 def test_runtime_agent_loop_action_prompt_includes_bounded_workspace_context(tmp_path: Path) -> None:
     source = tmp_path / "src" / "service.py"
     source.parent.mkdir()
