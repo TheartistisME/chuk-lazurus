@@ -107,6 +107,7 @@ class DavidConfig:
         verify_command: str | None,
         command_timeout_seconds: int | None,
         auto_jit_index: bool = False,
+        model_backend: str | None = None,
         model_device: str | None = None,
         model_dtype: str | None = None,
         model_max_new_tokens: int | None = None,
@@ -125,6 +126,8 @@ class DavidConfig:
         }
         if model_attestation_path is not None:
             kwargs["model_attestation_path"] = model_attestation_path
+        if model_backend is not None:
+            kwargs["model_backend"] = model_backend.strip().lower()
         if model_device is not None:
             kwargs["model_device"] = model_device
         if model_dtype is not None:

@@ -64,6 +64,8 @@ def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path,
             str(report),
             "--model-attestation",
             "review.json",
+            "--model-backend",
+            "torch-runtime",
             "--model-device",
             "cuda:0",
             "--model-dtype",
@@ -83,6 +85,7 @@ def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path,
     assert FakeRuntime.created_with.model_path == "root-model"
     assert FakeRuntime.created_with.validation_report_path == str(report)
     assert FakeRuntime.created_with.model_attestation_path == "review.json"
+    assert FakeRuntime.created_with.model_backend == "torch-runtime"
     assert FakeRuntime.created_with.model_device == "cuda:0"
     assert FakeRuntime.created_with.model_dtype == "bfloat16"
     assert FakeRuntime.created_with.model_max_new_tokens == 321
@@ -105,6 +108,8 @@ def test_main_keeps_common_options_after_workspace(monkeypatch, tmp_path, capsys
             str(report),
             "--model-attestation",
             "tail-review.json",
+            "--model-backend",
+            "torch-runtime",
             "--once",
             "/status",
             "--timeout",
@@ -125,6 +130,7 @@ def test_main_keeps_common_options_after_workspace(monkeypatch, tmp_path, capsys
     assert FakeRuntime.created_with.model_path == "workspace-tail-model"
     assert FakeRuntime.created_with.validation_report_path == str(report)
     assert FakeRuntime.created_with.model_attestation_path == "tail-review.json"
+    assert FakeRuntime.created_with.model_backend == "torch-runtime"
     assert FakeRuntime.created_with.once == "/status"
     assert FakeRuntime.created_with.command_timeout_seconds == 9
     assert FakeRuntime.created_with.auto_jit_index is True
@@ -306,6 +312,8 @@ def test_parser_keeps_code_subcommand_and_once_option():
             "/status",
             "--auto-jit-index",
             "--auto-validate-model",
+            "--model-backend",
+            "torch-runtime",
             "--model-device",
             "cuda",
             "--model-dtype",
@@ -324,6 +332,7 @@ def test_parser_keeps_code_subcommand_and_once_option():
     assert args.once == "/status"
     assert args.auto_jit_index is True
     assert args.auto_validate_model is True
+    assert args.model_backend == "torch-runtime"
     assert args.model_device == "cuda"
     assert args.model_dtype == "float16"
     assert args.model_max_new_tokens == 99

@@ -44,6 +44,7 @@ class _FallbackDavidConfig:
     verify_command: str | None = None
     command_timeout_seconds: int | None = None
     auto_jit_index: bool = False
+    model_backend: str | None = None
     model_device: str | None = None
     model_dtype: str | None = None
     model_max_new_tokens: int | None = None
@@ -61,6 +62,7 @@ class _FallbackDavidConfig:
         verify_command: str | None,
         command_timeout_seconds: int | None,
         auto_jit_index: bool = False,
+        model_backend: str | None = None,
         model_device: str | None = None,
         model_dtype: str | None = None,
         model_max_new_tokens: int | None = None,
@@ -77,6 +79,7 @@ class _FallbackDavidConfig:
             verify_command=verify_command,
             command_timeout_seconds=command_timeout_seconds,
             auto_jit_index=auto_jit_index,
+            model_backend=model_backend.strip().lower() if model_backend is not None else None,
             model_device=model_device,
             model_dtype=model_dtype,
             model_max_new_tokens=model_max_new_tokens,
@@ -315,6 +318,7 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
         "verify_command": args.verify_command,
         "command_timeout_seconds": args.timeout,
         "auto_jit_index": args.auto_jit_index,
+        "model_backend": args.model_backend,
         "model_device": args.model_device,
         "model_dtype": args.model_dtype,
         "model_max_new_tokens": args.model_max_new_tokens,
@@ -332,6 +336,7 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
             verify_command=args.verify_command,
             command_timeout_seconds=args.timeout,
             auto_jit_index=args.auto_jit_index,
+            model_backend=args.model_backend,
             model_device=args.model_device,
             model_dtype=args.model_dtype,
             model_max_new_tokens=args.model_max_new_tokens,
@@ -355,6 +360,7 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
         "verify_command",
         "command_timeout_seconds",
         "auto_jit_index",
+        "model_backend",
         "model_device",
         "model_dtype",
         "model_max_new_tokens",
@@ -520,6 +526,11 @@ def _add_common_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
         action="store_true",
         default=absent_false,
         help="Run David's standalone scanner and validator into workspace .david artifacts before boot",
+    )
+    parser.add_argument(
+        "--model-backend",
+        default=absent_default,
+        help="Model backend selector for validated live decode, such as transformers or torch-runtime",
     )
     parser.add_argument(
         "--model-device",
