@@ -285,6 +285,7 @@ def test_doctor_distinguishes_local_hf_snapshot_vindex_and_missing_report(monkey
         "_wsl_tooling_check",
         lambda: doctor.DoctorCheck("WSL/tooling", "review", "unavailable"),
     )
+    _disable_wsl_probe_checks(monkeypatch)
 
     report = doctor.run_doctor(model=str(model), workspace_path=workspace)
     checks = {check.name: check for check in report.checks}
@@ -312,6 +313,7 @@ def test_doctor_classifies_direct_vindex_artifact_without_hf_snapshot_noise(monk
         "_wsl_tooling_check",
         lambda: doctor.DoctorCheck("WSL/tooling", "review", "unavailable"),
     )
+    _disable_wsl_probe_checks(monkeypatch)
 
     report = doctor.run_doctor(model=str(artifact), workspace_path=workspace)
     checks = {check.name: check for check in report.checks}
@@ -357,6 +359,7 @@ def test_doctor_reports_hf_cache_snapshot_completeness(monkeypatch, tmp_path):
         "_wsl_tooling_check",
         lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
     )
+    _disable_wsl_probe_checks(monkeypatch)
 
     report = doctor.run_doctor(model="google/gemma-e2b", workspace_path=workspace)
     checks = {check.name: check for check in report.checks}
@@ -364,6 +367,156 @@ def test_doctor_reports_hf_cache_snapshot_completeness(monkeypatch, tmp_path):
     assert checks["model location"].status == "review"
     assert checks["HF snapshot"].status == "ready"
     assert str(snapshot) in checks["HF snapshot"].detail
+
+
+def test_doctor_reports_complete_wsl_hf_snapshot_for_hf_model_id(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        script = command[-1]
+        if "model_cache =" in script:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "cache": "/home/jehma/.cache/huggingface/hub/models--google--gemma-4-E2B-it/snapshots",
+                        "snapshot_count": 1,
+                        "complete": True,
+                        "snapshot": (
+                            "/home/jehma/.cache/huggingface/hub/"
+                            "models--google--gemma-4-E2B-it/snapshots/b4a60110"
+                        ),
+                        "detail": "config, tokenizer, and weights present",
+                    }
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "missing": [],
+                    "cuda_status": "ready",
+                    "cuda_detail": "CUDA available; devices=1",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda item: "wsl.exe" if item == "wsl" else None)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "empty_hf"))
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "review", "CPU-only torch"),
+    )
+
+    report = doctor.run_doctor(model="google/gemma-4-E2B-it", workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["HF snapshot"].status == "missing"
+    assert checks["WSL HF snapshot"].status == "ready"
+    assert "/home/jehma/.cache/huggingface/hub/models--google--gemma-4-E2B-it" in (
+        checks["WSL HF snapshot"].detail
+    )
+    assert checks["WSL Python packages"].status == "ready"
+    assert "CUDA available" in checks["WSL Python packages"].detail
+    assert calls[0][1]["timeout"] == 5.0
+    assert calls[1][1]["timeout"] == 8.0
+
+
+def test_doctor_wsl_probe_timeout_degrades_to_review(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda item: "wsl.exe" if item == "wsl" else None)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "review", "CPU-only torch"),
+    )
+
+    report = doctor.run_doctor(model="google/gemma-4-E2B-it", workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["WSL HF snapshot"].status == "review"
+    assert "timed out after 5s" in checks["WSL HF snapshot"].detail
+    assert checks["WSL Python packages"].status == "review"
+    assert "timed out after 8s" in checks["WSL Python packages"].detail
+
+
+def test_doctor_wsl_python_missing_packages_stays_review(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fake_run(command, **_kwargs):
+        script = command[-1]
+        if "model_cache =" in script:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "cache": "/home/test/.cache/huggingface/hub/models--google--gemma-e2b/snapshots",
+                        "snapshot_count": 0,
+                        "complete": False,
+                    }
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "missing": ["torch", "accelerate"],
+                    "cuda_status": "not_checked",
+                    "cuda_detail": "torch is not importable",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor.shutil, "which", lambda item: "wsl.exe" if item == "wsl" else None)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "review", "CPU-only torch"),
+    )
+
+    report = doctor.run_doctor(model="google/gemma-e2b", workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["WSL HF snapshot"].status == "review"
+    assert checks["WSL Python packages"].status == "review"
+    assert "missing packages: torch, accelerate" in checks["WSL Python packages"].detail
+
+
+def _disable_wsl_probe_checks(monkeypatch):
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_hf_snapshot_check",
+        lambda _model: doctor.DoctorCheck("WSL HF snapshot", "review", "disabled"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_python_packages_check",
+        lambda: doctor.DoctorCheck("WSL Python packages", "review", "disabled"),
+    )
 
 
 def _write_vindex_artifact(parent: Path) -> Path:

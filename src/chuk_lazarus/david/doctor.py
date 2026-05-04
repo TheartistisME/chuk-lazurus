@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,10 +64,12 @@ def run_doctor(
         _workspace_check(workspace_root),
         _model_location_check(model),
         _hf_snapshot_check(model),
+        _wsl_hf_snapshot_check(model),
         _vindex_check(workspace_root, model),
         _validation_report_check(discovery),
         *_optional_package_checks(),
         _torch_cuda_check(),
+        _wsl_python_packages_check(),
         _auto_validate_check(
             model=model,
             workspace_path=workspace_root,
@@ -194,6 +198,85 @@ def _hf_snapshot_check(model: str | None) -> DoctorCheck:
     )
 
 
+def _wsl_hf_snapshot_check(model: str | None) -> DoctorCheck:
+    name = "WSL HF snapshot"
+    if not model:
+        return DoctorCheck(name, "review", "--model was not provided")
+    if not _looks_like_hf_model_id(model):
+        return DoctorCheck(name, "review", "not applicable; model is not an HF id")
+
+    model_cache = f"models--{model.replace('/', '--')}"
+    script = f"""
+import json
+from pathlib import Path
+
+model_cache = {model_cache!r}
+snapshots = Path.home() / ".cache" / "huggingface" / "hub" / model_cache / "snapshots"
+
+def completeness(path):
+    has_config = (path / "config.json").is_file()
+    has_tokenizer = any(
+        (path / item).is_file()
+        for item in ("tokenizer.json", "tokenizer.model", "spiece.model", "tokenizer_config.json")
+    )
+    has_weights = any(path.glob(pattern) for pattern in ("*.safetensors", "*.bin", "*.gguf"))
+    missing = []
+    if not has_config:
+        missing.append("config.json")
+    if not has_tokenizer:
+        missing.append("tokenizer files")
+    if not has_weights:
+        missing.append("weight files")
+    return not missing, ", ".join(missing)
+
+payload = {{"cache": str(snapshots), "snapshot_count": 0, "complete": False}}
+if snapshots.is_dir():
+    snapshot_dirs = sorted(path for path in snapshots.iterdir() if path.is_dir())[:64]
+    payload["snapshot_count"] = len(snapshot_dirs)
+    incomplete = []
+    for snapshot in snapshot_dirs:
+        complete, missing = completeness(snapshot)
+        if complete:
+            payload.update({{
+                "complete": True,
+                "snapshot": str(snapshot),
+                "detail": "config, tokenizer, and weights present",
+            }})
+            break
+        incomplete.append({{"path": str(snapshot), "missing": missing}})
+    if not payload["complete"]:
+        payload["incomplete"] = incomplete[:5]
+
+print(json.dumps(payload))
+"""
+    payload, error = _run_wsl_python_json(script, timeout_seconds=5.0)
+    if error is not None:
+        return DoctorCheck(name, "review", error)
+    if payload is None:
+        return DoctorCheck(name, "review", "wsl probe returned no data")
+
+    if payload.get("complete"):
+        snapshot = payload.get("snapshot", "(unknown snapshot)")
+        detail = payload.get("detail", "config, tokenizer, and weights present")
+        return DoctorCheck(name, "ready", f"{snapshot}; {detail}")
+
+    cache = payload.get("cache", f"/home/<user>/.cache/huggingface/hub/{model_cache}/snapshots")
+    snapshot_count = int(payload.get("snapshot_count") or 0)
+    if snapshot_count:
+        incomplete = payload.get("incomplete")
+        example = ""
+        if isinstance(incomplete, list) and incomplete:
+            first = incomplete[0]
+            if isinstance(first, dict):
+                example = f"; first incomplete snapshot missing {first.get('missing', 'unknown files')}"
+        return DoctorCheck(
+            name,
+            "review",
+            f"{snapshot_count} WSL snapshot(s) found under {cache}, none complete{example}",
+        )
+    return DoctorCheck(name, "review", f"no local WSL HF cache snapshots under {cache}")
+
+
 def _vindex_check(workspace_root: Path, model: str | None) -> DoctorCheck:
     candidates: list[Path] = []
     if workspace_root.is_dir():
@@ -252,6 +335,55 @@ def _torch_cuda_check() -> DoctorCheck:
     return DoctorCheck("torch CUDA", "review", "CPU-only torch; real Gemma boot may be too slow or impossible")
 
 
+def _wsl_python_packages_check() -> DoctorCheck:
+    name = "WSL Python packages"
+    script = """
+import importlib.util
+import json
+
+packages = ("torch", "transformers", "accelerate")
+available = {package: importlib.util.find_spec(package) is not None for package in packages}
+missing = [package for package, present in available.items() if not present]
+cuda_status = "not_checked"
+cuda_detail = "torch is not importable"
+if available.get("torch"):
+    try:
+        import torch
+
+        cuda = getattr(torch, "cuda", None)
+        is_available = getattr(cuda, "is_available", None)
+        if callable(is_available) and is_available():
+            device_count = getattr(cuda, "device_count", lambda: "?")()
+            cuda_status = "ready"
+            cuda_detail = f"CUDA available; devices={device_count}"
+        elif callable(is_available):
+            cuda_status = "cpu_only"
+            cuda_detail = "torch importable; CUDA unavailable"
+        else:
+            cuda_status = "review"
+            cuda_detail = "torch.cuda API is unavailable"
+    except Exception as exc:
+        cuda_status = "review"
+        cuda_detail = f"torch import failed: {exc}"
+
+print(json.dumps({"missing": missing, "cuda_status": cuda_status, "cuda_detail": cuda_detail}))
+"""
+    payload, error = _run_wsl_python_json(script, timeout_seconds=8.0)
+    if error is not None:
+        return DoctorCheck(name, "review", error)
+    if payload is None:
+        return DoctorCheck(name, "review", "wsl probe returned no data")
+
+    missing = payload.get("missing")
+    missing_packages = tuple(str(item) for item in missing) if isinstance(missing, list) else ()
+    cuda_status = str(payload.get("cuda_status") or "not_checked")
+    cuda_detail = str(payload.get("cuda_detail") or "CUDA status unavailable")
+    if missing_packages:
+        return DoctorCheck(name, "review", f"missing packages: {', '.join(missing_packages)}; {cuda_detail}")
+    status = "ready" if cuda_status == "ready" else "review"
+    return DoctorCheck(name, status, f"torch, transformers, accelerate importable; {cuda_detail}")
+
+
 def _auto_validate_check(
     *,
     model: str | None,
@@ -302,6 +434,37 @@ def _wsl_tooling_check() -> DoctorCheck:
     if tinydex.exists():
         return DoctorCheck("WSL/tooling", "ready", f"wsl.exe found; tinydex found at {tinydex}")
     return DoctorCheck("WSL/tooling", "review", "wsl.exe found; tinydex path not found")
+
+
+def _run_wsl_python_json(script: str, *, timeout_seconds: float) -> tuple[dict[str, object] | None, str | None]:
+    wsl = shutil.which("wsl")
+    if wsl is None:
+        return None, "wsl.exe is not on PATH"
+    command = (wsl, "bash", "-lc", f"python3 - <<'PY'\n{script}\nPY")
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"wsl probe timed out after {timeout_seconds:g}s"
+    except OSError as exc:
+        return None, f"wsl probe failed to start: {exc}"
+
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+    if result.returncode != 0:
+        detail = stderr or stdout or "no output"
+        return None, f"wsl probe failed rc={result.returncode}: {detail}"
+    if not stdout:
+        return None, "wsl probe returned empty output"
+    try:
+        return json.loads(stdout.splitlines()[-1]), None
+    except json.JSONDecodeError as exc:
+        return None, f"wsl probe returned invalid JSON: {exc}"
 
 
 def _format_vindex_artifact_detail(metadata: VindexArtifactMetadata) -> str:
