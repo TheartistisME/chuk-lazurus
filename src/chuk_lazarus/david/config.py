@@ -48,10 +48,43 @@ class DavidConfig:
     state_dir: Path | None = None
     session_id: str = "default"
     user_id: str = "default"
+    model_path: str | None = None
+    validation_report_path: str | None = None
+    require_validated_model: bool = True
+    color: bool = True
+    once: str | None = None
+    verify_command: str | None = None
+    command_timeout_seconds: int | None = None
     adapter: AdapterSessionMetadata = field(default_factory=AdapterSessionMetadata)
     auto_jit_index: bool = False
     model_tool_protocol: bool = False
     max_route_tokens: int = 2048
+
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        workspace_path: Path,
+        model_path: str | None,
+        validation_report_path: str | None,
+        require_validated_model: bool,
+        color: bool,
+        once: str | None,
+        verify_command: str | None,
+        command_timeout_seconds: int | None,
+        auto_jit_index: bool = False,
+    ) -> "DavidConfig":
+        return cls(
+            workspace_root=workspace_path,
+            model_path=model_path,
+            validation_report_path=validation_report_path,
+            require_validated_model=require_validated_model,
+            color=color,
+            once=once,
+            verify_command=verify_command,
+            command_timeout_seconds=command_timeout_seconds,
+            auto_jit_index=auto_jit_index,
+        )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "workspace_root", Path(self.workspace_root).resolve())
@@ -60,6 +93,10 @@ class DavidConfig:
         else:
             state_dir = Path(self.state_dir).resolve()
         object.__setattr__(self, "state_dir", state_dir)
+
+    @property
+    def workspace_path(self) -> Path:
+        return self.workspace_root
 
     @property
     def user_memory_path(self) -> Path:
@@ -73,4 +110,3 @@ class DavidConfig:
     def index_manifest_path(self) -> Path:
         safe_model = self.adapter.model_id.replace("/", "_").replace("\\", "_")
         return self.state_dir / "indexes" / f"{safe_model}-{self.adapter.model_revision}.json"
-

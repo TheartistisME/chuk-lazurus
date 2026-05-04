@@ -49,8 +49,25 @@ def test_main_code_once_uses_workspace_and_prompt(monkeypatch, tmp_path, capsys)
 def test_parser_keeps_code_subcommand_and_once_option():
     parser = cli.build_parser()
 
-    args = parser.parse_args(["code", ".", "--once", "/status"])
+    args = parser.parse_args(
+        [
+            "code",
+            ".",
+            "--model",
+            "google/gemma-e2b",
+            "--validation-report",
+            "report.json",
+            "--allow-unvalidated",
+            "--once",
+            "/status",
+            "--auto-jit-index",
+        ]
+    )
 
     assert args.command == "code"
     assert args.workspace == "."
+    assert args.model == "google/gemma-e2b"
+    assert args.validation_report == "report.json"
+    assert args.allow_unvalidated is True
     assert args.once == "/status"
+    assert args.auto_jit_index is True

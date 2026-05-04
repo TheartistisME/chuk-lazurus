@@ -32,6 +32,7 @@ class _FallbackDavidConfig:
     once: str | None = None
     verify_command: str | None = None
     command_timeout_seconds: int | None = None
+    auto_jit_index: bool = False
 
     @classmethod
     def from_values(
@@ -45,6 +46,7 @@ class _FallbackDavidConfig:
         once: str | None,
         verify_command: str | None,
         command_timeout_seconds: int | None,
+        auto_jit_index: bool = False,
     ) -> "_FallbackDavidConfig":
         return cls(
             workspace_path=workspace_path.expanduser().resolve(),
@@ -55,6 +57,7 @@ class _FallbackDavidConfig:
             once=once,
             verify_command=verify_command,
             command_timeout_seconds=command_timeout_seconds,
+            auto_jit_index=auto_jit_index,
         )
 
 
@@ -165,7 +168,7 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
         "once": args.once,
         "verify_command": args.verify_command,
         "command_timeout_seconds": args.timeout,
-        "auto_jit_index": False,
+        "auto_jit_index": args.auto_jit_index,
     }
 
     from_values = getattr(DavidConfig, "from_values", None)
@@ -179,6 +182,7 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
             once=args.once,
             verify_command=args.verify_command,
             command_timeout_seconds=args.timeout,
+            auto_jit_index=args.auto_jit_index,
         )
 
     signature = inspect.signature(DavidConfig)
@@ -188,7 +192,16 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
         if name in signature.parameters
     }
     config = DavidConfig(**kwargs)
-    for name in ("color", "once", "verify_command", "command_timeout_seconds"):
+    for name in (
+        "model_path",
+        "validation_report_path",
+        "require_validated_model",
+        "color",
+        "once",
+        "verify_command",
+        "command_timeout_seconds",
+        "auto_jit_index",
+    ):
         if not hasattr(config, name):
             object.__setattr__(config, name, values[name])
     return config
@@ -218,6 +231,11 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help="Local tool command timeout in seconds",
+    )
+    parser.add_argument(
+        "--auto-jit-index",
+        action="store_true",
+        help="Build a workspace index at startup when one is required and missing",
     )
 
 
