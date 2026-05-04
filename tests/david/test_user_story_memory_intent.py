@@ -35,6 +35,11 @@ def test_reminder_user_story_writes_user_memory_not_task_memory(tmp_path: Path) 
     record = json.loads(user_memory.read_text(encoding="utf-8").splitlines()[-1])
     assert record["kind"] == "user_continuity"
     assert "rate-limiting" in record["text"]
+    assert record["metadata"]["sensitivity"] == "normal"
+    assert record["metadata"]["source_method"] == "user_continuity"
+    assert record["metadata"]["supersedes"] == []
+    assert "effective_at" in record["metadata"]
+    assert "expires_at" in record["metadata"]
 
 
 def test_active_code_work_still_wins_over_user_memory_language() -> None:

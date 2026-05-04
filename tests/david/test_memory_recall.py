@@ -47,6 +47,9 @@ def test_temporal_recall_writeback_uses_user_memory(tmp_path: Path) -> None:
     assert artifact.kind == "temporal_recall"
     assert runtime.memory.user.all() == [artifact]
     assert runtime.memory.task.all() == []
+    assert artifact.metadata["sensitivity"] == "normal"
+    assert artifact.metadata["source_method"] == "temporal_recall"
+    assert artifact.metadata["supersedes"] == []
 
 
 def test_repo_patch_and_source_dependency_writeback_use_task_memory(tmp_path: Path) -> None:
@@ -57,7 +60,14 @@ def test_repo_patch_and_source_dependency_writeback_use_task_memory(tmp_path: Pa
         user_id="user-1",
         session_id="session-1",
         text="Patch target is src/runtime.py",
-        metadata={"provenance": "test"},
+        metadata={
+            "effective_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2026-01-02T00:00:00+00:00",
+            "provenance": "test",
+            "sensitivity": "private",
+            "source_method": "temporal_recall",
+            "supersedes": ["old-id"],
+        },
     )
     source_artifact = runtime.memory.writeback(
         method="source_dependency",
@@ -72,6 +82,81 @@ def test_repo_patch_and_source_dependency_writeback_use_task_memory(tmp_path: Pa
     assert runtime.memory.user.all() == []
     assert patch_artifact.family == "task"
     assert source_artifact.family == "task"
+    assert "sensitivity" not in patch_artifact.metadata
+    assert "effective_at" not in patch_artifact.metadata
+    assert "expires_at" not in patch_artifact.metadata
+    assert "supersedes" not in patch_artifact.metadata
+    assert "source_method" not in patch_artifact.metadata
+
+
+def test_user_memory_policy_tracks_active_and_stale_memories(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    old = MemoryArtifact(
+        family="user",
+        text="User prefers compact diffs",
+        kind="preference",
+        artifact_id="old-pref",
+        metadata={
+            "effective_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "sensitivity": "private",
+            "source_method": "user_continuity",
+            "supersedes": [],
+        },
+    )
+    expired = MemoryArtifact(
+        family="user",
+        text="User temporarily prefers long diffs",
+        kind="preference",
+        artifact_id="expired-pref",
+        metadata={"expires_at": "2026-01-02T00:00:00+00:00"},
+    )
+    latest = MemoryArtifact(
+        family="user",
+        text="User prefers summary diffs",
+        kind="preference",
+        artifact_id="latest-pref",
+        metadata={
+            "effective_at": "2026-01-03T00:00:00+00:00",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "sensitivity": "private",
+            "source_method": "user_continuity",
+            "supersedes": ["old-pref"],
+        },
+    )
+    runtime.memory.user.append(old)
+    runtime.memory.user.append(expired)
+    runtime.memory.user.append(latest)
+
+    active = runtime.memory.active_user_memories(now="2026-01-04T00:00:00+00:00")
+    stale = runtime.memory.stale_user_memories(now="2026-01-04T00:00:00+00:00")
+    recall = runtime.memory.user.recall("prefers diffs")
+
+    assert [artifact.artifact_id for artifact in active] == ["latest-pref"]
+    assert {artifact.artifact_id for artifact in stale} == {"old-pref", "expired-pref"}
+    assert [item["artifact_id"] for item in recall] == ["latest-pref"]
+
+
+def test_user_writeback_policy_refuses_temporary_workspace_state(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    artifact = runtime.memory.writeback(
+        method="user_continuity",
+        user_id="user-1",
+        session_id="session-1",
+        text="Temporary workspace state: selected file is src/runtime.py",
+        metadata={
+            "provenance": "test",
+            "selected_paths": ["src/runtime.py"],
+            "sensitivity": "private",
+        },
+    )
+
+    assert artifact.family == "task"
+    assert runtime.memory.user.all() == []
+    assert runtime.memory.task.all() == [artifact]
+    assert artifact.metadata["user_memory_refused_reason"] == "temporary_workspace_state"
+    assert "sensitivity" not in artifact.metadata
 
 
 def test_symbolic_recall_can_chain_task_and_user_evidence(tmp_path: Path) -> None:
