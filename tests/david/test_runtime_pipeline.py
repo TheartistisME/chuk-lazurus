@@ -302,8 +302,11 @@ def test_runtime_agent_loop_executes_actions_and_persists_trace(tmp_path: Path) 
     assert result.writeback["family"] == "task"
     assert result.writeback["kind"] == "agent_loop"
     assert result.writeback["metadata"]["loop"]["status"] == "verified"
+    assert result.resume_snapshot is not None
+    assert "agent_loop status=verified" in result.resume_snapshot["last_result_summary"]
     assert (tmp_path / "src" / "generated.py").read_text(encoding="utf-8") == "VALUE = 7\n"
     assert (tmp_path / "state" / "memory" / "task-default.jsonl").exists()
+    assert (tmp_path / "state" / "resume.json").exists()
 
 
 def test_runtime_auto_jit_builds_bounded_source_index(tmp_path: Path) -> None:

@@ -112,6 +112,7 @@ class RuntimeAgentLoopResult:
     prompt: str
     loop: AgentLoopResult
     writeback: dict[str, Any] | None = None
+    resume_snapshot: dict[str, Any] | None = None
 
     @property
     def answer(self) -> str:
@@ -130,6 +131,7 @@ class RuntimeAgentLoopResult:
             "answer": self.answer,
             "loop": self.loop.to_dict(),
             "writeback": self.writeback,
+            "resume_snapshot": self.resume_snapshot,
         }
         return data
 
@@ -299,7 +301,14 @@ class DavidRuntime:
                 },
             )
             writeback = artifact.to_json()
-        return RuntimeAgentLoopResult(prompt=original_prompt, loop=loop, writeback=writeback)
+        result = RuntimeAgentLoopResult(prompt=original_prompt, loop=loop, writeback=writeback)
+        snapshot = self._save_resume_snapshot(result)
+        return RuntimeAgentLoopResult(
+            prompt=original_prompt,
+            loop=loop,
+            writeback=writeback,
+            resume_snapshot=snapshot.to_json(),
+        )
 
     def agent_loop(
         self,
@@ -650,7 +659,13 @@ class DavidRuntime:
         except (OSError, ValueError):
             return None
 
-    def _save_resume_snapshot(self, result: RuntimeResult) -> SessionSnapshot:
+    def _save_resume_snapshot(self, result: Any) -> SessionSnapshot:
+        live_index_refresh = getattr(result, "live_index_refresh", None)
+        summary_input: Any = (
+            result.answer
+            if live_index_refresh is None
+            else {"answer": result.answer, "live_index_refresh": live_index_refresh}
+        )
         snapshot = SessionSnapshot(
             session_id=self.config.session_id,
             workspace=str(self.config.workspace_root),
@@ -662,12 +677,7 @@ class DavidRuntime:
                 "source_index": str(self.source_index_path),
                 "live_index_state": str(self.live_index_state_path),
             },
-            last_result_summary=summarize_result(
-                {
-                    "answer": result.answer,
-                    "live_index_refresh": result.live_index_refresh,
-                }
-            ),
+            last_result_summary=summarize_result(summary_input),
         )
         self.resume_snapshot = save_session_snapshot(snapshot, self.resume_path)
         return self.resume_snapshot
