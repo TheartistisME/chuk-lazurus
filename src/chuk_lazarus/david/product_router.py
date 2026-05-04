@@ -7,6 +7,7 @@ methodology metadata without importing protected proof-rig scripts.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+import inspect
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 from .patch_routing import (
@@ -59,6 +60,16 @@ class MiniRouter(Protocol):
         session_id: str,
         evidence: list[dict[str, Any]],
         max_tokens: int,
+        adapter_metadata: Mapping[str, Any] | None = None,
+        index_readiness_metadata: Mapping[str, Any] | None = None,
+        apollo_residual_readiness: Mapping[str, Any] | None = None,
+        path_hints: Sequence[str] = (),
+        identifiers: Sequence[str] = (),
+        ordinal: int | None = None,
+        decode_constraints: Mapping[str, Any] | None = None,
+        verification_expectations: Sequence[str] = (),
+        writeback_targets: Sequence[str] = (),
+        allow_jit_indexing: bool = True,
     ) -> RoutePacket:
         ...
 
@@ -94,6 +105,17 @@ class ProductRoutePacket:
     source_hint_paths: list[str] = field(default_factory=list)
     triad_augmented_paths: list[str] = field(default_factory=list)
     patch_rejected_paths: dict[str, list[str]] = field(default_factory=dict)
+    adapter_metadata: dict[str, Any] = field(default_factory=dict)
+    index_readiness_metadata: dict[str, Any] = field(default_factory=dict)
+    apollo_residual_readiness: dict[str, Any] = field(default_factory=dict)
+    path_hints: list[str] = field(default_factory=list)
+    identifiers: list[str] = field(default_factory=list)
+    ordinal: int | None = None
+    decode_constraints: dict[str, Any] = field(default_factory=dict)
+    verification_expectations: list[str] = field(default_factory=list)
+    writeback_targets: list[str] = field(default_factory=list)
+    jit_required: bool = False
+    jit_actions: list[str] = field(default_factory=list)
     provenance: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
@@ -123,8 +145,17 @@ class ProductRouter:
         files: Mapping[str, str] | None = None,
         windows: Sequence[Mapping[str, Any]] = (),
         path_hints: Sequence[str] = (),
+        identifiers: Sequence[str] = (),
+        ordinal: int | None = None,
         source_index: SourceIndexManifest | Mapping[str, Any] | None = None,
         source_records: Sequence[SourceFileRecord | Mapping[str, Any]] = (),
+        adapter_metadata: Mapping[str, Any] | None = None,
+        index_readiness_metadata: Mapping[str, Any] | None = None,
+        apollo_residual_readiness: Mapping[str, Any] | None = None,
+        decode_constraints: Mapping[str, Any] | None = None,
+        verification_expectations: Sequence[str] = (),
+        writeback_targets: Sequence[str] = (),
+        allow_jit_indexing: bool = True,
         method: str | None = None,
         methodology: str | None = None,
         max_tokens: int = 4096,
@@ -155,6 +186,16 @@ class ProductRouter:
             session_id=session_id,
             evidence=evidence_items,
             max_tokens=max_tokens,
+            adapter_metadata=adapter_metadata,
+            index_readiness_metadata=index_readiness_metadata,
+            apollo_residual_readiness=apollo_residual_readiness,
+            path_hints=path_hints,
+            identifiers=identifiers,
+            ordinal=ordinal,
+            decode_constraints=decode_constraints,
+            verification_expectations=verification_expectations,
+            writeback_targets=writeback_targets,
+            allow_jit_indexing=allow_jit_indexing,
         )
         return _enrich_route_packet(
             base,
@@ -162,6 +203,15 @@ class ProductRouter:
             proof_router_available=self._proof_router_available,
             patch_plan=patch_plan,
             source_records=index_records,
+            adapter_metadata=adapter_metadata,
+            index_readiness_metadata=index_readiness_metadata,
+            apollo_residual_readiness=apollo_residual_readiness,
+            path_hints=path_hints,
+            identifiers=identifiers,
+            ordinal=ordinal,
+            decode_constraints=decode_constraints,
+            verification_expectations=verification_expectations,
+            writeback_targets=writeback_targets,
         )
 
     def _route_fail_safe(
@@ -172,14 +222,35 @@ class ProductRouter:
         session_id: str,
         evidence: list[dict[str, Any]],
         max_tokens: int,
+        adapter_metadata: Mapping[str, Any] | None = None,
+        index_readiness_metadata: Mapping[str, Any] | None = None,
+        apollo_residual_readiness: Mapping[str, Any] | None = None,
+        path_hints: Sequence[str] = (),
+        identifiers: Sequence[str] = (),
+        ordinal: int | None = None,
+        decode_constraints: Mapping[str, Any] | None = None,
+        verification_expectations: Sequence[str] = (),
+        writeback_targets: Sequence[str] = (),
+        allow_jit_indexing: bool = True,
     ) -> RoutePacket:
         try:
-            return self._router.route(
+            return _route_with_supported_kwargs(
+                self._router,
                 method=method,
                 prompt=prompt,
                 session_id=session_id,
                 evidence=evidence,
                 max_tokens=max_tokens,
+                adapter_metadata=adapter_metadata,
+                index_readiness_metadata=index_readiness_metadata,
+                apollo_residual_readiness=apollo_residual_readiness,
+                path_hints=path_hints,
+                identifiers=identifiers,
+                ordinal=ordinal,
+                decode_constraints=decode_constraints,
+                verification_expectations=verification_expectations,
+                writeback_targets=writeback_targets,
+                allow_jit_indexing=allow_jit_indexing,
             )
         except Exception as exc:
             fallback = CentralRouter().route(
@@ -211,8 +282,17 @@ def route_product(
     files: Mapping[str, str] | None = None,
     windows: Sequence[Mapping[str, Any]] = (),
     path_hints: Sequence[str] = (),
+    identifiers: Sequence[str] = (),
+    ordinal: int | None = None,
     source_index: SourceIndexManifest | Mapping[str, Any] | None = None,
     source_records: Sequence[SourceFileRecord | Mapping[str, Any]] = (),
+    adapter_metadata: Mapping[str, Any] | None = None,
+    index_readiness_metadata: Mapping[str, Any] | None = None,
+    apollo_residual_readiness: Mapping[str, Any] | None = None,
+    decode_constraints: Mapping[str, Any] | None = None,
+    verification_expectations: Sequence[str] = (),
+    writeback_targets: Sequence[str] = (),
+    allow_jit_indexing: bool = True,
     method: str | None = None,
     methodology: str | None = None,
     max_tokens: int = 4096,
@@ -224,8 +304,17 @@ def route_product(
         files=files,
         windows=windows,
         path_hints=path_hints,
+        identifiers=identifiers,
+        ordinal=ordinal,
         source_index=source_index,
         source_records=source_records,
+        adapter_metadata=adapter_metadata,
+        index_readiness_metadata=index_readiness_metadata,
+        apollo_residual_readiness=apollo_residual_readiness,
+        decode_constraints=decode_constraints,
+        verification_expectations=verification_expectations,
+        writeback_targets=writeback_targets,
+        allow_jit_indexing=allow_jit_indexing,
         method=method,
         methodology=methodology,
         max_tokens=max_tokens,
@@ -336,8 +425,30 @@ def _enrich_route_packet(
     proof_router_available: bool,
     patch_plan: PatchRoutePlan | None,
     source_records: Sequence[SourceFileRecord],
+    adapter_metadata: Mapping[str, Any] | None,
+    index_readiness_metadata: Mapping[str, Any] | None,
+    apollo_residual_readiness: Mapping[str, Any] | None,
+    path_hints: Sequence[str],
+    identifiers: Sequence[str],
+    ordinal: int | None,
+    decode_constraints: Mapping[str, Any] | None,
+    verification_expectations: Sequence[str],
+    writeback_targets: Sequence[str],
 ) -> ProductRoutePacket:
     route_reasons = [base.route_reason]
+    adapter_metadata_dict = _plain_mapping(adapter_metadata)
+    index_metadata_dict = _plain_mapping(index_readiness_metadata)
+    apollo_readiness_dict = _plain_mapping(apollo_residual_readiness)
+    path_hint_list = _unique_text(path_hints)
+    identifier_list = _unique_text(identifiers)
+    decode_constraints_dict = _effective_decode_constraints(base.provenance, decode_constraints)
+    verification_expectation_list = _effective_verification_expectations(
+        base.provenance,
+        verification_expectations,
+    )
+    writeback_target_list = _effective_writeback_targets(base.provenance, writeback_targets)
+    jit_actions = _extract_jit_actions(base.provenance)
+    jit_required = bool(base.provenance.get("jit_required") or jit_actions)
     provenance = {
         **base.provenance,
         "product_router": "chuk_lazarus.david.product_router",
@@ -345,7 +456,21 @@ def _enrich_route_packet(
         "proof_rig": METHODOLOGY_TO_PROOF_RIG[methodology],
         "proof_router_available": proof_router_available,
         "protected_imports": "not_imported",
+        "product_inputs": {
+            "adapter_metadata": adapter_metadata_dict,
+            "index_readiness_metadata": index_metadata_dict,
+            "apollo_residual_readiness": apollo_readiness_dict,
+            "path_hints": path_hint_list,
+            "identifiers": identifier_list,
+            "ordinal": ordinal,
+            "decode_constraints": _plain_mapping(decode_constraints),
+            "verification_expectations": list(verification_expectations),
+            "writeback_targets": list(writeback_targets),
+        },
     }
+    if jit_required:
+        provenance["jit_required"] = True
+        provenance["jit_actions"] = jit_actions
     selected_paths: list[str] = []
     selected_tests: list[str] = []
     selected_symbols: list[str] = []
@@ -426,6 +551,17 @@ def _enrich_route_packet(
         source_hint_paths=source_hint_paths,
         triad_augmented_paths=triad_augmented_paths,
         patch_rejected_paths=rejected_paths,
+        adapter_metadata=adapter_metadata_dict,
+        index_readiness_metadata=index_metadata_dict,
+        apollo_residual_readiness=apollo_readiness_dict,
+        path_hints=path_hint_list,
+        identifiers=identifier_list,
+        ordinal=ordinal,
+        decode_constraints=decode_constraints_dict,
+        verification_expectations=verification_expectation_list,
+        writeback_targets=writeback_target_list,
+        jit_required=jit_required,
+        jit_actions=jit_actions,
         provenance=provenance,
     )
 
@@ -449,3 +585,109 @@ def _unique_text(items: Iterable[str]) -> list[str]:
             seen.add(text)
             output.append(text)
     return output
+
+
+def _route_with_supported_kwargs(router: MiniRouter, **kwargs: Any) -> RoutePacket:
+    route = router.route
+    signature = inspect.signature(route)
+    parameters = signature.parameters
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return route(**kwargs)
+    return route(**{key: value for key, value in kwargs.items() if key in parameters})
+
+
+def _effective_decode_constraints(
+    provenance: Mapping[str, Any],
+    requested: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    decode_policy = provenance.get("decode_policy")
+    if isinstance(decode_policy, Mapping) and isinstance(decode_policy.get("constraints"), Mapping):
+        return _plain_mapping(decode_policy["constraints"])
+    materialization = provenance.get("materialization_plan")
+    if isinstance(materialization, Mapping) and isinstance(materialization.get("decode_constraints"), Mapping):
+        return _plain_mapping(materialization["decode_constraints"])
+    return _plain_mapping(requested)
+
+
+def _effective_verification_expectations(
+    provenance: Mapping[str, Any],
+    requested: Sequence[str],
+) -> list[str]:
+    items: list[str] = list(requested)
+    verification_plan = provenance.get("verification_plan")
+    if isinstance(verification_plan, Mapping):
+        for key in ("expectations", "assertions", "required_artifacts"):
+            value = verification_plan.get(key)
+            if isinstance(value, str):
+                items.append(value)
+            else:
+                items.extend(str(item) for item in value or ())
+    materialization = provenance.get("materialization_plan")
+    if isinstance(materialization, Mapping):
+        value = materialization.get("verification_expectations")
+        if isinstance(value, str):
+            items.append(value)
+        else:
+            items.extend(str(item) for item in value or ())
+    return _unique_text(items)
+
+
+def _effective_writeback_targets(
+    provenance: Mapping[str, Any],
+    requested: Sequence[str],
+) -> list[str]:
+    items: list[str] = list(requested)
+    write_back_policy = provenance.get("write_back_policy")
+    if isinstance(write_back_policy, Mapping):
+        value = write_back_policy.get("targets")
+        if isinstance(value, str):
+            items.append(value)
+        else:
+            items.extend(str(item) for item in value or ())
+    materialization = provenance.get("materialization_plan")
+    if isinstance(materialization, Mapping):
+        value = materialization.get("write_back_targets")
+        if isinstance(value, str):
+            items.append(value)
+        else:
+            items.extend(str(item) for item in value or ())
+    return _unique_text(items)
+
+
+def _extract_jit_actions(provenance: Mapping[str, Any]) -> list[str]:
+    actions: list[str] = []
+    for key in ("jit_actions", "jit_indexing_actions"):
+        value = provenance.get(key)
+        if isinstance(value, str):
+            actions.append(value)
+        else:
+            actions.extend(str(item) for item in value or ())
+    compatibility = provenance.get("compatibility_proof")
+    if isinstance(compatibility, Mapping):
+        value = compatibility.get("jit_indexing_actions")
+        if isinstance(value, str):
+            actions.append(value)
+        else:
+            actions.extend(str(item) for item in value or ())
+    materialization = provenance.get("materialization_plan")
+    if isinstance(materialization, Mapping):
+        value = materialization.get("recapture_requirements")
+        if isinstance(value, str):
+            actions.append(value)
+        else:
+            actions.extend(str(item) for item in value or ())
+    return _unique_text(actions)
+
+
+def _plain_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): _plain_value(item) for key, item in value.items()}
+
+
+def _plain_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set)):
+        return [_plain_value(item) for item in value]
+    return value

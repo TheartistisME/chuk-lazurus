@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 import importlib.util
+import inspect
 from pathlib import Path
 import sys
 from typing import Any, Callable, Mapping, Sequence
@@ -53,22 +54,62 @@ class CentralRouterAdapter:
         session_id: str,
         evidence: list[dict[str, Any]],
         max_tokens: int,
+        adapter_metadata: Mapping[str, Any] | None = None,
+        index_readiness_metadata: Mapping[str, Any] | None = None,
+        apollo_residual_readiness: Mapping[str, Any] | None = None,
+        path_hints: Sequence[str] = (),
+        identifiers: Sequence[str] = (),
+        ordinal: int | None = None,
+        decode_constraints: Mapping[str, Any] | None = None,
+        verification_expectations: Sequence[str] = (),
+        writeback_targets: Sequence[str] = (),
+        allow_jit_indexing: bool = True,
     ) -> RoutePacket:
         module = self._router_module()
         methodology = METHOD_TO_METHODOLOGY.get(method, "dependency_source")
         windows = _evidence_to_windows(module, evidence, session_id=session_id)
-        request = module.RouteRequest(
+        request_metadata = {
+            "session_id": session_id,
+            "max_tokens": max_tokens,
+            "product_adapter": "chuk_lazarus.david.central_router_adapter",
+            "adapter_metadata": _plain_mapping(adapter_metadata),
+            "index_metadata": _plain_mapping(index_readiness_metadata),
+            "index_readiness_metadata": _plain_mapping(index_readiness_metadata),
+            "apollo_residual_metadata": _plain_mapping(apollo_residual_readiness),
+            "apollo_residual_readiness": _plain_mapping(apollo_residual_readiness),
+            "path_hints": tuple(str(item) for item in path_hints),
+            "identifiers": tuple(str(item) for item in identifiers),
+            "ordinal": ordinal,
+            "decode_constraints": _plain_mapping(decode_constraints),
+            "verification_expectations": tuple(str(item) for item in verification_expectations),
+            "write_back_targets": tuple(str(item) for item in writeback_targets),
+            "allow_jit_indexing": bool(allow_jit_indexing),
+            "require_apollo_residual_ready": bool(apollo_residual_readiness),
+        }
+        request = _construct_supported(
+            module.RouteRequest,
             query=str(prompt or ""),
             capability_mode=methodology,
             scope_key=session_id,
-            metadata={
-                "session_id": session_id,
-                "max_tokens": max_tokens,
-                "product_adapter": "chuk_lazarus.david.central_router_adapter",
-            },
+            ordinal=ordinal,
+            path_hints=tuple(str(item) for item in path_hints),
+            identifiers=tuple(str(item) for item in identifiers),
+            metadata=request_metadata,
         )
         router = module.CentralRouter(hot_count=self._hot_count, warm_count=self._warm_count)
-        plan = router.route(request, windows)
+        try:
+            plan = router.route(request, windows)
+        except Exception as exc:
+            if _is_jit_required_signal(exc):
+                return route_packet_from_jit_signal(
+                    exc,
+                    method=method,
+                    session_id=session_id,
+                    evidence=evidence,
+                    max_tokens=max_tokens,
+                    request_metadata=request_metadata,
+                )
+            raise
         return route_packet_from_plan(
             plan,
             method=method,
@@ -127,11 +168,22 @@ def route_packet_from_plan(
         "route_plan_metadata": _plain_mapping(getattr(plan, "router_metadata", {})),
         "selected_window_ids": _selected_window_ids(plan),
         "tiers_present": list(getattr(plan, "tiers_present", lambda: ())()),
+        "tier_details": _tier_details(plan),
+        "materialization_plan": _materialization_provenance(materialization),
+        "evidence_supports": _evidence_supports(plan, route_packet),
         "protected_imports": "not_imported",
     }
     compatibility = getattr(route_packet, "compatibility_proof", None)
     if compatibility is not None:
         provenance["compatibility_proof"] = _plain_dataclass_or_mapping(compatibility)
+    for field_name in ("decode_policy", "verification_plan", "write_back_policy"):
+        field_value = getattr(route_packet, field_name, None)
+        if field_value is not None:
+            provenance[field_name] = _plain_dataclass_or_mapping(field_value)
+    jit_actions = _jit_actions_from_plan(materialization, compatibility, provenance["route_plan_metadata"])
+    if jit_actions:
+        provenance["jit_required"] = True
+        provenance["jit_actions"] = jit_actions
     return RoutePacket(
         method=method,
         selected_windows=selected_windows,
@@ -155,6 +207,59 @@ def route_packet_from_plan(
     )
 
 
+def route_packet_from_jit_signal(
+    signal: BaseException,
+    *,
+    method: str,
+    session_id: str,
+    evidence: list[dict[str, Any]],
+    max_tokens: int,
+    request_metadata: Mapping[str, Any],
+) -> RoutePacket:
+    """Convert a full-router JIT stop signal into explicit product metadata."""
+
+    selected_windows = [
+        str(item.get("text") or item.get("reason") or item.get("path") or "")
+        for item in evidence[:3]
+    ]
+    token_cost = min(max_tokens, sum(len(text.split()) for text in selected_windows))
+    compatibility = getattr(signal, "compatibility_proof", None)
+    metadata = _plain_mapping(getattr(signal, "metadata", {}))
+    jit_actions = [
+        str(item)
+        for item in getattr(signal, "jit_indexing_actions", ())
+        or metadata.get("jit_indexing_actions", ())
+    ]
+    provenance = {
+        "router": "david.central_router.full",
+        "adapter": "chuk_lazarus.david.central_router_adapter",
+        "protected_imports": "not_imported",
+        "jit_required": True,
+        "jit_actions": jit_actions,
+        "jit_metadata": metadata,
+        "route_plan_metadata": {
+            "jit_indexing_required": True,
+            "jit_indexing_stop": metadata.get("jit_indexing_stop", "pre_route"),
+        },
+        "product_request_metadata": _plain_mapping(request_metadata),
+    }
+    if compatibility is not None:
+        provenance["compatibility_proof"] = _plain_dataclass_or_mapping(compatibility)
+    return RoutePacket(
+        method=method,
+        selected_windows=selected_windows,
+        memory_family=_memory_family(method),
+        session_id=session_id,
+        tier="warm" if evidence else "cold",
+        route_reason="full David central router requires JIT before routing",
+        evidence=evidence,
+        token_cost=token_cost,
+        residual_available=bool(getattr(compatibility, "apollo_residual_ready", False)),
+        kv_ready=False,
+        provenance=provenance,
+    )
+
+
 def _evidence_to_windows(module: Any, evidence: Sequence[Mapping[str, Any]], *, session_id: str) -> list[Any]:
     windows: list[Any] = []
     for index, item in enumerate(evidence):
@@ -166,7 +271,8 @@ def _evidence_to_windows(module: Any, evidence: Sequence[Mapping[str, Any]], *, 
             if key in data:
                 metadata.setdefault(key, data[key])
         windows.append(
-            module.RouteWindow(
+            _construct_supported(
+                module.RouteWindow,
                 window_id=window_id,
                 text=text,
                 scope_key=session_id,
@@ -231,6 +337,98 @@ def _max_candidate_score(plan: Any, *names: str) -> float:
     return max(values) if values else 0.0
 
 
+def _tier_details(plan: Any) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for assignment in getattr(plan, "tier_assignments", ()) or ():
+        windows = tuple(getattr(assignment, "windows", ()) or ())
+        details.append(
+            {
+                "tier": str(getattr(assignment, "tier", "")),
+                "window_ids": [str(getattr(window, "window_id", "")) for window in windows],
+                "candidate_ids": [str(item) for item in getattr(assignment, "candidate_ids", ()) or ()],
+                "score_range": list(getattr(assignment, "score_range", ()) or ()),
+                "reason": str(getattr(assignment, "reason", "")),
+            }
+        )
+    return details
+
+
+def _materialization_provenance(materialization: Any) -> dict[str, Any]:
+    if materialization is None:
+        return {}
+    keys = (
+        "tier_order",
+        "tier_window_ids",
+        "per_tier_counts",
+        "notes",
+        "token_budget",
+        "payload_plan",
+        "boundary_residual_paths",
+        "residual_stream_paths",
+        "kv_direct_ready",
+        "recapture_requirements",
+        "insertion_layer",
+        "decode_constraints",
+        "verification_expectations",
+        "write_back_targets",
+        "fast_route_ready",
+        "apollo_residual_ready",
+        "apollo_residual_identity",
+        "apollo_manifest_path",
+        "apollo_torch_store_path",
+    )
+    return {
+        key: _plain_value(getattr(materialization, key))
+        for key in keys
+        if hasattr(materialization, key)
+    }
+
+
+def _evidence_supports(plan: Any, route_packet: Any) -> list[dict[str, Any]]:
+    supports = tuple(getattr(plan, "evidence_supports", ()) or ())
+    if not supports and route_packet is not None:
+        supports = tuple(getattr(route_packet, "evidence", ()) or ())
+    output: list[dict[str, Any]] = []
+    for support in supports:
+        output.append(
+            {
+                "window_id": str(getattr(support, "window_id", "")),
+                "supports_claim": str(getattr(support, "supports_claim", "")),
+                "confidence": _float_or_none(getattr(support, "confidence", None)) or 0.0,
+                "evidence": _plain_value(getattr(support, "evidence", ())),
+                "mode": str(getattr(support, "mode", "")),
+                "route_trace": _plain_value(getattr(support, "route_trace", {})),
+            }
+        )
+    return output
+
+
+def _jit_actions_from_plan(materialization: Any, compatibility: Any, metadata: Mapping[str, Any]) -> list[str]:
+    actions: list[str] = []
+    for source in (
+        getattr(compatibility, "jit_indexing_actions", ()) if compatibility is not None else (),
+        getattr(materialization, "recapture_requirements", ()) if materialization is not None else (),
+        metadata.get("jit_indexing_actions", ()),
+    ):
+        if isinstance(source, str):
+            actions.append(source)
+        else:
+            actions.extend(str(item) for item in source or ())
+    return list(dict.fromkeys(item for item in actions if item))
+
+
+def _is_jit_required_signal(exc: BaseException) -> bool:
+    return hasattr(exc, "jit_indexing_actions") and hasattr(exc, "compatibility_proof")
+
+
+def _construct_supported(factory: Any, **kwargs: Any) -> Any:
+    signature = inspect.signature(factory)
+    parameters = signature.parameters
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return factory(**kwargs)
+    return factory(**{key: value for key, value in kwargs.items() if key in parameters})
+
+
 def _float_or_none(value: Any) -> float | None:
     if value is None:
         return None
@@ -251,10 +449,17 @@ def _plain_mapping(value: Any) -> dict[str, Any]:
         return {}
     output: dict[str, Any] = {}
     for key, item in value.items():
-        if isinstance(item, Mapping):
-            output[str(key)] = _plain_mapping(item)
-        elif isinstance(item, tuple):
-            output[str(key)] = list(item)
-        else:
-            output[str(key)] = item
+        output[str(key)] = _plain_value(item)
     return output
+
+
+def _plain_value(value: Any) -> Any:
+    if is_dataclass(value):
+        return _plain_value(asdict(value))
+    if isinstance(value, Mapping):
+        return {str(key): _plain_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set)):
+        return [_plain_value(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value

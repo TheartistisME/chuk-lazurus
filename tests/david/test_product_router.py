@@ -21,6 +21,34 @@ def test_product_router_adds_temporal_methodology_metadata() -> None:
     assert packet.ordinal_score == 1.0
 
 
+def test_product_router_carries_full_adapter_contract_inputs() -> None:
+    packet = route_product(
+        "Trace dependency path",
+        methodology="dependency_source",
+        evidence=[{"text": "src/app.py imports src/db.py", "score": 4}],
+        adapter_metadata={"model_family": "gemma-e2b", "route_layer": "12"},
+        index_readiness_metadata={"index_id": "idx-1", "status": "ready"},
+        apollo_residual_readiness={"status": "ready", "manifest_id": "apollo-1"},
+        path_hints=["src/app.py"],
+        identifiers=["AppService"],
+        ordinal=1,
+        decode_constraints={"valid_paths": ["src/app.py"]},
+        verification_expectations=["right file selected"],
+        writeback_targets=["code_task_memory"],
+    )
+
+    assert packet.adapter_metadata["model_family"] == "gemma-e2b"
+    assert packet.index_readiness_metadata["status"] == "ready"
+    assert packet.apollo_residual_readiness["manifest_id"] == "apollo-1"
+    assert packet.path_hints == ["src/app.py"]
+    assert packet.identifiers == ["AppService"]
+    assert packet.ordinal == 1
+    assert packet.decode_constraints == {"valid_paths": ["src/app.py"]}
+    assert packet.verification_expectations == ["right file selected"]
+    assert packet.writeback_targets == ["code_task_memory"]
+    assert packet.provenance["product_inputs"]["adapter_metadata"]["route_layer"] == "12"
+
+
 def test_product_router_exposes_patch_paths_tests_and_rejections() -> None:
     packet = route_product(
         "Fix session leakage in the Postgres socket handler",
