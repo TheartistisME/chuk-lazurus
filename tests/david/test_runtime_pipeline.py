@@ -400,6 +400,74 @@ def test_runtime_refuses_sidecar_replay_for_default_backend_without_tensor_hook(
     assert replay["consumer"]["consumer_id"] == "offline-deterministic:no-tensor-replay"
 
 
+def test_runtime_generation_prompt_uses_production_response_slot(tmp_path: Path) -> None:
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    captured: dict[str, object] = {}
+
+    class PromptCaptureBackend:
+        name = "prompt-capture"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del kwargs
+            captured["prompt"] = prompt
+            return ModelBackendResult(text="Ready.", backend=self.name)
+
+    runtime.backend = PromptCaptureBackend()
+
+    result = runtime.run_once("Fix the repo bug by patching src/example.py")
+
+    generation_prompt = str(captured["prompt"])
+    assert "Respond with the next concise coding-agent action." not in generation_prompt
+    assert "Capability:" in generation_prompt
+    assert "Evidence count:" in generation_prompt
+    assert runtime_module.DAVID_RESPONSE_SENTINEL in generation_prompt
+    assert generation_prompt.rstrip().endswith(runtime_module.DAVID_RESPONSE_SENTINEL)
+    assert result.model_result is not None
+    assert result.model_result.text == "Ready."
+
+
+def test_runtime_cleans_echoed_response_slot_and_preserves_raw_model_text(tmp_path: Path) -> None:
+    model_root = tmp_path / "model"
+    model_root.mkdir()
+    runtime = DavidRuntime.create(
+        DavidConfig(
+            workspace_root=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            model_path=str(model_root),
+        )
+    )
+    raw_text = (
+        f"{runtime_module.DAVID_RESPONSE_SENTINEL}\n"
+        "Respond with the next concise coding-agent action.\n"
+        "Apply the focused patch."
+    )
+
+    class EchoBackend:
+        name = "echo-cleanup"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del prompt, kwargs
+            return ModelBackendResult(text=raw_text, backend=self.name, metadata={"source": "unit"})
+
+    runtime.backend = EchoBackend()
+
+    result = runtime.run_once("Fix the repo bug by patching src/example.py")
+
+    assert result.answer == "Apply the focused patch."
+    assert result.model_result is not None
+    assert result.model_result.text == "Apply the focused patch."
+    postprocess = result.model_result.metadata["answer_postprocess"]
+    assert postprocess["cleaned"] is True
+    assert postprocess["raw_model_text"] == raw_text
+    assert result.model_result.metadata["source"] == "unit"
+
+
 def test_runtime_refuses_live_steering_when_transformers_backend_cannot_load(tmp_path: Path) -> None:
     source = tmp_path / "src" / "app.js"
     source.parent.mkdir()

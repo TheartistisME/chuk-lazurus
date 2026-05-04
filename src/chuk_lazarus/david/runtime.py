@@ -52,11 +52,40 @@ except ImportError:  # pragma: no cover - only used if harness package is unavai
     boot_harness = None
 
 
+DAVID_RESPONSE_SENTINEL = "David response:"
+_LEGACY_GENERATION_INSTRUCTIONS = (
+    "Respond with the next concise coding-agent action.",
+    "Respond with the next concise coding-agent action",
+    "Respond with the next concise coding-",
+)
+
+
 def _materialization_replay_metadata(model_result: ModelBackendResult | None) -> dict[str, Any] | None:
     if model_result is None:
         return None
     replay = model_result.metadata.get("materialization_replay")
     return replay if isinstance(replay, dict) else None
+
+
+def _clean_runtime_model_text(text: str) -> tuple[str, dict[str, Any]]:
+    raw_text = text
+    cleaned = text.strip()
+    sentinel_index = cleaned.rfind(DAVID_RESPONSE_SENTINEL)
+    if sentinel_index >= 0:
+        cleaned = cleaned[sentinel_index + len(DAVID_RESPONSE_SENTINEL) :].strip()
+    lines = [
+        line
+        for line in cleaned.splitlines()
+        if line.strip() and line.strip() not in _LEGACY_GENERATION_INSTRUCTIONS
+    ]
+    cleaned = "\n".join(lines).strip()
+    metadata = {
+        "cleaned": cleaned != raw_text,
+        "sentinel": DAVID_RESPONSE_SENTINEL,
+    }
+    if metadata["cleaned"]:
+        metadata["raw_model_text"] = raw_text
+    return cleaned, metadata
 
 
 @dataclass(frozen=True)
@@ -819,11 +848,14 @@ class DavidRuntime:
         replay_consumer: ReplayConsumerInput = None,
     ) -> ModelBackendResult:
         generation_prompt = (
+            "You are David, a terminal coding agent operating inside the user's workspace.\n"
+            "Use the routed methodology and evidence to produce the smallest useful next answer.\n"
             f"Task: {prompt}\n"
-            f"Method: {method}\n"
+            f"Methodology: {method}\n"
             f"Capability: {product_route.capability}\n"
             f"Evidence count: {len(product_route.evidence)}\n"
-            "Respond with the next concise coding-agent action."
+            "Answer only in the response slot below. Do not repeat this prompt, labels, or instructions.\n"
+            f"{DAVID_RESPONSE_SENTINEL}"
         )
         steering = self._decoder_steering_processor(decoder)
         model_result = self.backend.generate(
@@ -833,14 +865,16 @@ class DavidRuntime:
             materialization_plan=materialized.materialization_plan,
             replay_consumer=replay_consumer,
         )
+        cleaned_text, postprocess_metadata = _clean_runtime_model_text(model_result.text)
         return ModelBackendResult(
-            text=model_result.text,
+            text=cleaned_text,
             backend=model_result.backend,
             ok=model_result.ok,
             error=model_result.error,
             metadata={
                 **model_result.metadata,
                 "decoder_steering": steering["metadata"],
+                "answer_postprocess": postprocess_metadata,
             },
         )
 
