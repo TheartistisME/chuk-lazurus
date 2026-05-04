@@ -32,6 +32,31 @@ def test_temporal_recall_requires_ordinal_timestamp_and_artifact(tmp_path: Path)
     assert result.checks["temporal_ordinal"]["has_timestamp"] is True
 
 
+def test_temporal_recall_rejects_requested_ordinal_mismatch(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        "temporal_recall",
+        [
+            {
+                "artifact_id": "user-1",
+                "family": "user",
+                "text": "Second preference",
+                "timestamp": "2026-05-04T01:00:00+00:00",
+                "ordinal": 1,
+                "occurrence_index": 1,
+            }
+        ],
+        metadata={"requested_ordinal": 2},
+    )
+
+    assert result.ok is False
+    check = result.checks["temporal_ordinal"]
+    assert check["ordinal_mismatch"] is True
+    assert check["ordinal_match_ok"] is False
+    assert check["matching_occurrences"] == []
+
+
 def test_temporal_recall_rejects_similar_text_without_occurrence_metadata(tmp_path: Path) -> None:
     verifier = _verifier(tmp_path)
 
@@ -86,6 +111,45 @@ def test_symbolic_chain_accepts_complete_ordered_hops(tmp_path: Path) -> None:
     assert result.ok is True
     assert result.checks["symbolic_chain"]["ordered_hops"] == 3
     assert result.checks["symbolic_chain"]["provenance_count"] == 3
+
+
+def test_symbolic_chain_reports_duplicate_and_out_of_order_hops(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="symbolic_multi_hop",
+        evidence=[
+            {"artifact_id": "parse", "text": "parser calls lexer", "ordinal": 0, "provenance": "jsonl"},
+            {
+                "artifact_id": "emit",
+                "text": "emitter formats output",
+                "ordinal": 2,
+                "depends_on": "lexer",
+                "provenance": "jsonl",
+            },
+            {
+                "artifact_id": "lexer",
+                "text": "lexer emits tokens",
+                "ordinal": 1,
+                "depends_on": "parse",
+                "provenance": "jsonl",
+            },
+            {
+                "artifact_id": "lexer",
+                "text": "duplicate lexer hop",
+                "ordinal": 1,
+                "depends_on": "parse",
+                "provenance": "jsonl",
+            },
+        ],
+        metadata={"expected_hops": ["parse", "lexer", "emit"]},
+    )
+
+    assert result.ok is False
+    check = result.checks["symbolic_chain"]
+    assert check["duplicate_hops"] == ["lexer"]
+    assert check["out_of_order_hops"]
+    assert check["order_ok"] is False
 
 
 def test_symbolic_chain_rejects_single_or_unprovenanced_hop(tmp_path: Path) -> None:
@@ -240,6 +304,30 @@ def test_materialization_acceptance_requires_evidence_chain_when_not_refused(tmp
     check = result.checks["adapter_materialization_compatibility"]
     assert check["evidence_chain_required"] is True
     assert check["evidence_chain_count"] == 0
+
+
+def test_materialization_reports_incomplete_route_evidence_chain(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="source_dependency",
+        evidence=[{"path": "src/example.py", "text": "source evidence"}],
+        metadata={
+            "adapter": {"model_id": "gemma-e2b", "tokenizer_id": "gemma-tokenizer"},
+            "materialized": {
+                "strategy": "boundary_residual",
+                "refused": False,
+                "compatibility": {"model_id": "gemma-e2b", "tokenizer_id": "gemma-tokenizer"},
+            },
+            "route_evidence_chain": [{"artifact_id": "source-other", "path": "src/other.py"}],
+        },
+    )
+
+    assert result.ok is False
+    check = result.checks["adapter_materialization_compatibility"]
+    assert check["route_evidence_chain_complete"] is False
+    assert check["missing_route_evidence_refs"][0]["index"] == 0
+    assert "path:src/example.py" in check["missing_route_evidence_refs"][0]["refs"]
 
 
 def test_task_writeback_requires_route_evidence_chain(tmp_path: Path) -> None:
@@ -699,6 +787,7 @@ def test_verifier_checks_decoder_product_route_and_backend_metadata(tmp_path: Pa
                 "proof_rig": "LoCoBench source/dependency routing",
                 "route_reasons": ["source_dependency methodology selected"],
                 "evidence": evidence,
+                "excluded_paths": ["../outside.py", "scripts/run_swebench_pro_parity.py"],
             },
             "route_evidence_chain": [{"path": "src/example.py", "kind": "source_index_record"}],
             "backend": {"name": "offline-deterministic", "ok": True, "metadata": {"deterministic": True}},
@@ -708,4 +797,6 @@ def test_verifier_checks_decoder_product_route_and_backend_metadata(tmp_path: Pa
     assert result.ok is True
     assert result.checks["decoder_prior_scope"]["has_persisted_prior"] is True
     assert result.checks["product_route"]["route_evidence_chain_count"] == 1
+    assert result.checks["product_route"]["selected_unsafe_paths"] == []
+    assert result.checks["product_route"]["excluded_protected_paths"] == ["scripts/run_swebench_pro_parity.py"]
     assert result.checks["backend"]["name"] == "offline-deterministic"

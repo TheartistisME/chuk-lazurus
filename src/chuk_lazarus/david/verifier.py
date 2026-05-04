@@ -84,7 +84,7 @@ class Verifier:
         elif capability == "source_dependency":
             checks["source_evidence"] = self._check_source_evidence(evidence)
 
-        compatibility = self._check_compatibility_metadata(metadata)
+        compatibility = self._check_compatibility_metadata(metadata, evidence)
         if compatibility is not None:
             checks["adapter_materialization_compatibility"] = compatibility
 
@@ -119,7 +119,15 @@ class Verifier:
 
     @staticmethod
     def _check_temporal_ordinal(evidence: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
-        requested = metadata.get("requested_ordinal") or metadata.get("ordinal")
+        requested = _first_present_value(metadata, "requested_ordinal", "ordinal")
+        requested_occurrence = _first_present_value(
+            metadata,
+            "requested_occurrence",
+            "occurrence",
+            "occurrence_index",
+            "occurrence_id",
+        )
+        requested_values = [value for value in (requested, requested_occurrence) if _is_present_value(value)]
         ordinals = [item.get("ordinal") for item in evidence if item.get("ordinal") is not None]
         occurrences = [
             item.get(key)
@@ -127,19 +135,28 @@ class Verifier:
             for key in ("occurrence", "occurrence_index", "occurrence_id")
             if item.get(key) is not None
         ]
+        occurrence_entries = _temporal_occurrence_entries(evidence)
         timestamps = [item.get("timestamp") for item in evidence if item.get("timestamp")]
         ids = [item.get("artifact_id") for item in evidence if item.get("artifact_id")]
         occurrence_required = bool(
-            requested
+            requested_values
             or metadata.get("requires_occurrence_metadata")
-            or metadata.get("requested_occurrence")
         )
-        has_occurrence = bool(ordinals or occurrences)
-        ok = bool(evidence and timestamps and ids and (has_occurrence or not occurrence_required))
+        has_occurrence = bool(occurrence_entries)
+        matching_occurrences = [
+            entry
+            for entry in occurrence_entries
+            if any(_ordinal_value_matches(requested_value, entry["value"], len(evidence)) for requested_value in requested_values)
+        ]
+        ordinal_match_required = bool(requested_values)
+        ordinal_match_ok = not ordinal_match_required or not has_occurrence or bool(matching_occurrences)
+        ordinal_mismatch = ordinal_match_required and has_occurrence and not matching_occurrences
+        ok = bool(evidence and timestamps and ids and (has_occurrence or not occurrence_required) and ordinal_match_ok)
         return {
             "ok": ok,
             "evidence_count": len(evidence),
             "requested_ordinal": requested,
+            "requested_occurrence": requested_occurrence,
             "has_ordinal": bool(ordinals),
             "has_occurrence": has_occurrence,
             "has_timestamp": bool(timestamps),
@@ -147,28 +164,47 @@ class Verifier:
             "ordinals": ordinals,
             "occurrences": occurrences,
             "occurrence_required": occurrence_required,
+            "ordinal_match_required": ordinal_match_required,
+            "ordinal_match_ok": ordinal_match_ok,
+            "ordinal_mismatch": ordinal_mismatch,
+            "matching_occurrences": matching_occurrences,
+            "occurrence_metadata": occurrence_entries,
         }
 
     @staticmethod
     def _check_symbolic_chain(evidence: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
-        expected = [str(item) for item in metadata.get("expected_hops", [])]
-        hop_values = {
-            str(value)
-            for item in evidence
-            for key in ("hop", "chain_hop", "symbol", "artifact_id")
-            if (value := item.get(key)) is not None
-        }
-        ordered = [item for item in evidence if item.get("ordinal") is not None or item.get("hop") is not None]
-        linked = [
-            item
-            for item in evidence
-            if item.get("depends_on") is not None or item.get("links_to") is not None or item.get("chain_id") is not None
-        ]
-        provenance = [item for item in evidence if item.get("provenance") or item.get("source") or item.get("metadata")]
+        expected = [_expected_hop_value(item) for item in metadata.get("expected_hops", [])]
+        records = [_chain_hop_record(index, item) for index, item in enumerate(evidence)]
+        hop_ids = [record["hop"] for record in records if record["hop"] is not None]
+        hop_values = set(hop_ids)
+        ordered = [record for record in records if record["has_order"]]
+        linked = [record for record in records if record["link_values"] or record["chain_id"] is not None]
+        provenance = [record for record in records if record["has_provenance"]]
         missing = [hop for hop in expected if hop not in hop_values]
+        duplicate_hops = _duplicate_values(hop_ids)
+        duplicate_order_values = _duplicate_values(
+            [str(record["order"]) for record in records if record["order"] is not None]
+        )
+        out_of_order_hops = _chain_order_errors(records, expected)
+        missing_hop_metadata = _missing_chain_metadata(records)
+        link_gaps = _chain_link_gaps(records, expected)
         complete = not missing if expected else len(evidence) >= 2 and bool(ordered)
         multi_hop = len(evidence) >= 2 and len(ordered) >= 2
-        ok = bool(evidence) and complete and multi_hop and len(provenance) == len(evidence)
+        provenance_ok = len(provenance) == len(evidence)
+        order_ok = not out_of_order_hops and not duplicate_order_values
+        hop_metadata_ok = not missing_hop_metadata
+        duplicate_ok = not duplicate_hops
+        link_ok = not link_gaps
+        ok = (
+            bool(evidence)
+            and complete
+            and multi_hop
+            and provenance_ok
+            and order_ok
+            and hop_metadata_ok
+            and duplicate_ok
+            and link_ok
+        )
         return {
             "ok": ok,
             "evidence_count": len(evidence),
@@ -178,6 +214,19 @@ class Verifier:
             "linked_hops": len(linked),
             "provenance_count": len(provenance),
             "requires_multi_hop": True,
+            "duplicate_hops": duplicate_hops,
+            "duplicate_order_values": duplicate_order_values,
+            "out_of_order_hops": out_of_order_hops,
+            "missing_hop_metadata": missing_hop_metadata,
+            "link_gaps": link_gaps,
+            "provenance_missing": [
+                {"index": record["index"], "hop": record["hop"]}
+                for record in records
+                if not record["has_provenance"]
+            ],
+            "order_ok": order_ok,
+            "provenance_ok": provenance_ok,
+            "link_ok": link_ok,
         }
 
     def _check_patch_targets(self, evidence: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
@@ -256,7 +305,10 @@ class Verifier:
         )
 
     @staticmethod
-    def _check_compatibility_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    def _check_compatibility_metadata(
+        metadata: dict[str, Any],
+        evidence: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         adapter = metadata.get("adapter") or metadata.get("adapter_scope")
         materialized = metadata.get("materialized") or metadata.get("materialization")
         compatibility = metadata.get("compatibility")
@@ -290,14 +342,27 @@ class Verifier:
             evidence_chain = materialized.get("evidence_chain") or materialized.get("route_evidence_chain") or []
         if not evidence_chain:
             evidence_chain = metadata.get("route_evidence_chain") or []
+        route_chain = evidence_chain if isinstance(evidence_chain, list) else []
+        route_chain_check = _route_evidence_chain_check(evidence, route_chain)
         plan_evidence_count = 0
         if isinstance(materialized, dict) and isinstance(materialized.get("materialization_plan"), dict):
             plan = materialized["materialization_plan"]
             plan_evidence_count += len(plan.get("sidecars") or []) if isinstance(plan.get("sidecars"), list) else 0
             plan_evidence_count += len(plan.get("replay_refs") or []) if isinstance(plan.get("replay_refs"), list) else 0
         chain_required = bool(isinstance(materialized, dict) and not refused)
-        chain_ok = isinstance(evidence_chain, list) and (bool(evidence_chain) or bool(plan_evidence_count) or not chain_required)
-        ok = not mismatches and not refused and chain_ok
+        has_chain_evidence = bool(route_chain) or bool(plan_evidence_count)
+        route_chain_complete = route_chain_check["complete"] if route_chain else bool(plan_evidence_count or not chain_required)
+        chain_ok = isinstance(evidence_chain, list) and (has_chain_evidence or not chain_required) and route_chain_complete
+        route_paths = _paths_from_items(route_chain)
+        if isinstance(materialized, dict):
+            route_paths.extend(_string_list(materialized.get("selected_paths") or materialized.get("paths")))
+        excluded_paths = _string_list(
+            metadata.get("excluded_paths")
+            or (materialized.get("excluded_paths") if isinstance(materialized, dict) else None)
+            or (materialized.get("excluded_candidates") if isinstance(materialized, dict) else None)
+        )
+        path_safety = _path_safety_report(route_paths, excluded_paths)
+        ok = not mismatches and not refused and chain_ok and path_safety["ok"]
         return {
             "ok": ok,
             "mismatches": mismatches,
@@ -305,6 +370,15 @@ class Verifier:
             "strategy": materialized.get("strategy") if isinstance(materialized, dict) else None,
             "evidence_chain_count": (len(evidence_chain) if isinstance(evidence_chain, list) else 0) + plan_evidence_count,
             "evidence_chain_required": chain_required,
+            "route_evidence_chain_count": len(route_chain),
+            "route_evidence_chain_complete": route_chain_complete,
+            "missing_route_evidence_refs": route_chain_check["missing_refs"],
+            "runtime_evidence_refs": route_chain_check["required_refs"],
+            "route_evidence_refs": route_chain_check["chain_refs"],
+            "route_unsafe_paths": path_safety["unsafe_paths"],
+            "route_protected_paths": path_safety["protected_paths"],
+            "excluded_unsafe_paths": path_safety["excluded_unsafe_paths"],
+            "excluded_protected_paths": path_safety["excluded_protected_paths"],
         }
 
     @staticmethod
@@ -602,10 +676,23 @@ class Verifier:
         if not isinstance(product_route, dict):
             return None
         evidence_chain = metadata.get("route_evidence_chain")
+        if not isinstance(evidence_chain, list):
+            evidence_chain = product_route.get("route_evidence_chain")
+        route_chain = evidence_chain if isinstance(evidence_chain, list) else []
         route_reasons = product_route.get("route_reasons") or []
+        if not _is_non_string_sequence(route_reasons):
+            route_reasons = []
         method = product_route.get("method")
-        product_evidence = product_route.get("evidence") or []
-        selected_paths = product_route.get("selected_paths") or []
+        raw_product_evidence = product_route.get("evidence") or []
+        product_evidence = list(raw_product_evidence) if _is_non_string_sequence(raw_product_evidence) else []
+        selected_paths = _string_list(product_route.get("selected_paths"))
+        combined_evidence = [item for item in [*evidence, *product_evidence] if isinstance(item, dict)]
+        route_chain_check = _route_evidence_chain_check(combined_evidence, route_chain)
+        excluded_paths = _string_list(product_route.get("excluded_paths") or product_route.get("excluded_candidates"))
+        path_safety = _path_safety_report(
+            [*_string_list(selected_paths), *_paths_from_items(product_evidence), *_paths_from_items(route_chain)],
+            excluded_paths,
+        )
         ok = (
             method == capability
             and bool(product_route.get("methodology"))
@@ -613,6 +700,8 @@ class Verifier:
             and bool(product_route.get("proof_rig"))
             and len(product_evidence) >= len(evidence)
             and (not evidence or isinstance(evidence_chain, list))
+            and route_chain_check["complete"]
+            and path_safety["ok"]
         )
         return {
             "ok": ok,
@@ -624,7 +713,15 @@ class Verifier:
             "evidence_count": len(product_evidence),
             "runtime_evidence_count": len(evidence),
             "route_evidence_chain_count": len(evidence_chain) if isinstance(evidence_chain, list) else 0,
+            "route_evidence_chain_complete": route_chain_check["complete"],
+            "missing_route_evidence_refs": route_chain_check["missing_refs"],
+            "runtime_evidence_refs": route_chain_check["required_refs"],
+            "route_evidence_refs": route_chain_check["chain_refs"],
             "selected_paths": selected_paths,
+            "selected_unsafe_paths": path_safety["unsafe_paths"],
+            "selected_protected_paths": path_safety["protected_paths"],
+            "excluded_unsafe_paths": path_safety["excluded_unsafe_paths"],
+            "excluded_protected_paths": path_safety["excluded_protected_paths"],
         }
 
     @staticmethod
@@ -661,6 +758,313 @@ def _first_mapping(*values: Any) -> dict[str, Any] | None:
         if isinstance(value, Mapping):
             return dict(value)
     return None
+
+
+def _is_present_value(value: Any) -> bool:
+    return value is not None and value != ""
+
+
+def _first_present_value(mapping: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping and _is_present_value(mapping.get(key)):
+            return mapping.get(key)
+    return None
+
+
+def _temporal_occurrence_entries(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    occurrence_keys = (
+        "ordinal",
+        "ordinal_index",
+        "ordinal_rank",
+        "occurrence",
+        "occurrence_index",
+        "occurrence_id",
+        "occurrence_rank",
+    )
+    entries: list[dict[str, Any]] = []
+    for index, item in enumerate(evidence):
+        for key in occurrence_keys:
+            value = item.get(key)
+            if value is not None:
+                entries.append(
+                    {
+                        "index": index,
+                        "key": key,
+                        "value": value,
+                        "artifact_id": item.get("artifact_id"),
+                    }
+                )
+    return entries
+
+
+def _ordinal_value_matches(requested: Any, actual: Any, evidence_count: int) -> bool:
+    return bool(_ordinal_tokens(requested, evidence_count) & _ordinal_tokens(actual, evidence_count))
+
+
+def _ordinal_tokens(value: Any, evidence_count: int) -> set[Any]:
+    if not _is_present_value(value):
+        return set()
+    text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    tokens: set[Any] = {text}
+    numeric = _maybe_int(value)
+    if numeric is not None:
+        tokens.update({numeric, str(numeric)})
+
+    aliases: dict[str, set[Any]] = {
+        "latest": {"latest", "last", "most_recent", "newest", 0, "0"},
+        "last": {"latest", "last", "most_recent", "newest", 0, "0"},
+        "most_recent": {"latest", "last", "most_recent", "newest", 0, "0"},
+        "newest": {"latest", "last", "most_recent", "newest", 0, "0"},
+        "first": {"first", 1, "1"},
+        "1st": {"first", 1, "1"},
+        "second": {"second", 2, "2"},
+        "2nd": {"second", 2, "2"},
+        "third": {"third", 3, "3"},
+        "3rd": {"third", 3, "3"},
+    }
+    if evidence_count == 1 and text in {"latest", "last", "most_recent", "newest"}:
+        tokens.update({"only", "single"})
+    tokens.update(aliases.get(text, set()))
+    return tokens
+
+
+def _maybe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _expected_hop_value(item: Any) -> str:
+    if isinstance(item, Mapping):
+        for key in ("hop", "chain_hop", "symbol", "artifact_id", "id"):
+            value = item.get(key)
+            if value is not None:
+                return str(value)
+    return str(item)
+
+
+def _chain_hop_record(index: int, item: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "index": index,
+        "hop": _chain_hop_id(item),
+        "order": _chain_order_value(item),
+        "has_order": _chain_has_order_metadata(item),
+        "link_values": _chain_link_values(item),
+        "chain_id": item.get("chain_id"),
+        "has_provenance": bool(item.get("provenance") or item.get("source") or item.get("metadata")),
+    }
+
+
+def _chain_hop_id(item: Mapping[str, Any]) -> str | None:
+    for key in ("chain_hop", "symbol", "artifact_id", "id", "hop"):
+        value = item.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _chain_order_value(item: Mapping[str, Any]) -> Any:
+    for key in ("ordinal", "hop_index", "chain_index", "position", "sequence"):
+        value = item.get(key)
+        if value is not None:
+            return value
+    hop = item.get("hop")
+    return hop if _maybe_int(hop) is not None else None
+
+
+def _chain_has_order_metadata(item: Mapping[str, Any]) -> bool:
+    return any(item.get(key) is not None for key in ("ordinal", "hop_index", "chain_index", "position", "sequence", "hop"))
+
+
+def _chain_link_values(item: Mapping[str, Any]) -> list[str]:
+    links: list[str] = []
+    for key in ("depends_on", "links_to", "previous_hop", "previous", "parent_hop"):
+        value = item.get(key)
+        if value is None:
+            continue
+        if _is_non_string_sequence(value):
+            links.extend(str(entry) for entry in value if entry is not None)
+        else:
+            links.append(str(value))
+    return links
+
+
+def _duplicate_values(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    return duplicates
+
+
+def _chain_order_errors(records: list[dict[str, Any]], expected: list[str]) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    previous_record: dict[str, Any] | None = None
+    previous_key: tuple[int, Any] | None = None
+    for record in records:
+        if record["order"] is None:
+            continue
+        key = _order_sort_key(record["order"])
+        if previous_key is not None and key <= previous_key:
+            errors.append(
+                {
+                    "reason": "non_increasing_declared_order",
+                    "index": record["index"],
+                    "hop": record["hop"],
+                    "order": record["order"],
+                    "previous_hop": previous_record["hop"] if previous_record else None,
+                    "previous_order": previous_record["order"] if previous_record else None,
+                }
+            )
+        previous_key = key
+        previous_record = record
+
+    if expected:
+        expected_rank = {hop: index for index, hop in enumerate(expected)}
+        observed = [record["hop"] for record in records if record["hop"] in expected_rank]
+        observed_ranks = [expected_rank[str(hop)] for hop in observed]
+        if observed_ranks != sorted(observed_ranks):
+            errors.append(
+                {
+                    "reason": "expected_hop_order_mismatch",
+                    "expected_order": expected,
+                    "observed_order": observed,
+                }
+            )
+    return errors
+
+
+def _order_sort_key(value: Any) -> tuple[int, Any]:
+    numeric = _maybe_int(value)
+    if numeric is not None:
+        return (0, numeric)
+    return (1, str(value))
+
+
+def _missing_chain_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    missing: list[dict[str, Any]] = []
+    for record in records:
+        fields: list[str] = []
+        if record["hop"] is None:
+            fields.append("hop")
+        if not record["has_order"]:
+            fields.append("order")
+        if not record["has_provenance"]:
+            fields.append("provenance")
+        if fields:
+            missing.append({"index": record["index"], "hop": record["hop"], "missing": fields})
+    return missing
+
+
+def _chain_link_gaps(records: list[dict[str, Any]], expected: list[str]) -> list[dict[str, Any]]:
+    if not expected:
+        return []
+    by_hop: dict[str, dict[str, Any]] = {}
+    for record in records:
+        hop = record["hop"]
+        if hop is not None and hop not in by_hop:
+            by_hop[hop] = record
+
+    gaps: list[dict[str, Any]] = []
+    for index, hop in enumerate(expected[1:], start=1):
+        record = by_hop.get(hop)
+        if record is None:
+            continue
+        previous_hop = expected[index - 1]
+        links = set(record["link_values"])
+        if previous_hop not in links:
+            gaps.append(
+                {
+                    "hop": hop,
+                    "expected_depends_on": previous_hop,
+                    "links": sorted(links),
+                    "reason": "missing_link" if not links else "previous_hop_not_linked",
+                }
+            )
+    return gaps
+
+
+def _route_evidence_chain_check(
+    evidence: list[dict[str, Any]],
+    route_chain: list[Any],
+) -> dict[str, Any]:
+    chain_refs: set[str] = set()
+    for item in route_chain:
+        if isinstance(item, Mapping):
+            chain_refs.update(_evidence_ref_alternatives(item))
+
+    required_refs: set[str] = set()
+    missing_refs: list[dict[str, Any]] = []
+    for index, item in enumerate(evidence):
+        refs = _evidence_ref_alternatives(item)
+        if not refs:
+            continue
+        required_refs.update(refs)
+        if not refs & chain_refs:
+            missing_refs.append({"index": index, "refs": sorted(refs)})
+
+    return {
+        "complete": not missing_refs,
+        "missing_refs": missing_refs,
+        "required_refs": sorted(required_refs),
+        "chain_refs": sorted(chain_refs),
+    }
+
+
+def _evidence_ref_alternatives(item: Mapping[str, Any]) -> set[str]:
+    refs: set[str] = set()
+    for key in ("artifact_id", "id"):
+        value = item.get(key)
+        if value:
+            refs.update({f"artifact_id:{value}", str(value)})
+    for key in ("path", "file", "target_path"):
+        value = item.get(key)
+        if value:
+            refs.update({f"path:{value}", f"file:{value}", f"target_path:{value}", str(value)})
+    if not refs and item.get("symbol"):
+        refs.add(f"symbol:{item['symbol']}")
+    return refs
+
+
+def _paths_from_items(items: Any) -> list[str]:
+    if not _is_non_string_sequence(items):
+        return []
+    paths: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        for key in ("path", "file", "target_path"):
+            value = item.get(key)
+            if value:
+                paths.append(str(value))
+        for value in item.get("selected_paths", []) or []:
+            paths.append(str(value))
+        for value in item.get("selected_tests", []) or []:
+            paths.append(str(value))
+    return list(dict.fromkeys(paths))
+
+
+def _path_safety_report(included_paths: list[str], excluded_paths: list[str]) -> dict[str, Any]:
+    included = list(dict.fromkeys(str(path) for path in included_paths if _is_present_value(path)))
+    excluded = list(dict.fromkeys(str(path) for path in excluded_paths if _is_present_value(path)))
+    unsafe = [path for path in included if not Verifier._is_safe_patch_path(path)]
+    protected = [path for path in included if classify_path(path).is_protected]
+    excluded_unsafe = [path for path in excluded if not Verifier._is_safe_patch_path(path)]
+    excluded_protected = [path for path in excluded if classify_path(path).is_protected]
+    return {
+        "ok": not unsafe and not protected,
+        "paths": included,
+        "unsafe_paths": unsafe,
+        "protected_paths": protected,
+        "excluded_paths": excluded,
+        "excluded_unsafe_paths": excluded_unsafe,
+        "excluded_protected_paths": excluded_protected,
+    }
 
 
 def _agent_loop_mapping(metadata: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
