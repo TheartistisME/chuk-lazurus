@@ -65,12 +65,15 @@ class DecoderPriorScope:
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
 
-    def assert_compatible(self, other: "DecoderPriorScope") -> None:
-        mismatches = [
+    def mismatch_fields(self, other: "DecoderPriorScope") -> list[str]:
+        return [
             field_name
             for field_name in (*SCOPE_FIELDS, *OPTIONAL_SCOPE_FIELDS)
             if getattr(self, field_name) != getattr(other, field_name)
         ]
+
+    def assert_compatible(self, other: "DecoderPriorScope") -> None:
+        mismatches = self.mismatch_fields(other)
         if mismatches:
             joined = ", ".join(mismatches)
             raise IncompatibleDecoderPriorScope(f"decoder prior scope mismatch: {joined}")
@@ -90,7 +93,7 @@ class DecoderPriorRecord:
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> "DecoderPriorRecord":
         return cls(
-            scope=DecoderPriorScope.from_mapping(data["scope"]),
+            scope=DecoderPriorScope.from_mapping(data.get("scope", data)),
             seed_alpha=float(data.get("seed_alpha", 0.0)),
             accepted_case_count=int(data.get("accepted_case_count", 0)),
             successful_streak=int(data.get("successful_streak", 0)),
@@ -139,6 +142,48 @@ class DecoderPriorRecord:
         self.seed_alpha = max(0.0, min(1.0, self.seed_alpha * factor))
 
 
+@dataclass(frozen=True)
+class DecoderPriorSelection:
+    hit: bool
+    scope: DecoderPriorScope
+    record: DecoderPriorRecord | None = None
+    reason: str = ""
+
+    @property
+    def miss(self) -> bool:
+        return not self.hit
+
+    @property
+    def scope_json(self) -> dict[str, Any]:
+        return self.scope.to_json()
+
+    @property
+    def record_json(self) -> dict[str, Any] | None:
+        if self.record is None:
+            return None
+        return self.record.to_json()
+
+    @property
+    def seed_alpha(self) -> float | None:
+        if not self.hit or self.record is None:
+            return None
+        return self.record.seed_alpha
+
+    def to_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "hit": self.hit,
+            "miss": self.miss,
+            "scope": self.scope_json,
+        }
+        record_json = self.record_json
+        if self.hit and record_json is not None:
+            payload["record"] = record_json
+            payload["seed_alpha"] = self.record.seed_alpha
+        else:
+            payload["reason"] = self.reason or "miss"
+        return payload
+
+
 class DecoderPriorProductStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -166,6 +211,25 @@ class DecoderPriorProductStore:
     def get(self, scope: DecoderPriorScope | Mapping[str, Any]) -> DecoderPriorRecord | None:
         resolved = _coerce_scope(scope)
         return self._records.get(resolved.key())
+
+    def lookup(self, scope: DecoderPriorScope | Mapping[str, Any]) -> DecoderPriorSelection:
+        resolved = _coerce_scope(scope)
+        record = self._records.get(resolved.key())
+        if record is not None:
+            record.scope.assert_compatible(resolved)
+            return DecoderPriorSelection(hit=True, scope=resolved, record=record)
+
+        mismatches = self._nearest_incompatible_mismatches(resolved)
+        if mismatches:
+            return DecoderPriorSelection(
+                hit=False,
+                scope=resolved,
+                reason=f"incompatible_scope: {', '.join(mismatches)}",
+            )
+        return DecoderPriorSelection(hit=False, scope=resolved, reason="miss")
+
+    def select(self, scope: DecoderPriorScope | Mapping[str, Any]) -> DecoderPriorSelection:
+        return self.lookup(scope)
 
     def get_or_create(
         self,
@@ -220,8 +284,26 @@ class DecoderPriorProductStore:
             "records": [record.to_json() for record in sorted(self._records.values(), key=lambda item: item.scope.key())],
         }
 
+    def _nearest_incompatible_mismatches(self, expected: DecoderPriorScope) -> list[str]:
+        nearest: list[str] | None = None
+        for record in self._records.values():
+            mismatches = record.scope.mismatch_fields(expected)
+            if not mismatches or not _is_related_scope(mismatches):
+                continue
+            if nearest is None or len(mismatches) < len(nearest):
+                nearest = mismatches
+        return nearest or []
+
 
 def _coerce_scope(scope: DecoderPriorScope | Mapping[str, Any]) -> DecoderPriorScope:
     if isinstance(scope, DecoderPriorScope):
         return scope
     return DecoderPriorScope.from_mapping(scope)
+
+
+def _is_related_scope(mismatches: list[str]) -> bool:
+    required_mismatch_count = sum(1 for field_name in mismatches if field_name in SCOPE_FIELDS)
+    required_match_count = len(SCOPE_FIELDS) - required_mismatch_count
+    if required_match_count == len(SCOPE_FIELDS):
+        return True
+    return required_match_count >= len(SCOPE_FIELDS) - 2
