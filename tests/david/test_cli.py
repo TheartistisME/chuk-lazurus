@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from chuk_lazarus.david import cli
-from chuk_lazarus.david.model_validation import AutoModelValidationResult, ModelCommandResult
+from chuk_lazarus.david.doctor import DavidDoctorReport, DoctorCheck
+from chuk_lazarus.david.model_validation import (
+    AutoModelValidationResult,
+    ModelCommandResult,
+    ValidationReportDiscovery,
+)
 
 
 class FakeRuntime:
@@ -247,6 +252,74 @@ def test_parser_adds_explicit_model_scan_command():
     assert args.model_command == "scan"
     assert args.model == "google/gemma-e2b"
     assert args.output == "scan.json"
+
+
+def test_parser_adds_doctor_command():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "doctor",
+            "--model",
+            "google/gemma-e2b",
+            "--workspace",
+            ".",
+            "--auto-validate-model",
+        ]
+    )
+
+    assert args.command == "doctor"
+    assert args.model == "google/gemma-e2b"
+    assert args.workspace == "."
+    assert args.auto_validate_model is True
+
+
+def test_doctor_command_prints_report_without_runtime(monkeypatch, tmp_path, capsys):
+    FakeRuntime.created_with = None
+    calls = []
+
+    def fake_doctor(**kwargs):
+        calls.append(kwargs)
+        return DavidDoctorReport(
+            model=kwargs["model"],
+            workspace_path=tmp_path.resolve(),
+            checks=(
+                DoctorCheck("HF snapshot", "ready", "cache complete"),
+                DoctorCheck("validation report", "missing", "no report"),
+            ),
+            validation_discovery=ValidationReportDiscovery(path=None, checked_paths=(tmp_path / "missing.json",)),
+        )
+
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    monkeypatch.setattr(cli, "run_doctor", fake_doctor)
+
+    rc = cli.main(
+        [
+            "doctor",
+            "--model",
+            "google/gemma-e2b",
+            "--workspace",
+            str(tmp_path),
+            "--validation-report",
+            "report.json",
+            "--auto-validate-model",
+        ]
+    )
+
+    assert rc == 2
+    assert FakeRuntime.created_with is None
+    assert calls == [
+        {
+            "model": "google/gemma-e2b",
+            "workspace_path": Path(tmp_path),
+            "validation_report": "report.json",
+            "auto_validate_model": True,
+        }
+    ]
+    output = capsys.readouterr().out
+    assert "David model doctor" in output
+    assert "HF snapshot: ready: cache complete" in output
+    assert "validation report: missing: no report" in output
 
 
 def test_parser_adds_explicit_model_validate_command():

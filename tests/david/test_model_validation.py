@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from chuk_lazarus.david import doctor
 from chuk_lazarus.david import model_validation
 from chuk_lazarus.david.model_validation import discover_validation_report
 
@@ -260,3 +261,66 @@ def test_run_model_validate_reports_start_failure(monkeypatch, tmp_path):
 
     assert result.returncode == 2
     assert "Failed to start standalone David model helper: permission denied" in result.stderr
+
+
+def test_doctor_distinguishes_local_hf_snapshot_vindex_and_missing_report(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "gemma"
+    workspace.mkdir()
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    (model / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (model / "model.safetensors").write_text("", encoding="utf-8")
+    (workspace / "gemma.vindex.ple").mkdir()
+
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "review", "CPU-only torch"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "review", "unavailable"),
+    )
+
+    report = doctor.run_doctor(model=str(model), workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["model location"].status == "ready"
+    assert checks["HF snapshot"].status == "ready"
+    assert checks[".vindex.ple artifact"].status == "ready"
+    assert checks["validation report"].status == "missing"
+    assert report.ready is False
+
+
+def test_doctor_reports_hf_cache_snapshot_completeness(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    cache = tmp_path / "hf" / "hub"
+    snapshot = cache / "models--google--gemma-e2b" / "snapshots" / "abc123"
+    workspace.mkdir()
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    (snapshot / "tokenizer.model").write_text("", encoding="utf-8")
+    (snapshot / "model.safetensors").write_text("", encoding="utf-8")
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "ready", "CUDA available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
+    )
+
+    report = doctor.run_doctor(model="google/gemma-e2b", workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["model location"].status == "review"
+    assert checks["HF snapshot"].status == "ready"
+    assert str(snapshot) in checks["HF snapshot"].detail

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .doctor import format_doctor_report, run_doctor
 from .model_validation import (
     AutoModelValidationResult,
     ModelCommandResult,
@@ -150,6 +151,22 @@ def build_parser() -> argparse.ArgumentParser:
     code = subparsers.add_parser("code", help="Open David in a workspace")
     code.add_argument("workspace", nargs="?", default=".", help="Workspace path")
     _add_common_options(code)
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Inspect local model boot readiness without downloads or model load",
+    )
+    doctor.add_argument("--workspace", default=".", help="Workspace path")
+    doctor.add_argument("--model", default=None, help="Path or HF id for the open model")
+    doctor.add_argument(
+        "--validation-report",
+        default=None,
+        help="Path to a validator JSON report accepted by the harness boot gate",
+    )
+    doctor.add_argument(
+        "--auto-validate-model",
+        action="store_true",
+        help="Report whether David can run the standalone scanner and validator",
+    )
     model = subparsers.add_parser("model", help="Explicit model scan and validation commands")
     model_subparsers = model.add_subparsers(dest="model_command", required=True)
     scan = model_subparsers.add_parser(
@@ -173,6 +190,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "command", None) == "doctor":
+        return _run_doctor_command(args)
     if getattr(args, "command", None) == "model":
         return _run_model_command(args)
 
@@ -227,6 +246,17 @@ def _run_model_command(args: argparse.Namespace) -> int:
         )
 
     raise AssertionError(f"Unhandled model command: {args.model_command}")
+
+
+def _run_doctor_command(args: argparse.Namespace) -> int:
+    report = run_doctor(
+        model=args.model,
+        workspace_path=Path(args.workspace),
+        validation_report=args.validation_report,
+        auto_validate_model=args.auto_validate_model,
+    )
+    sys.stdout.write(format_doctor_report(report))
+    return 0 if report.ready else 2
 
 
 def _write_model_command_result(
