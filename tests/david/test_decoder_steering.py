@@ -10,6 +10,8 @@ from chuk_lazarus.david.steering import (
     DecoderSteeringPolicy,
     EmptyForbiddenTokenSet,
     IncompatibleSteeringScope,
+    RUNTIME_HOOK_POLICY,
+    RUNTIME_HOOK_VERSION,
     STEERING_VERSION,
 )
 
@@ -76,8 +78,14 @@ def test_javascript_patch_policy_suppresses_python_dialect_tokens() -> None:
     assert steering["logit_lock"] is True
     assert "python_block_syntax" in steering["forbidden_token_families"]
     assert steering["alpha_bounds"] == {"min": 0.0, "max": 0.35}
+    assert steering["diagnostics"]["language"]["confidence"] == 1.0
+    assert ".js" in steering["diagnostics"]["language"]["evidence"]["javascript"]
+    assert steering["diagnostics"]["forbidden_markers"]["count"] > 0
+    assert steering["runtime_hook"]["policy"] == RUNTIME_HOOK_POLICY
+    assert steering["runtime_hook"]["version"] == RUNTIME_HOOK_VERSION
     assert plan.prior_scope["steering_version"] == STEERING_VERSION
     assert plan.prior_scope["target_language"] == "javascript"
+    assert plan.prior_scope["runtime_hook_policy"] == RUNTIME_HOOK_POLICY
 
 
 def test_javascript_logits_processor_penalizes_forbidden_python_token_ids() -> None:
@@ -104,6 +112,8 @@ def test_javascript_logits_processor_penalizes_forbidden_python_token_ids() -> N
     assert steered[0][8] == 0.0
     assert scores[0][2] == 0.0
     assert processor.spec.scope()["tokenizer_id"] == "gemma-tokenizer"
+    assert processor.spec.scope()["forbidden_marker_count"] == processor.spec.metadata["forbidden_markers"]["count"]
+    assert processor.spec.metadata["runtime_hook"]["policy"] == RUNTIME_HOOK_POLICY
     assert processor.spec.effective_penalty == 2.0
 
 
@@ -144,6 +154,9 @@ def test_python_patch_policy_suppresses_javascript_dialect_tokens() -> None:
     assert steering["target_language"] == "python"
     assert "javascript_declarations" in steering["forbidden_token_families"]
     assert "javascript_arrow_functions" in steering["forbidden_token_families"]
+    assert steering["diagnostics"]["language"]["confidence"] == 1.0
+    assert ".py" in steering["diagnostics"]["language"]["evidence"]["python"]
+    assert steering["diagnostics"]["forbidden_markers"]["families"][0]["family"] == "javascript_declarations"
 
 
 def test_alpha_is_clamped_to_policy_bounds() -> None:
@@ -180,7 +193,12 @@ def test_source_dependency_policy_keeps_code_scope_without_foreign_lock_when_lan
     assert steering["target_language"] == "code"
     assert steering["logit_lock"] is False
     assert steering["forbidden_token_families"] == []
+    assert steering["no_lock_reason"] == "code_task_without_language_evidence"
+    assert steering["diagnostics"]["language"]["confidence"] == 0.0
+    assert steering["diagnostics"]["language"]["evidence"] == {"javascript": [], "python": []}
+    assert steering["diagnostics"]["logit_lock"]["no_lock_reason"] == "code_task_without_language_evidence"
     assert plan.prior_scope["task_type"] == "source_dependency"
+    assert plan.prior_scope["no_lock_reason"] == "code_task_without_language_evidence"
 
 
 def test_steering_scope_compatibility_rejects_cross_model_and_layer_mixing() -> None:
@@ -194,6 +212,7 @@ def test_steering_scope_compatibility_rejects_cross_model_and_layer_mixing() -> 
     compatible = policy.prior_compatible_fields(adapter=adapter)
 
     policy.assert_scope_compatible(compatible, adapter=adapter)
+    assert policy.runtime_hook_metadata()["fail_closed_default"] is True
 
     with pytest.raises(IncompatibleSteeringScope, match="model_id"):
         policy.assert_scope_compatible(compatible | {"model_id": "other-model"}, adapter=adapter)

@@ -11,6 +11,8 @@ from .routing import RoutePacket
 
 
 STEERING_VERSION = "david-decoder-steering-v1"
+RUNTIME_HOOK_POLICY = "forbidden-token-family-logit-penalty"
+RUNTIME_HOOK_VERSION = "runtime-hook-v1"
 
 LANGUAGE_MARKERS = {
     "javascript": (
@@ -65,6 +67,14 @@ class EmptyForbiddenTokenSet(ValueError):
 
 
 @dataclass(frozen=True)
+class _LanguageDetection:
+    language: str
+    confidence: float
+    scores: tuple[tuple[str, int], ...]
+    evidence: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+@dataclass(frozen=True)
 class DecoderSteeringPolicy:
     task_type: str
     target_language: str
@@ -73,6 +83,12 @@ class DecoderSteeringPolicy:
     alpha_max: float
     logit_lock: bool
     steering_version: str = STEERING_VERSION
+    language_confidence: float = 0.0
+    language_scores: tuple[tuple[str, int], ...] = ()
+    language_evidence: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    no_lock_reason: str | None = None
+    runtime_hook_policy: str = RUNTIME_HOOK_POLICY
+    runtime_hook_version: str = RUNTIME_HOOK_VERSION
 
     @classmethod
     def for_route(
@@ -85,10 +101,12 @@ class DecoderSteeringPolicy:
     ) -> "DecoderSteeringPolicy":
         del adapter, session_id
         task_type = _task_type(route.method)
-        language = _detect_language(prompt, route)
+        language_detection = _detect_language_diagnostics(prompt, route)
+        language = language_detection.language
         is_code = route.method in CODE_METHODS or language in FORBIDDEN_TOKEN_FAMILIES
         alpha_max = 0.35 if is_code else 0.15
         forbidden = FORBIDDEN_TOKEN_FAMILIES.get(language, ())
+        no_lock_reason = None if forbidden else _no_lock_reason(language=language, route=route)
         return cls(
             task_type=task_type,
             target_language=language,
@@ -96,6 +114,10 @@ class DecoderSteeringPolicy:
             alpha_min=0.0,
             alpha_max=alpha_max,
             logit_lock=bool(forbidden),
+            language_confidence=language_detection.confidence,
+            language_scores=language_detection.scores,
+            language_evidence=language_detection.evidence,
+            no_lock_reason=no_lock_reason,
         )
 
     def constraints(self) -> dict[str, Any]:
@@ -106,6 +128,9 @@ class DecoderSteeringPolicy:
             "logit_lock": self.logit_lock,
             "forbidden_token_families": list(self.forbidden_token_families),
             "alpha_bounds": {"min": self.alpha_min, "max": self.alpha_max},
+            "no_lock_reason": self.no_lock_reason,
+            "diagnostics": self.diagnostics(),
+            "runtime_hook": self.runtime_hook_metadata(),
         }
 
     def scope_metadata(self) -> dict[str, Any]:
@@ -117,6 +142,35 @@ class DecoderSteeringPolicy:
             "alpha_min": self.alpha_min,
             "alpha_max": self.alpha_max,
             "logit_lock": self.logit_lock,
+            "language_confidence": self.language_confidence,
+            "no_lock_reason": self.no_lock_reason,
+            "runtime_hook_policy": self.runtime_hook_policy,
+            "runtime_hook_version": self.runtime_hook_version,
+        }
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "language": {
+                "target": self.target_language,
+                "confidence": self.language_confidence,
+                "scores": dict(self.language_scores),
+                "evidence": _tuple_map_to_dict(self.language_evidence),
+            },
+            "logit_lock": {
+                "active": self.logit_lock,
+                "reason": "forbidden_token_families_available" if self.logit_lock else "no_logit_lock",
+                "no_lock_reason": self.no_lock_reason,
+            },
+            "forbidden_markers": _forbidden_marker_metadata(self.forbidden_token_families),
+        }
+
+    def runtime_hook_metadata(self, *, fail_closed: bool = True) -> dict[str, Any]:
+        return {
+            "policy": self.runtime_hook_policy,
+            "version": self.runtime_hook_version,
+            "steering_version": self.steering_version,
+            "fail_closed_default": True,
+            "fail_closed": fail_closed,
         }
 
     def prior_compatible_fields(self, *, adapter: AdapterSessionMetadata) -> dict[str, Any]:
@@ -166,7 +220,10 @@ class DecoderLogitHookSpec:
             "task_type": self.policy.task_type,
             "target_language": self.policy.target_language,
             "steering_version": self.policy.steering_version,
+            "runtime_hook_policy": self.policy.runtime_hook_policy,
+            "runtime_hook_version": self.policy.runtime_hook_version,
             "forbidden_token_count": len(self.forbidden_token_ids),
+            "forbidden_marker_count": _forbidden_marker_count(self.policy.forbidden_token_families),
             "alpha": self.alpha,
             "logit_penalty": self.logit_penalty,
         }
@@ -211,7 +268,14 @@ class DecoderSteeringLogitsProcessor:
             alpha=bounded_alpha,
             logit_penalty=logit_penalty,
             fail_closed=fail_closed,
-            metadata={"families": list(policy.forbidden_token_families)},
+            metadata={
+                "families": list(policy.forbidden_token_families),
+                "forbidden_token_count": len(ids),
+                "forbidden_markers": _forbidden_marker_metadata(policy.forbidden_token_families),
+                "language": policy.diagnostics()["language"],
+                "logit_lock": policy.diagnostics()["logit_lock"],
+                "runtime_hook": policy.runtime_hook_metadata(fail_closed=fail_closed),
+            },
         )
         return cls(spec)
 
@@ -256,6 +320,10 @@ def _task_type(method: str) -> str:
 
 
 def _detect_language(prompt: str, route: RoutePacket) -> str:
+    return _detect_language_diagnostics(prompt, route).language
+
+
+def _detect_language_diagnostics(prompt: str, route: RoutePacket) -> _LanguageDetection:
     evidence_text = " ".join(
         [
             prompt,
@@ -265,14 +333,59 @@ def _detect_language(prompt: str, route: RoutePacket) -> str:
             str(route.provenance.get("language", "")),
         ]
     ).lower()
-    scores = {
-        language: sum(1 for marker in markers if _contains_marker(evidence_text, marker))
+    evidence = {
+        language: tuple(marker for marker in markers if _contains_marker(evidence_text, marker))
         for language, markers in LANGUAGE_MARKERS.items()
     }
+    scores = {language: len(markers) for language, markers in evidence.items()}
     language, score = max(scores.items(), key=lambda item: item[1])
     if score == 0:
-        return "code" if route.method in CODE_METHODS else "unknown"
-    return language
+        language = "code" if route.method in CODE_METHODS else "unknown"
+    return _LanguageDetection(
+        language=language,
+        confidence=_language_confidence(language=language, score=score),
+        scores=tuple(scores.items()),
+        evidence=tuple(evidence.items()),
+    )
+
+
+def _language_confidence(*, language: str, score: int) -> float:
+    if score <= 0 or language not in LANGUAGE_MARKERS:
+        return 0.0
+    return min(1.0, score / 3.0)
+
+
+def _no_lock_reason(*, language: str, route: RoutePacket) -> str:
+    if language == "code":
+        return "code_task_without_language_evidence"
+    if language == "unknown":
+        return "non_code_task_without_language_evidence"
+    if route.method not in CODE_METHODS:
+        return "non_code_task_without_forbidden_language_family"
+    return "target_language_has_no_forbidden_token_family"
+
+
+def _tuple_map_to_dict(value: tuple[tuple[str, tuple[str, ...]], ...]) -> dict[str, list[str]]:
+    return {key: list(items) for key, items in value}
+
+
+def _forbidden_marker_count(families: Iterable[str]) -> int:
+    return sum(len(TOKEN_FAMILY_MARKERS.get(family, ())) for family in families)
+
+
+def _forbidden_marker_metadata(families: Iterable[str]) -> dict[str, Any]:
+    details = [
+        {
+            "family": family,
+            "markers": list(TOKEN_FAMILY_MARKERS.get(family, ())),
+            "marker_count": len(TOKEN_FAMILY_MARKERS.get(family, ())),
+        }
+        for family in families
+    ]
+    return {
+        "count": sum(item["marker_count"] for item in details),
+        "families": details,
+    }
 
 
 def _contains_marker(text: str, marker: str) -> bool:
