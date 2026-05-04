@@ -272,6 +272,14 @@ def test_torch_runtime_backend_loads_local_model_and_uses_standard_generation_co
     assert result.metadata["generation_path"] == "torch.generate.standard"
     assert result.metadata["logits_processor_count"] == 1
     assert result.metadata["logits_processor_applied"] is False
+    assert result.metadata["processors_refused"] is True
+    assert result.metadata["processors_refusal_reason"] == (
+        "torch-runtime standard decode backend cannot apply decoder logits processors"
+    )
+    assert result.metadata["steering_applied"] is False
+    assert result.metadata["steering_refused_reason"] == (
+        "torch-runtime standard decode backend cannot apply decoder logits processors"
+    )
     assert result.metadata["stats"] == {"input_tokens": 3, "output_tokens": 2}
     replay = result.metadata["materialization_replay"]
     assert replay["backend"] == "torch-runtime"
@@ -333,6 +341,11 @@ def test_torch_runtime_backend_falls_back_to_raw_prompt_when_chat_template_fails
     assert result.metadata["prompt_format"] == "raw"
     assert result.metadata["prompt_format_fallback_reason"] == "ValueError: no template"
     assert calls[0][1] == "raw prompt"
+    assert result.metadata["logits_processor_count"] == 0
+    assert result.metadata["processors_refused"] is False
+    assert result.metadata["processors_refusal_reason"] is None
+    assert result.metadata["steering_applied"] is False
+    assert result.metadata["steering_refused_reason"] is None
 
 
 def test_torch_runtime_backend_fails_closed_when_cuda_requested_but_unavailable(monkeypatch) -> None:
@@ -356,6 +369,28 @@ def test_torch_runtime_backend_fails_closed_when_cuda_requested_but_unavailable(
     assert result.ok is False
     assert result.error == "CUDA device requested but torch.cuda.is_available() is false"
     assert result.metadata["device"] == "cuda"
+
+
+def test_torch_runtime_backend_refuses_processors_when_runtime_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chuk_lazarus.david.torch_backend._missing_optional_packages",
+        lambda *names: list(names),
+    )
+    backend = TorchRuntimeModelBackend("local/model")
+
+    result = backend.generate("hello", logits_processor=[object(), object()])
+
+    assert result.ok is False
+    assert result.metadata["logits_processor_count"] == 2
+    assert result.metadata["logits_processor_applied"] is False
+    assert result.metadata["processors_refused"] is True
+    assert result.metadata["processors_refusal_reason"] == (
+        "torch-runtime standard decode backend cannot apply decoder logits processors"
+    )
+    assert result.metadata["steering_applied"] is False
+    assert result.metadata["steering_refused_reason"] == (
+        "torch-runtime standard decode backend cannot apply decoder logits processors"
+    )
 
 
 def test_torch_runtime_backend_reports_no_tensor_replay_capabilities() -> None:

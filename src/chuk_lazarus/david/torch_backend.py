@@ -200,6 +200,7 @@ class TorchRuntimeModelBackend:
         replay_consumer: ReplayConsumerInput = None,
     ) -> ModelBackendResult:
         processors = _normalize_logits_processors(logits_processor)
+        processor_metadata = _logits_processor_refusal_metadata(processors)
         status = self.load()
         replay_metadata = replay_generation_metadata(
             materialization_plan,
@@ -209,8 +210,7 @@ class TorchRuntimeModelBackend:
         )
         if not status.available or not status.loaded:
             metadata = dict(status.metadata)
-            metadata["logits_processor_count"] = len(processors)
-            metadata["logits_processor_applied"] = False
+            metadata.update(processor_metadata)
             if replay_metadata is not None:
                 metadata["materialization_replay"] = replay_metadata
             return ModelBackendResult(
@@ -232,8 +232,7 @@ class TorchRuntimeModelBackend:
                 "use_plugins": False,
                 "engine": "standard",
                 "generation_path": generation.generation_path,
-                "logits_processor_count": len(processors),
-                "logits_processor_applied": False,
+                **processor_metadata,
             }
             stats = _to_jsonable(generation.stats)
             if stats is not None:
@@ -251,8 +250,7 @@ class TorchRuntimeModelBackend:
             metadata = self._metadata()
             if self._tokenizer is not None:
                 metadata.update(format_prompt_with_chat_template(self._tokenizer, prompt).metadata)
-            metadata["logits_processor_count"] = len(processors)
-            metadata["logits_processor_applied"] = False
+            metadata.update(processor_metadata)
             if replay_metadata is not None:
                 metadata["materialization_replay"] = replay_metadata
             return ModelBackendResult(
@@ -377,6 +375,24 @@ def _normalize_logits_processors(logits_processor: Any | Sequence[Any] | None) -
     if isinstance(logits_processor, tuple):
         return list(logits_processor)
     return [logits_processor]
+
+
+def _logits_processor_refusal_metadata(processors: Sequence[Any]) -> dict[str, Any]:
+    processor_count = len(processors)
+    refused = processor_count > 0
+    reason = (
+        "torch-runtime standard decode backend cannot apply decoder logits processors"
+        if refused
+        else None
+    )
+    return {
+        "logits_processor_count": processor_count,
+        "logits_processor_applied": False,
+        "processors_refused": refused,
+        "processors_refusal_reason": reason,
+        "steering_applied": False,
+        "steering_refused_reason": reason,
+    }
 
 
 def _to_jsonable(value: Any) -> Any | None:
