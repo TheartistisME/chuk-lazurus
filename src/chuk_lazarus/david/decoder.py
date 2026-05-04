@@ -7,6 +7,7 @@ from typing import Any
 
 from .config import AdapterSessionMetadata
 from .routing import RoutePacket
+from .steering import DecoderSteeringPolicy
 
 
 @dataclass(frozen=True)
@@ -16,7 +17,14 @@ class DecoderPlan:
 
 
 class DecoderController:
-    def plan(self, *, route: RoutePacket, adapter: AdapterSessionMetadata, session_id: str) -> DecoderPlan:
+    def plan(
+        self,
+        *,
+        route: RoutePacket,
+        adapter: AdapterSessionMetadata,
+        session_id: str,
+        prompt: str = "",
+    ) -> DecoderPlan:
         constraints: dict[str, Any] = {"format": "deterministic_summary"}
         if route.method == "repo_patch":
             constraints.update(
@@ -33,6 +41,8 @@ class DecoderController:
             constraints.update({"ordinal": "exact_occurrence_required"})
         elif route.method == "user_continuity":
             constraints.update({"respect": ["recency", "staleness", "confirmed_preferences"]})
-        prior_scope = adapter.scope() | {"session_id": session_id, "method": route.method}
-        return DecoderPlan(constraints=constraints, prior_scope=prior_scope)
 
+        steering = DecoderSteeringPolicy.for_route(route=route, adapter=adapter, session_id=session_id, prompt=prompt)
+        constraints["steering"] = steering.constraints()
+        prior_scope = adapter.scope() | {"session_id": session_id, "method": route.method} | steering.scope_metadata()
+        return DecoderPlan(constraints=constraints, prior_scope=prior_scope)

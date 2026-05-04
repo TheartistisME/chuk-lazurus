@@ -4,6 +4,7 @@ from pathlib import Path
 
 from chuk_lazarus.david import DavidConfig, DavidRuntime
 from chuk_lazarus.david.config import AdapterSessionMetadata
+from chuk_lazarus.david.decoder import DecoderController
 from chuk_lazarus.david.materializer import Materializer
 from chuk_lazarus.david.routing import RoutePacket
 
@@ -114,3 +115,32 @@ def test_materializer_selects_boundary_residual_when_safe() -> None:
     assert materialized.refused is False
     assert materialized.strategy == "boundary_residual"
     assert materialized.text_context == "source span"
+
+
+def test_decoder_plan_includes_steering_constraints_and_scope_metadata() -> None:
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        adapter_family="family-a",
+        boundary_layer=7,
+        kv_target_layer=8,
+        insertion_family="kv_direct",
+    )
+    route = RoutePacket(
+        method="repo_patch",
+        selected_windows=["src/tool.py def run_tool(): return None"],
+        memory_family="task",
+        session_id="s1",
+        tier="hot",
+        route_reason="test",
+        evidence=[],
+        token_cost=2,
+    )
+
+    plan = DecoderController().plan(route=route, adapter=adapter, session_id="s1", prompt="Fix the Python patch task")
+
+    assert plan.constraints["steering"]["target_language"] == "python"
+    assert "javascript_declarations" in plan.constraints["steering"]["forbidden_token_families"]
+    assert plan.prior_scope["task_type"] == "code_patch"
+    assert plan.prior_scope["steering_version"] == "david-decoder-steering-v1"
+    assert plan.prior_scope["target_language"] == "python"
