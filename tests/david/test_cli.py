@@ -30,6 +30,7 @@ def clear_operator_env(monkeypatch):
 
 class FakeRuntime:
     created_with: cli.DavidConfig | None = None
+    verified_command: str | None = None
 
     def __init__(self, config: cli.DavidConfig) -> None:
         self.config = config
@@ -48,6 +49,14 @@ class FakeRuntime:
 
     def respond(self, prompt: str) -> str:
         return f"answered: {prompt}"
+
+    def verify(self, command: str | None = None) -> str:
+        type(self).verified_command = command
+        if command == "fail":
+            return "$ fail\nrc=7\nfailed"
+        if command is not None:
+            return f"$ {command}\nrc=0\nverified"
+        return "David verification fallback: ok"
 
 
 def test_main_code_once_uses_workspace_and_prompt(monkeypatch, tmp_path, capsys):
@@ -576,6 +585,69 @@ def test_parser_keeps_code_subcommand_and_once_option():
     assert args.model_device == "cuda"
     assert args.model_dtype == "float16"
     assert args.model_max_new_tokens == 99
+
+
+def test_parser_adds_verify_subcommand():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "verify",
+            ".",
+            "--cmd",
+            "python -c \"print('ok')\"",
+            "--allow-unvalidated",
+            "--no-color",
+        ]
+    )
+
+    assert args.command == "verify"
+    assert args.workspace == "."
+    assert args.cmd == "python -c \"print('ok')\""
+    assert args.allow_unvalidated is True
+    assert args.no_color is True
+
+
+def test_verify_command_prints_output_and_returns_command_rc(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    FakeRuntime.verified_command = None
+
+    rc = cli.main(["verify", str(tmp_path), "--cmd", "echo ok", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.verified_command == "echo ok"
+    output = capsys.readouterr().out
+    assert "$ echo ok" in output
+    assert "rc=0" in output
+    assert "verified" in output
+
+
+def test_verify_command_returns_nonzero_command_rc(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    FakeRuntime.verified_command = None
+
+    rc = cli.main(["verify", str(tmp_path), "--cmd", "fail", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 7
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.verified_command == "fail"
+    assert "rc=7" in capsys.readouterr().out
+
+
+def test_verify_patch_runs_builtin_verifier_without_tui(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    FakeRuntime.verified_command = "stale"
+
+    rc = cli.main(["verify", str(tmp_path), "--patch", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.verified_command is None
+    assert "David verification fallback: ok" in capsys.readouterr().out
 
 
 def test_parser_adds_explicit_model_scan_command():

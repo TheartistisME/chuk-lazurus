@@ -168,6 +168,22 @@ def build_parser() -> argparse.ArgumentParser:
     code = subparsers.add_parser("code", help="Open David in a workspace")
     code.add_argument("workspace", nargs="?", default=".", help="Workspace path")
     _add_common_options(code, suppress_defaults=True)
+    verify = subparsers.add_parser(
+        "verify",
+        help="Run David verification once without opening the TUI",
+    )
+    verify.add_argument("workspace", nargs="?", default=".", help="Workspace path")
+    verify.add_argument(
+        "--cmd",
+        default=None,
+        help="Workspace shell command to verify through runtime.verify(command)",
+    )
+    verify.add_argument(
+        "--patch",
+        action="store_true",
+        help="Run David's built-in verification path when --cmd is not supplied",
+    )
+    _add_common_options(verify, suppress_defaults=True)
     doctor = subparsers.add_parser(
         "doctor",
         help="Inspect local model boot readiness without downloads or model load",
@@ -220,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         return _run_model_command(args)
 
     workspace = getattr(args, "workspace", ".")
-    if getattr(args, "command", None) not in (None, "code"):
+    if getattr(args, "command", None) not in (None, "code", "verify"):
         parser.error(f"unknown command: {args.command}")
 
     workspace_path = Path(workspace)
@@ -251,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     if _startup_rejected_validated_model(args, runtime):
         _write_rejected_validation_report_status(args, workspace_path, runtime)
         return 2
+    if getattr(args, "command", None) == "verify":
+        return _run_verify_command(args, runtime)
     tui = DavidTui(runtime, color=config.color)
     return tui.run(once=config.once)
 
@@ -292,6 +310,43 @@ def _run_doctor_command(args: argparse.Namespace) -> int:
     )
     sys.stdout.write(format_doctor_report(report))
     return 0 if report.ready else 2
+
+
+def _run_verify_command(args: argparse.Namespace, runtime: Any) -> int:
+    command = args.cmd
+    text = runtime.verify(command) if command else _run_builtin_verify(runtime)
+    if command is None and text and "David verification" not in text:
+        text = f"David verification\n{text}"
+    if text:
+        sys.stdout.write(text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
+    if command:
+        return _returncode_from_verify_text(text)
+    return 0
+
+
+def _run_builtin_verify(runtime: Any) -> str:
+    run_once = getattr(runtime, "run_once", None)
+    if callable(run_once):
+        result = run_once("Verify quality gate")
+        answer = getattr(result, "answer", None)
+        if answer is not None:
+            return str(answer)
+        return str(result)
+    return runtime.verify(None)
+
+
+def _returncode_from_verify_text(text: str) -> int:
+    for line in text.splitlines():
+        if not line.startswith("rc="):
+            continue
+        value = line.partition("=")[2].strip()
+        try:
+            return int(value)
+        except ValueError:
+            return 1
+    return 1
 
 
 def _write_model_command_result(

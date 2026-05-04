@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from chuk_lazarus.david.cli import main as david_main
@@ -107,3 +108,27 @@ def test_index_jit_indexes_only_the_tiny_workspace(tmp_path: Path, capsys) -> No
     assert str(index_dir) in output
     assert index_dir.exists()
     assert all(path.resolve().is_relative_to(workspace.resolve()) for path in index_dir.rglob("*"))
+
+
+def test_verify_command_runs_once_without_tui(tmp_path: Path, capsys) -> None:
+    workspace = _tiny_workspace(tmp_path)
+    _assert_not_project_root(workspace)
+    command = f'"{sys.executable}" -c "print(\'verify-ok\')"'
+
+    rc = david_main(["verify", str(workspace), "--cmd", command, "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "rc=0" in output
+    assert "verify-ok" in output
+
+
+def test_verify_patch_runs_builtin_without_tui(tmp_path: Path, capsys) -> None:
+    workspace = _tiny_workspace(tmp_path)
+    _assert_not_project_root(workspace)
+
+    rc = david_main(["verify", str(workspace), "--patch", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "David verification" in output
