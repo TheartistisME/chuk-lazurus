@@ -190,6 +190,17 @@ def load_source_index(path: Path) -> SourceIndexManifest:
     return SourceIndexManifest.from_json(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+def index_source_file(root: Path, path: Path) -> SourceFileRecord | None:
+    """Index one workspace file using the same rules as the bounded source index."""
+    resolved_root = Path(root).resolve()
+    resolved_path = Path(path).resolve()
+    try:
+        stat = resolved_path.stat()
+    except OSError:
+        return None
+    return _index_file(resolved_root, resolved_path, stat.st_size)
+
+
 def _index_file(root: Path, path: Path, size_bytes: int) -> SourceFileRecord | None:
     try:
         text = path.read_text(encoding="utf-8")
