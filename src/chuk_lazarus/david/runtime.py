@@ -24,7 +24,14 @@ from .indexing import IndexReadiness, WorkspaceIndex
 from .live_indexer import LiveIndexer, LiveIndexRefresh, load_live_index_state
 from .materializer import MaterializedContext, Materializer
 from .memory import JsonlMemoryStore, MemoryBank
-from .model_backend import ModelBackend, ModelBackendResult, OfflineModelBackend, TransformersCausalLMBackend
+from .model_artifacts import is_vindex_artifact_path
+from .model_backend import (
+    ModelBackend,
+    ModelBackendResult,
+    OfflineModelBackend,
+    TransformersCausalLMBackend,
+    VindexArtifactBackend,
+)
 from .patch_routing import DOC_SUFFIXES, SOURCE_SUFFIXES, is_protected_path, route_patch_targets
 from .patching import PatchApplyDiagnostic, apply_patch_candidate, validate_patch_candidate
 from .central_router_adapter import CentralRouterAdapter
@@ -637,6 +644,8 @@ class DavidRuntime:
         )
 
     def _create_backend(self) -> ModelBackend:
+        if self.config.model_path and is_vindex_artifact_path(self.config.model_path):
+            return VindexArtifactBackend(self.config.model_path)
         can_auto_load = bool(getattr(self.harness_session, "can_auto_load", False))
         if self.config.model_path and can_auto_load and not self.boot_errors:
             return TransformersCausalLMBackend(self.config.model_path, local_files_only=True)

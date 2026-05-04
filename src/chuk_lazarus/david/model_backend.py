@@ -7,6 +7,7 @@ import importlib.util
 from typing import Any, Mapping, Protocol, Sequence
 
 from .materialization_replay import ReplayConsumerInput, replay_generation_metadata
+from .model_artifacts import VindexArtifactMetadata, inspect_vindex_artifact
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,68 @@ class OfflineModelBackend:
         return ModelBackendResult(
             text=_apply_stop(text, stop),
             backend=self.name,
+            metadata=metadata,
+        )
+
+
+class VindexArtifactBackend:
+    """Readiness-only backend for local .vindex.ple artifacts.
+
+    These artifacts can supply model/memory/materialization evidence, but this
+    harness does not yet have a decoder that can run them directly.
+    """
+
+    name = "vindex-artifact"
+
+    def __init__(self, artifact_path: str) -> None:
+        self.artifact_path = artifact_path
+        self.artifact: VindexArtifactMetadata = inspect_vindex_artifact(artifact_path)
+
+    def status(self) -> ModelBackendStatus:
+        reason = (
+            "available for methodology/materialization evidence; not directly loadable by "
+            "transformers-causal-lm"
+            if self.artifact.available
+            else f"incomplete vindex artifact: missing {', '.join(self.artifact.missing_files) or 'required files'}"
+        )
+        return ModelBackendStatus(
+            name=self.name,
+            available=self.artifact.available,
+            loaded=False,
+            reason=reason,
+            metadata={
+                **self.artifact.to_dict(),
+                "direct_generation": False,
+                "loadable_by_transformers_causal_lm": False,
+            },
+        )
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_new_tokens: int = 128,
+        stop: Sequence[str] | None = None,
+        logits_processor: Any | Sequence[Any] | None = None,
+        materialization_plan: Mapping[str, Any] | None = None,
+        replay_consumer: ReplayConsumerInput = None,
+    ) -> ModelBackendResult:
+        del prompt, max_new_tokens, stop, logits_processor
+        status = self.status()
+        metadata = dict(status.metadata)
+        replay_metadata = replay_generation_metadata(
+            materialization_plan,
+            replay_consumer,
+            backend_name=self.name,
+            supports_tensor_replay=False,
+        )
+        if replay_metadata is not None:
+            metadata["materialization_replay"] = replay_metadata
+        return ModelBackendResult(
+            text="",
+            backend=self.name,
+            ok=False,
+            error=status.reason,
             metadata=metadata,
         )
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+from pathlib import Path
 import sys
 import types
 
 from chuk_lazarus.david import model_backend
-from chuk_lazarus.david.model_backend import OfflineModelBackend, TransformersCausalLMBackend
+from chuk_lazarus.david.config import DavidConfig
+from chuk_lazarus.david.model_backend import OfflineModelBackend, TransformersCausalLMBackend, VindexArtifactBackend
+from chuk_lazarus.david.runtime import DavidRuntime
 
 
 def test_offline_backend_is_deterministic_and_applies_stop() -> None:
@@ -319,3 +323,69 @@ def test_transformers_backend_reports_generation_errors(monkeypatch) -> None:
     assert result.text == ""
     assert result.error == "RuntimeError: decode failed"
     assert result.metadata["model_id"] == "local/test-model"
+
+
+def test_vindex_artifact_backend_reports_available_but_not_decodable(tmp_path: Path) -> None:
+    artifact = _write_vindex_artifact(tmp_path)
+    backend = VindexArtifactBackend(str(artifact))
+
+    status = backend.status()
+    result = backend.generate("hello")
+
+    assert status.name == "vindex-artifact"
+    assert status.available is True
+    assert status.loaded is False
+    assert "not directly loadable by transformers-causal-lm" in status.reason
+    assert status.metadata["family"] == "gemma4"
+    assert status.metadata["source_hf_path"] == "google/gemma-4-E2B-it"
+    assert status.metadata["hidden_size"] == 1536
+    assert status.metadata["layers"] == 35
+    assert status.metadata["vocab"] == 262144
+    assert status.metadata["dtype"] == "f32"
+    assert status.metadata["direct_generation"] is False
+    assert result.ok is False
+    assert result.text == ""
+    assert result.backend == "vindex-artifact"
+    assert result.metadata["loadable_by_transformers_causal_lm"] is False
+
+
+def test_runtime_selects_vindex_backend_before_transformers_autoload(tmp_path: Path) -> None:
+    artifact = _write_vindex_artifact(tmp_path)
+    runtime = DavidRuntime.create(
+        DavidConfig(
+            workspace_root=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            model_path=str(artifact),
+            require_validated_model=False,
+        )
+    )
+
+    readiness = runtime.readiness()
+
+    assert isinstance(runtime.backend, VindexArtifactBackend)
+    assert readiness["backend"].startswith("vindex-artifact: available for methodology/materialization evidence")
+
+
+def _write_vindex_artifact(tmp_path: Path) -> Path:
+    artifact = tmp_path / "gemma4-e2b.vindex.ple"
+    artifact.mkdir()
+    (artifact / "index.json").write_text(
+        json.dumps(
+            {
+                "family": "gemma4",
+                "source": {"huggingface_repo": "google/gemma-4-E2B-it"},
+                "hidden_size": 1536,
+                "num_layers": 35,
+                "vocab_size": 262144,
+                "dtype": "f32",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (artifact / "weight_manifest.json").write_text(
+        json.dumps([{"key": "layers.0.self_attn.q_proj.weight", "file": "attn_weights.bin"}]),
+        encoding="utf-8",
+    )
+    (artifact / "attn_weights.bin").write_bytes(b"weights")
+    return artifact
