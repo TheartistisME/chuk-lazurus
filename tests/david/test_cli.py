@@ -660,6 +660,7 @@ def test_capabilities_command_prints_truthful_status_without_runtime(monkeypatch
     assert "doctor readiness surface with WSL path checks when available" in output
     assert "capability router surface" in output
     assert "materializer metadata and compatibility guards" in output
+    assert "residual-sidecar replay metadata status" in output
     assert "decoder prior store surface" in output
     assert "verification command surface" in output
     assert "safe agent loop shell" in output
@@ -667,9 +668,15 @@ def test_capabilities_command_prints_truthful_status_without_runtime(monkeypatch
     assert "model-driven repo autonomy remains guarded" in output
     assert "repo patching is partially wired through guarded read -> patch -> verify" in output
     assert "tensor replay is fail-closed behind compatibility evidence" in output
+    assert "residual-sidecar replay is guarded and experimental" in output
     assert "live steering hooks are limited" in output
     assert "TODO:" in output
-    assert "production tensor KV/residual replay" in output
+    assert "real Gemma CUDA smoke and guided model onboarding" in output
+    assert "full central router product wiring" in output
+    assert "real activation/residual/KV indexes" in output
+    assert "adapter-safe production KV/direct residual materialization" in output
+    assert "live logit hooks and steering" in output
+    assert "stronger semantic, chain, temporal, and behavioral verification" in output
     assert "broad multi-step autonomous repo patching" in output
     assert "tensor replay wired" not in output.lower()
 

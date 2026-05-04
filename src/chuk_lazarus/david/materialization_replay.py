@@ -13,6 +13,13 @@ REPLAY_STRATEGY_CAPABILITIES = {
     "kv_sidecar": "materialization.replay.kv_cache.v1",
     "residual_sidecar": "materialization.replay.residual_stream.v1",
 }
+REPLAY_STRATEGY_FAMILIES = {
+    "kv_sidecar": "kv_sidecar",
+    "kv_direct": "kv_direct",
+    "residual_sidecar": "residual_sidecar",
+    "boundary_residual": "boundary_residual",
+    "residual_stream": "residual_stream",
+}
 
 
 @dataclass(frozen=True)
@@ -118,15 +125,15 @@ def replay_generation_metadata(
         or required_capability
     )
 
-    refusal_reasons: list[str] = []
+    contract_refusals: list[str] = []
     if bool(plan.get("refused")):
         reason = _optional_string(plan.get("reason")) or "upstream materialization refused"
-        refusal_reasons.append(f"upstream materialization refused: {reason}")
+        contract_refusals.append(f"upstream materialization refused: {reason}")
     if requires_runtime_replay:
         if consumer is None:
-            refusal_reasons.append(f"runtime replay consumer required for {requested_strategy}")
+            contract_refusals.append(f"runtime replay consumer required for {requested_strategy}")
         else:
-            refusal_reasons.extend(
+            contract_refusals.extend(
                 _consumer_contract_refusals(
                     requested_strategy,
                     required_capability=required_capability,
@@ -135,26 +142,51 @@ def replay_generation_metadata(
                     consumer=consumer,
                 )
             )
-        if not supports_tensor_replay:
-            refusal_reasons.append(f"{backend_name} has no tensor replay hook for {requested_strategy}")
 
-    applied = requires_runtime_replay and supports_tensor_replay and not refusal_reasons
+    hook_refusals: list[str] = []
+    if requires_runtime_replay and not supports_tensor_replay:
+        hook_refusals.append(f"{backend_name} has no tensor replay hook for {requested_strategy}")
+
+    refusal_reasons = contract_refusals + hook_refusals
+    applied = requires_runtime_replay and supports_tensor_replay and not contract_refusals
+    replay_status = _replay_status(
+        requires_runtime_replay=requires_runtime_replay,
+        applied=applied,
+        contract_refused=bool(contract_refusals),
+        hook_guarded=bool(hook_refusals),
+    )
     ignored = not applied
     reason = "runtime replay applied" if applied else ("; ".join(refusal_reasons) if refusal_reasons else "no runtime replay required")
+    replay_family = _replay_family(requested_strategy)
     return {
         "version": REPLAY_CONTRACT_VERSION,
         "backend": backend_name,
         "attempted": materialization_plan is not None,
         "strategy": strategy,
         "requested_strategy": requested_strategy,
+        "replay_family": replay_family,
+        "replay_status": replay_status,
+        "guarded": replay_status == "guarded",
         "requires_runtime_replay": requires_runtime_replay,
         "required_capability": required_capability,
-        "refused": bool(refusal_reasons),
+        "contract_refused": bool(contract_refusals),
+        "refused": bool(contract_refusals),
         "ignored": ignored,
         "applied": applied,
         "tensor_replay": applied,
+        "tensor_replay_applied": applied,
+        "state": {
+            "family": replay_family,
+            "status": replay_status,
+            "guarded": replay_status == "guarded",
+            "applied": applied,
+            "refused": bool(contract_refusals),
+            "tensor_replay": applied,
+        },
         "reason": reason,
         "refusal_reasons": refusal_reasons,
+        "contract_refusal_reasons": contract_refusals,
+        "guard_reasons": hook_refusals,
         "consumer": None if consumer is None else consumer.to_json(),
         "plan": {
             "version": plan.get("version"),
@@ -162,6 +194,7 @@ def replay_generation_metadata(
             "tier": plan.get("tier"),
             "sidecar_count": len(plan.get("sidecars") or ()),
             "replay_ref_count": len(plan.get("replay_refs") or ()),
+            "replay_ref_kinds": _replay_ref_kinds(plan.get("replay_refs")),
             "session_id": plan.get("session_id"),
         },
     }
@@ -178,6 +211,7 @@ def replay_contract_for_strategy(
     return {
         "version": REPLAY_CONTRACT_VERSION,
         "strategy": strategy,
+        "replay_family": _replay_family(strategy),
         "requires_runtime_replay": required_capability is not None,
         "required_capability": required_capability,
         "adapter_scope": adapter.scope(),
@@ -282,3 +316,39 @@ def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _replay_family(strategy: str) -> str:
+    return REPLAY_STRATEGY_FAMILIES.get(strategy, strategy or "none")
+
+
+def _replay_status(
+    *,
+    requires_runtime_replay: bool,
+    applied: bool,
+    contract_refused: bool,
+    hook_guarded: bool,
+) -> str:
+    if applied:
+        return "applied"
+    if contract_refused:
+        return "refused"
+    if hook_guarded:
+        return "guarded"
+    if requires_runtime_replay:
+        return "guarded"
+    return "not_required"
+
+
+def _replay_ref_kinds(value: Any) -> dict[str, int]:
+    if not isinstance(value, (list, tuple)):
+        return {}
+    counts: dict[str, int] = {}
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        kind = _optional_string(item.get("kind"))
+        if kind is None:
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts

@@ -6,6 +6,7 @@ from pathlib import Path
 from chuk_lazarus.david import DavidConfig, DavidRuntime
 from chuk_lazarus.david.config import AdapterSessionMetadata
 from chuk_lazarus.david.decoder import DecoderController
+from chuk_lazarus.david.materialization_replay import replay_generation_metadata
 from chuk_lazarus.david.materializer import Materializer
 from chuk_lazarus.david.routing import RoutePacket
 
@@ -184,6 +185,11 @@ def test_materializer_emits_loadable_residual_sidecar_plan(tmp_path: Path) -> No
 
     assert materialized.refused is False
     assert materialized.strategy == "residual_sidecar"
+    assert materialized.materialization_plan["replay_family"] == "residual_sidecar"
+    assert materialized.materialization_plan["replay_status"] == "guarded"
+    assert materialized.materialization_plan["guarded"] is True
+    assert materialized.materialization_plan["tensor_replay_applied"] is False
+    assert materialized.materialization_plan["runtime_replay"]["replay_family"] == "residual_sidecar"
     assert materialized.materialization_plan["requires_runtime_replay"] is True
     assert (
         materialized.materialization_plan["runtime_replay"]["required_capability"]
@@ -245,6 +251,121 @@ def test_materializer_refuses_sidecar_replay_without_consumer(tmp_path: Path) ->
     assert materialized.materialization_plan["requested_strategy"] == "kv_sidecar"
     assert materialized.materialization_plan["requires_runtime_replay"] is True
     assert "runtime replay consumer required for kv_sidecar" in materialized.reason
+
+
+def test_replay_metadata_distinguishes_residual_sidecar_guarded_applied_refused() -> None:
+    plan = {
+        "version": 1,
+        "strategy": "residual_sidecar",
+        "requested_strategy": "residual_sidecar",
+        "requires_runtime_replay": True,
+        "memory_family": "task",
+        "tier": "hot",
+        "session_id": "s1",
+        "runtime_replay": {
+            "strategy": "residual_sidecar",
+            "requires_runtime_replay": True,
+            "required_capability": "materialization.replay.residual_stream.v1",
+            "adapter_scope": {
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-a",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+            },
+            "memory_family": "task",
+        },
+        "sidecars": [{"artifact_id": "hot-window-1"}],
+        "replay_refs": [{"kind": "boundary_residual"}, {"kind": "residual_stream"}],
+    }
+    consumer = {
+        "consumer_id": "residual-sidecar-hook",
+        "capabilities": ["materialization.replay.residual_stream.v1"],
+        "model_id": "model-a",
+        "tokenizer_id": "tokenizer-a",
+        "model_revision": "rev-a",
+        "adapter_family": "family-a",
+        "insertion_families": ["kv_direct"],
+        "memory_families": ["task"],
+    }
+
+    guarded = replay_generation_metadata(
+        plan,
+        consumer,
+        backend_name="unit-backend",
+        supports_tensor_replay=False,
+    )
+    applied = replay_generation_metadata(
+        plan,
+        consumer,
+        backend_name="unit-backend",
+        supports_tensor_replay=True,
+    )
+    refused = replay_generation_metadata(
+        plan,
+        {**consumer, "model_id": "model-b"},
+        backend_name="unit-backend",
+        supports_tensor_replay=True,
+    )
+
+    assert guarded is not None
+    assert guarded["replay_family"] == "residual_sidecar"
+    assert guarded["replay_status"] == "guarded"
+    assert guarded["guarded"] is True
+    assert guarded["refused"] is False
+    assert guarded["applied"] is False
+    assert guarded["contract_refused"] is False
+    assert guarded["state"] == {
+        "family": "residual_sidecar",
+        "status": "guarded",
+        "guarded": True,
+        "applied": False,
+        "refused": False,
+        "tensor_replay": False,
+    }
+    assert guarded["plan"]["replay_ref_kinds"] == {"boundary_residual": 1, "residual_stream": 1}
+    assert guarded["guard_reasons"] == ["unit-backend has no tensor replay hook for residual_sidecar"]
+
+    assert applied is not None
+    assert applied["replay_status"] == "applied"
+    assert applied["applied"] is True
+    assert applied["tensor_replay_applied"] is True
+    assert applied["state"]["tensor_replay"] is True
+
+    assert refused is not None
+    assert refused["replay_status"] == "refused"
+    assert refused["contract_refused"] is True
+    assert refused["state"]["refused"] is True
+    assert any("model_id mismatch" in reason for reason in refused["contract_refusal_reasons"])
+
+
+def test_replay_metadata_keeps_kv_sidecar_family_distinct_from_residual_sidecar() -> None:
+    metadata = replay_generation_metadata(
+        {
+            "version": 1,
+            "strategy": "kv_sidecar",
+            "requested_strategy": "kv_sidecar",
+            "requires_runtime_replay": True,
+            "memory_family": "task",
+            "runtime_replay": {
+                "strategy": "kv_sidecar",
+                "requires_runtime_replay": True,
+                "required_capability": "materialization.replay.kv_cache.v1",
+                "memory_family": "task",
+            },
+            "replay_refs": [{"kind": "kv_cache"}],
+        },
+        {"consumer_id": "metadata-only"},
+        backend_name="unit-backend",
+        supports_tensor_replay=False,
+    )
+
+    assert metadata is not None
+    assert metadata["replay_family"] == "kv_sidecar"
+    assert metadata["replay_status"] == "refused"
+    assert metadata["state"]["family"] == "kv_sidecar"
+    assert metadata["plan"]["replay_ref_kinds"] == {"kv_cache": 1}
+    assert metadata["required_capability"] == "materialization.replay.kv_cache.v1"
 
 
 def test_materializer_refuses_incompatible_replay_consumer(tmp_path: Path) -> None:

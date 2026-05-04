@@ -312,7 +312,10 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     assert replay["backend"] == "transformers-causal-lm"
     assert replay["required_capability"] == "materialization.replay.residual_stream.v1"
     assert replay["consumer"]["consumer_id"] == "compatible-replay-hook"
-    assert replay["refused"] is True
+    assert replay["replay_status"] == "guarded"
+    assert replay["guarded"] is True
+    assert replay["refused"] is False
+    assert replay["contract_refused"] is False
     assert replay["applied"] is False
     assert replay["tensor_replay"] is False
     assert replay["refusal_reasons"] == [

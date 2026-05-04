@@ -276,10 +276,17 @@ def _materialization_plan(
         memory_family=route.memory_family,
         consumer=replay_consumer,
     )
+    replay_state = _plan_replay_state(
+        requires_runtime_replay=replay_contract["requires_runtime_replay"],
+        refused=bool(refusal_reasons),
+    )
     return {
         "version": 1,
         "strategy": strategy,
         "requested_strategy": requested_strategy,
+        "replay_family": replay_contract["replay_family"],
+        "replay_status": replay_state,
+        "guarded": replay_state == "guarded",
         "refused": bool(refusal_reasons),
         "reason": "; ".join(refusal_reasons) if refusal_reasons else "ok",
         "session_id": route.session_id,
@@ -287,6 +294,7 @@ def _materialization_plan(
         "tier": route.tier,
         "adapter_scope": adapter.scope(),
         "requires_runtime_replay": replay_contract["requires_runtime_replay"],
+        "tensor_replay_applied": False,
         "runtime_replay": replay_contract,
         "text_window_count": len(route.selected_windows),
         "sidecars": [sidecar.to_plan_ref() for sidecar in sidecars],
@@ -320,3 +328,11 @@ def _nested_inline_count(value: Any) -> int:
     if isinstance(value, (list, tuple)):
         return sum(_nested_inline_count(item) for item in value)
     return 1 if value is not None else 0
+
+
+def _plan_replay_state(*, requires_runtime_replay: bool, refused: bool) -> str:
+    if refused:
+        return "refused"
+    if requires_runtime_replay:
+        return "guarded"
+    return "not_required"

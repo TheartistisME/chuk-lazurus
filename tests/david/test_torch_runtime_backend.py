@@ -674,8 +674,36 @@ class _RawTokenizer:
 
 
 def _install_loaded_fake_torch_backend(monkeypatch, fake_generation: types.ModuleType) -> None:
+    class FakeLazarusBackend:
+        CUDA = "cuda"
+
+    class FakeResidualState:
+        def __init__(
+            self,
+            *,
+            backend: object,
+            layer_index: int,
+            tensor: object,
+            sequence_length: int,
+            hidden_size: int,
+            dtype: str,
+            device: str,
+        ) -> None:
+            self.backend = backend
+            self.layer_index = layer_index
+            self.tensor = tensor
+            self.sequence_length = sequence_length
+            self.hidden_size = hidden_size
+            self.dtype = dtype
+            self.device = device
+
+    fake_types = types.ModuleType("chuk_lazarus.inference.backends.types")
+    fake_types.LazarusBackend = FakeLazarusBackend
+    fake_types.ResidualState = FakeResidualState
+
     monkeypatch.setitem(sys.modules, "chuk_lazarus.inference.generation", fake_generation)
-    monkeypatch.setattr(torch_backend.importlib, "import_module", lambda name: types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "chuk_lazarus.inference.backends.types", fake_types)
+    monkeypatch.setattr(torch_backend.importlib, "import_module", lambda name, *args, **kwargs: types.ModuleType(name))
     monkeypatch.setattr(
         "chuk_lazarus.david.torch_backend._missing_optional_packages",
         lambda *names: [],
