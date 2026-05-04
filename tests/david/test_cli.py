@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from chuk_lazarus.david import cli
 from chuk_lazarus.david.doctor import DavidDoctorReport, DoctorCheck
 from chuk_lazarus.david.model_validation import (
@@ -9,6 +11,20 @@ from chuk_lazarus.david.model_validation import (
     ModelCommandResult,
     ValidationReportDiscovery,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_operator_env(monkeypatch):
+    for name in (
+        "DAVID_MODEL",
+        "DAVID_VALIDATION_REPORT",
+        "DAVID_MODEL_ATTESTATION",
+        "DAVID_MODEL_BACKEND",
+        "DAVID_MODEL_DEVICE",
+        "DAVID_MODEL_DTYPE",
+        "DAVID_MODEL_MAX_NEW_TOKENS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 class FakeRuntime:
@@ -55,6 +71,10 @@ def test_main_code_once_uses_workspace_and_prompt(monkeypatch, tmp_path, capsys)
 def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
     report = tmp_path / "validation-report.json"
+    monkeypatch.setenv("DAVID_MODEL", "env-model")
+    monkeypatch.setenv("DAVID_VALIDATION_REPORT", "env-report.json")
+    monkeypatch.setenv("DAVID_MODEL_ATTESTATION", "env-attestation.json")
+    monkeypatch.setenv("DAVID_MODEL_BACKEND", "transformers")
 
     rc = cli.main(
         [
@@ -91,6 +111,31 @@ def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path,
     assert FakeRuntime.created_with.model_max_new_tokens == 321
     assert FakeRuntime.created_with.once == "/status"
     assert FakeRuntime.created_with.color is False
+    assert "model validation: ready" in capsys.readouterr().out
+
+
+def test_main_code_once_uses_operator_env_defaults(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    monkeypatch.setenv("DAVID_MODEL", "env-model")
+    monkeypatch.setenv("DAVID_VALIDATION_REPORT", "env-report.json")
+    monkeypatch.setenv("DAVID_MODEL_ATTESTATION", "env-attestation.json")
+    monkeypatch.setenv("DAVID_MODEL_BACKEND", "torch-runtime")
+    monkeypatch.setenv("DAVID_MODEL_DEVICE", "cpu")
+    monkeypatch.setenv("DAVID_MODEL_DTYPE", "float32")
+    monkeypatch.setenv("DAVID_MODEL_MAX_NEW_TOKENS", "77")
+
+    rc = cli.main(["code", str(tmp_path), "--once", "/status", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.created_with.model_path == "env-model"
+    assert FakeRuntime.created_with.validation_report_path == "env-report.json"
+    assert FakeRuntime.created_with.model_attestation_path == "env-attestation.json"
+    assert FakeRuntime.created_with.model_backend == "torch-runtime"
+    assert FakeRuntime.created_with.model_device == "cpu"
+    assert FakeRuntime.created_with.model_dtype == "float32"
+    assert FakeRuntime.created_with.model_max_new_tokens == 77
     assert "model validation: ready" in capsys.readouterr().out
 
 

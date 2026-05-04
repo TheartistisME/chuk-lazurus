@@ -75,8 +75,10 @@ class DavidConfig:
     state_dir: Path | None = None
     session_id: str = "default"
     user_id: str = "default"
-    model_path: str | None = None
-    validation_report_path: str | None = None
+    model_path: str | None = field(default_factory=lambda: _env_optional_string("DAVID_MODEL"))
+    validation_report_path: str | None = field(
+        default_factory=lambda: _env_optional_string("DAVID_VALIDATION_REPORT")
+    )
     model_attestation_path: str | None = field(
         default_factory=lambda: _env_optional_string("DAVID_MODEL_ATTESTATION")
     )
@@ -115,8 +117,6 @@ class DavidConfig:
     ) -> "DavidConfig":
         kwargs: dict[str, Any] = {
             "workspace_root": workspace_path,
-            "model_path": model_path,
-            "validation_report_path": validation_report_path,
             "require_validated_model": require_validated_model,
             "color": color,
             "once": once,
@@ -124,6 +124,10 @@ class DavidConfig:
             "command_timeout_seconds": command_timeout_seconds,
             "auto_jit_index": auto_jit_index,
         }
+        if model_path is not None:
+            kwargs["model_path"] = model_path
+        if validation_report_path is not None:
+            kwargs["validation_report_path"] = validation_report_path
         if model_attestation_path is not None:
             kwargs["model_attestation_path"] = model_attestation_path
         if model_backend is not None:

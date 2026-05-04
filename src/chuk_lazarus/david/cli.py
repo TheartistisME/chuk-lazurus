@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -211,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "command", None) == "doctor":
+        _apply_operator_defaults(args)
         return _run_doctor_command(args)
     if getattr(args, "command", None) == "model":
         return _run_model_command(args)
@@ -220,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown command: {args.command}")
 
     workspace_path = Path(workspace)
+    _apply_operator_defaults(args)
     discovery = _resolve_validation_report(args, workspace_path)
     if _should_auto_validate_model(args, discovery):
         auto_result = run_auto_model_validation(model=args.model, workspace_path=workspace_path)
@@ -368,6 +371,48 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
         if not hasattr(config, name):
             object.__setattr__(config, name, values[name])
     return config
+
+
+def _apply_operator_defaults(args: argparse.Namespace) -> None:
+    defaults = _operator_env_defaults()
+    for arg_name, value in defaults.items():
+        if value is not None and _arg_is_absent(args, arg_name):
+            setattr(args, arg_name, value)
+
+
+def _operator_env_defaults() -> dict[str, str | int | None]:
+    return {
+        "model": _env_optional_string("DAVID_MODEL"),
+        "validation_report": _env_optional_string("DAVID_VALIDATION_REPORT"),
+        "model_attestation": _env_optional_string("DAVID_MODEL_ATTESTATION"),
+        "model_backend": _env_optional_string("DAVID_MODEL_BACKEND"),
+        "model_device": _env_optional_string("DAVID_MODEL_DEVICE"),
+        "model_dtype": _env_optional_string("DAVID_MODEL_DTYPE"),
+        "model_max_new_tokens": _env_optional_int("DAVID_MODEL_MAX_NEW_TOKENS"),
+    }
+
+
+def _arg_is_absent(args: argparse.Namespace, name: str) -> bool:
+    return not hasattr(args, name) or getattr(args, name) is None
+
+
+def _env_optional_string(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _env_optional_int(name: str) -> int | None:
+    value = _env_optional_string(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return max(1, parsed)
 
 
 def _resolve_validation_report(
