@@ -656,6 +656,19 @@ def test_parser_adds_verify_subcommand():
     assert args.no_color is True
 
 
+def test_verify_help_says_discovery_does_not_execute_without_cmd(capsys):
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["verify", "--help"])
+
+    assert excinfo.value.code == 0
+    output = capsys.readouterr().out
+    assert "Discover candidate quality gates and report them without running them." in output
+    assert "only executes workspace verification when --cmd is supplied" in output
+    assert "candidates are not executed without --cmd" in output
+
+
 def test_parser_adds_index_memory_resume_subcommands():
     parser = cli.build_parser()
 
@@ -827,25 +840,28 @@ def test_capabilities_command_prints_truthful_status_without_runtime(monkeypatch
     assert "doctor readiness surface with WSL path checks when available" in output
     assert "capability router surface" in output
     assert "materializer metadata and compatibility guards" in output
-    assert "residual-sidecar replay metadata status" in output
-    assert "decoder prior store surface" in output
-    assert "verification command surface" in output
-    assert "safe agent loop shell" in output
+    assert "residual-sidecar catalog/readiness and replay metadata checks" in output
+    assert "decoder prior store scope checks and steering metadata" in output
+    assert "quality gate discovery surface that does not run candidates without --cmd" in output
+    assert "structured verifier checks for route, evidence, repair, sidecar, and decoder-prior metadata" in output
+    assert "bounded agent loop read/patch/verify shell" in output
     assert "GUARDED/PARTIAL:" in output
     assert "model-driven repo autonomy remains guarded" in output
     assert "repo patching is partially wired through guarded read -> patch -> verify" in output
-    assert "tensor replay is fail-closed behind compatibility evidence" in output
-    assert "residual-sidecar replay is guarded and experimental" in output
-    assert "live steering hooks are limited" in output
+    assert "quality gate execution requires explicit --cmd" in output
+    assert "residual-sidecar tensor replay is opt-in and fail-closed behind manifest/scope evidence" in output
+    assert "decoder prior live steering requires a compatible loaded backend/tokenizer and scoped prior" in output
+    assert "KV/direct tensor replay remains guarded research/runtime plumbing, not a production auto-load path" in output
     assert "TODO:" in output
-    assert "real Gemma CUDA smoke and guided model onboarding" in output
+    assert "real Gemma CUDA smoke against a validated model" in output
     assert "full central router product wiring" in output
     assert "real activation/residual/KV indexes" in output
-    assert "adapter-safe production KV/direct residual materialization" in output
-    assert "live logit hooks and steering" in output
-    assert "stronger semantic, chain, temporal, and behavioral verification" in output
+    assert "adapter-safe production KV-direct replay/materialization" in output
+    assert "broader live steering backend coverage" in output
+    assert "full behavioral verifier evidence beyond structured metadata checks" in output
     assert "broad multi-step autonomous repo patching" in output
     assert "tensor replay wired" not in output.lower()
+    assert "production kv-direct replay wired" not in output.lower()
 
 
 def test_verify_command_prints_output_and_returns_command_rc(monkeypatch, tmp_path, capsys):

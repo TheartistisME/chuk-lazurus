@@ -195,18 +195,22 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(code, suppress_defaults=True)
     verify = subparsers.add_parser(
         "verify",
-        help="Run David verification once without opening the TUI",
+        help="Discover gates or run an explicit verification command without opening the TUI",
+        description=(
+            "Discover candidate quality gates and report them without running them. "
+            "David only executes workspace verification when --cmd is supplied."
+        ),
     )
     verify.add_argument("workspace", nargs="?", default=".", help="Workspace path")
     verify.add_argument(
         "--cmd",
         default=None,
-        help="Workspace shell command to verify through runtime.verify(command)",
+        help="Workspace shell command to execute through runtime.verify(command)",
     )
     verify.add_argument(
         "--patch",
         action="store_true",
-        help="Run David's built-in verification path when --cmd is not supplied",
+        help="Report built-in patch verification candidates; candidates are not executed without --cmd",
     )
     _add_common_options(verify, suppress_defaults=True)
     index = subparsers.add_parser(
@@ -444,11 +448,12 @@ def format_capabilities_status() -> str:
                 "workspace index status and build hooks",
                 "capability router surface",
                 "materializer metadata and compatibility guards",
-                "residual-sidecar replay metadata status",
-                "decoder prior store surface",
-                "verification command surface",
+                "residual-sidecar catalog/readiness and replay metadata checks",
+                "decoder prior store scope checks and steering metadata",
+                "quality gate discovery surface that does not run candidates without --cmd",
+                "structured verifier checks for route, evidence, repair, sidecar, and decoder-prior metadata",
                 "operator tools surface",
-                "safe agent loop shell",
+                "bounded agent loop read/patch/verify shell",
             ),
         ),
         (
@@ -456,20 +461,21 @@ def format_capabilities_status() -> str:
             (
                 "model-driven repo autonomy remains guarded",
                 "repo patching is partially wired through guarded read -> patch -> verify",
-                "tensor replay is fail-closed behind compatibility evidence",
-                "residual-sidecar replay is guarded and experimental",
-                "live steering hooks are limited",
+                "quality gate execution requires explicit --cmd",
+                "residual-sidecar tensor replay is opt-in and fail-closed behind manifest/scope evidence",
+                "decoder prior live steering requires a compatible loaded backend/tokenizer and scoped prior",
+                "KV/direct tensor replay remains guarded research/runtime plumbing, not a production auto-load path",
             ),
         ),
         (
             "TODO",
             (
-                "real Gemma CUDA smoke and guided model onboarding",
+                "real Gemma CUDA smoke against a validated model",
                 "full central router product wiring",
                 "real activation/residual/KV indexes",
-                "adapter-safe production KV/direct residual materialization",
-                "live logit hooks and steering",
-                "stronger semantic, chain, temporal, and behavioral verification",
+                "adapter-safe production KV-direct replay/materialization",
+                "broader live steering backend coverage",
+                "full behavioral verifier evidence beyond structured metadata checks",
                 "broad multi-step autonomous repo patching",
             ),
         ),
