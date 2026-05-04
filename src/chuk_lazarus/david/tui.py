@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -96,10 +97,7 @@ class DavidTui:
         if command == "/index":
             return CommandResult(self._index_command(arg))
         if command == "/verify":
-            if hasattr(self.runtime, "verify"):
-                return CommandResult(self._runtime_call(("verify",), arg))
-            prompt = f"/verify {arg}" if arg else "/verify"
-            return CommandResult(self._runtime_call(("run_once",), prompt))
+            return CommandResult(self._verify_command(arg))
         if command in {"/run", "/shell"}:
             if not arg:
                 return CommandResult("shell: missing command")
@@ -165,6 +163,7 @@ class DavidTui:
             detail = self._agent_loop_observation_summary(observation)
             suffix = f" {detail}" if detail else ""
             lines.append(f"- {item.get('step', '?')}: {action} ok={ok}{suffix}")
+        lines.extend(self._format_repair_summary(self._repair_summary_from_runtime_value(value)))
         return "\n".join(lines)
 
     def _agent_loop_observation_summary(self, observation: Any) -> str:
@@ -246,10 +245,10 @@ class DavidTui:
         readiness = self._readiness()
         lines = ["David startup readiness"]
         for name in ("model validation", "index", "memory"):
-            lines.append(f"- {name}: {readiness.get(name, 'unknown')}")
+            lines.append(self._format_readiness_line(name, readiness.get(name, "unknown")))
         for name, value in readiness.items():
             if name not in {"model validation", "index", "memory"}:
-                lines.append(f"- {name}: {value}")
+                lines.append(self._format_readiness_line(name, value))
         return "\n".join(lines)
 
     def format_resume(self) -> str:
@@ -319,6 +318,13 @@ class DavidTui:
             return summary or status or "index: refreshed"
         return "index: JIT hook unavailable"
 
+    def _verify_command(self, arg: str | None) -> str:
+        verify = getattr(self.runtime, "verify", None)
+        if callable(verify):
+            return self._format_verify_result(verify(arg), command=arg)
+        prompt = f"/verify {arg}" if arg else "/verify"
+        return self._runtime_call(("run_once",), prompt)
+
     def _runtime_call(
         self,
         names: tuple[str, ...],
@@ -345,6 +351,312 @@ class DavidTui:
         if callable(to_json):
             return str(to_json())
         return str(value)
+
+    def _format_readiness_line(self, name: str, value: Any) -> str:
+        text = self._compact_value(value, max_chars=320)
+        return f"- {name}: {text} [state={self._readiness_state(text)}]"
+
+    def _readiness_state(self, value: str) -> str:
+        text = str(value).strip().lower()
+        head = text.split(":", 1)[0].strip()
+        if not text:
+            return "unknown"
+        if head in {"blocked", "rejected", "invalid", "failed", "error", "refused"}:
+            return "blocked"
+        if head in {"missing", "absent"}:
+            return "missing"
+        if head in {"degraded", "needs_review", "manual_reviewed"}:
+            return "degraded"
+        if text.startswith(("ready", "accepted", "loaded", "hot", "warm")):
+            if any(marker in text for marker in ("degraded", "missing", "stale", "truncated", "unreadable", "warning")):
+                return "degraded"
+            return "ready"
+        if text in {"unknown", "none"}:
+            return "unknown"
+        if any(marker in text for marker in ("blocked", "rejected", "invalid", "failed", "error", "refused")):
+            return "blocked"
+        if any(marker in text for marker in ("missing", "not found", "jit required")):
+            return "missing"
+        if any(
+            marker in text
+            for marker in (
+                "degraded",
+                "needs_review",
+                "manual_reviewed",
+                "manual review",
+                "offline shell mode",
+                "not loaded",
+                "stale",
+            )
+        ):
+            return "degraded"
+        return "info"
+
+    def _format_verify_result(self, value: Any, *, command: str | None) -> str:
+        data = self._mapping_from_runtime_value(value)
+        if data is not None:
+            return self._format_verify_mapping(data, command=command)
+
+        text = str(value or "").strip()
+        if text.startswith("David verification"):
+            return text
+
+        mode = "command" if command else "candidate discovery"
+        lines = ["David verification", f"mode: {mode}"]
+        if command:
+            lines.append(f"command: {command}")
+        if text:
+            lines.extend(("output:", text))
+        else:
+            lines.append("output: (none)")
+        return "\n".join(lines)
+
+    def _format_verify_mapping(self, data: Mapping[str, Any], *, command: str | None) -> str:
+        command_result = self._verify_command_result(data)
+        quality_gate = self._verify_quality_gate_check(data)
+        mode = str(data.get("mode") or ("command" if command or command_result else "candidate discovery"))
+        reason = data.get("reason") or data.get("run_reason")
+        ok = self._verify_ok(data, command_result)
+
+        lines = ["David verification", f"mode: {mode}"]
+        display_command = command or self._display_command_value(
+            command_result.get("command") if isinstance(command_result, Mapping) else data.get("command")
+        )
+        if display_command:
+            lines.append(f"command: {display_command}")
+        if ok is not None:
+            lines.append(f"result: {'passed' if ok else 'failed'}")
+        if reason:
+            lines.append(f"reason: {self._compact_value(reason)}")
+
+        discovered = self._verify_discovered_candidates(data, quality_gate)
+        selected = self._verify_selected_commands(data, quality_gate)
+        if discovered or selected or quality_gate is not None:
+            lines.append("selected commands:")
+            lines.extend(f"- {item}" for item in (selected or ["none"]))
+            lines.append("discovered candidate gates:")
+            lines.extend(self._format_verify_candidate(item) for item in discovered) if discovered else lines.append("- none")
+            lines.append("commands run:")
+            commands_run = quality_gate.get("commands_run", 0) if isinstance(quality_gate, Mapping) else 0
+            lines.append(f"- {commands_run}" if commands_run else "- none")
+
+        if isinstance(command_result, Mapping):
+            lines.extend(self._format_command_result(command_result))
+
+        metadata = self._verify_metadata_lines(data, quality_gate, command_result)
+        if metadata:
+            lines.append("metadata:")
+            lines.extend(metadata)
+        return "\n".join(lines)
+
+    def _verify_command_result(self, data: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        command_result = data.get("command_result") or data.get("result")
+        if isinstance(command_result, Mapping):
+            return command_result
+        if any(key in data for key in ("returncode", "stdout", "stderr")):
+            return data
+        return None
+
+    def _verify_quality_gate_check(self, data: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        checks = data.get("checks")
+        if isinstance(checks, Mapping):
+            gate = checks.get("candidate_quality_gates")
+            if isinstance(gate, Mapping):
+                return gate
+        gate = data.get("candidate_quality_gates") or data.get("quality_gates")
+        return gate if isinstance(gate, Mapping) else None
+
+    def _verify_ok(self, data: Mapping[str, Any], command_result: Mapping[str, Any] | None) -> bool | None:
+        for key in ("ok", "passed", "success"):
+            value = data.get(key)
+            if isinstance(value, bool):
+                return value
+        if isinstance(command_result, Mapping):
+            if isinstance(command_result.get("passed"), bool):
+                return bool(command_result["passed"])
+            if "returncode" in command_result:
+                try:
+                    return int(command_result["returncode"]) == 0
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _verify_discovered_candidates(
+        self,
+        data: Mapping[str, Any],
+        quality_gate: Mapping[str, Any] | None,
+    ) -> list[Any]:
+        candidates = data.get("candidates") or data.get("discovered_candidates")
+        if isinstance(candidates, Sequence) and not isinstance(candidates, (str, bytes, bytearray)):
+            return list(candidates)
+        evidence = data.get("evidence")
+        if isinstance(evidence, Sequence) and not isinstance(evidence, (str, bytes, bytearray)):
+            candidate_evidence = [
+                item
+                for item in evidence
+                if isinstance(item, Mapping) and item.get("kind") == "quality_gate_candidate"
+            ]
+            if candidate_evidence:
+                return candidate_evidence
+        if isinstance(quality_gate, Mapping):
+            commands = quality_gate.get("discovered_commands")
+            if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes, bytearray)):
+                return list(commands)
+        return []
+
+    def _verify_selected_commands(
+        self,
+        data: Mapping[str, Any],
+        quality_gate: Mapping[str, Any] | None,
+    ) -> list[str]:
+        selected = data.get("selected_commands")
+        if isinstance(quality_gate, Mapping):
+            selected = selected or quality_gate.get("selected_commands")
+        if isinstance(selected, Sequence) and not isinstance(selected, (str, bytes, bytearray)):
+            return [self._display_command_value(item) for item in selected if self._display_command_value(item)]
+        return []
+
+    def _format_verify_candidate(self, item: Any) -> str:
+        if isinstance(item, Mapping):
+            command = self._display_command_value(item.get("display_command") or item.get("command"))
+            name = item.get("name")
+            reason = item.get("reason")
+            label = f"{name}: {command}" if name and command else command or self._compact_value(item)
+            if reason:
+                return f"- {label} ({self._compact_value(reason)})"
+            return f"- {label}"
+        return f"- {self._display_command_value(item) or self._compact_value(item)}"
+
+    def _format_command_result(self, command_result: Mapping[str, Any]) -> list[str]:
+        lines: list[str] = []
+        if "returncode" in command_result:
+            lines.append(f"return code: {command_result['returncode']}")
+        stdout = str(command_result.get("stdout") or "").rstrip()
+        stderr = str(command_result.get("stderr") or "").rstrip()
+        if stdout:
+            lines.extend(("stdout:", stdout))
+        if stderr:
+            lines.extend(("stderr:", stderr))
+        return lines
+
+    def _verify_metadata_lines(
+        self,
+        data: Mapping[str, Any],
+        quality_gate: Mapping[str, Any] | None,
+        command_result: Mapping[str, Any] | None,
+    ) -> list[str]:
+        lines: list[str] = []
+        for key in ("capability",):
+            if data.get(key):
+                lines.append(f"- {key}: {data[key]}")
+        if isinstance(quality_gate, Mapping):
+            for key in ("candidate_count", "selected_count"):
+                if key in quality_gate:
+                    lines.append(f"- {key}: {quality_gate[key]}")
+        if isinstance(command_result, Mapping) and "command" in command_result:
+            command = self._display_command_value(command_result["command"])
+            if command:
+                lines.append(f"- executed: {command}")
+        return lines
+
+    def _display_command_value(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            return " ".join(str(item) for item in value)
+        return str(value)
+
+    def _repair_summary_from_runtime_value(self, value: Any) -> Mapping[str, Any] | None:
+        for attr in ("repair_summary", "failure_recovery", "recovery_summary"):
+            summary = getattr(value, attr, None)
+            if isinstance(summary, Mapping):
+                return summary
+        data = self._mapping_from_runtime_value(value)
+        if data is None:
+            return None
+        for key in ("repair_summary", "failure_recovery", "recovery_summary"):
+            summary = data.get(key)
+            if isinstance(summary, Mapping):
+                return summary
+        writeback = data.get("writeback")
+        if isinstance(writeback, Mapping):
+            metadata = writeback.get("metadata")
+            if isinstance(metadata, Mapping):
+                for key in ("repair_summary", "failure_recovery", "recovery_summary"):
+                    summary = metadata.get(key)
+                    if isinstance(summary, Mapping):
+                        return summary
+        return None
+
+    def _format_repair_summary(self, summary: Mapping[str, Any] | None) -> list[str]:
+        if summary is None:
+            return []
+        failure_count = self._nonnegative_int(summary.get("failure_count") or summary.get("failed_step_count"))
+        repair_count = self._nonnegative_int(summary.get("repair_attempt_count") or summary.get("repair_count"))
+        retry_count = self._nonnegative_int(summary.get("retry_count") or summary.get("retries"))
+        verification = summary.get("verification") if isinstance(summary.get("verification"), Mapping) else {}
+        verification_outcome = verification.get("outcome") or summary.get("verification_outcome")
+        recovery_outcome = str(summary.get("recovery_outcome") or "unknown")
+        interesting = any((failure_count, repair_count, retry_count)) or recovery_outcome not in {
+            "unknown",
+            "no_failure",
+            "none",
+        }
+        if not interesting:
+            return []
+
+        lines = [
+            "repair summary: "
+            f"failures={failure_count} repairs={repair_count} retries={retry_count} "
+            f"recovery={recovery_outcome} verification={verification_outcome or 'unknown'}"
+        ]
+        failed_steps = self._mapping_list(summary.get("failed_steps") or summary.get("recovered_failures"))
+        repair_steps = self._mapping_list(summary.get("repair_steps") or summary.get("repair_attempts"))
+        if failed_steps:
+            lines.append(f"- failed: {self._format_step_references(failed_steps)}")
+        if repair_steps:
+            lines.append(f"- repair: {self._format_step_references(repair_steps)}")
+        return lines
+
+    def _format_step_references(self, steps: list[Mapping[str, Any]], *, limit: int = 2) -> str:
+        formatted = []
+        for step in steps[:limit]:
+            bits = [f"step={step.get('step', '?')}", f"action={step.get('action', 'unknown')}"]
+            for key in ("error", "reason", "returncode"):
+                if step.get(key) not in (None, ""):
+                    bits.append(f"{key}={self._compact_value(step[key], max_chars=80)}")
+                    break
+            formatted.append(" ".join(bits))
+        if len(steps) > limit:
+            formatted.append(f"+{len(steps) - limit} more")
+        return "; ".join(formatted)
+
+    def _mapping_list(self, value: Any) -> list[Mapping[str, Any]]:
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+            return []
+        return [item for item in value if isinstance(item, Mapping)]
+
+    def _mapping_from_runtime_value(self, value: Any) -> Mapping[str, Any] | None:
+        if isinstance(value, Mapping):
+            return value
+        for name in ("to_json", "to_dict"):
+            method = getattr(value, name, None)
+            if callable(method):
+                mapped = method()
+                if isinstance(mapped, Mapping):
+                    return mapped
+        return None
+
+    def _nonnegative_int(self, value: Any) -> int:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, int) and value >= 0:
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return 0
 
     def _resume_snapshot(self) -> SessionSnapshot | None:
         snapshot = getattr(self.runtime, "resume_snapshot", None)
