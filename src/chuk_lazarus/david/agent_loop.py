@@ -99,6 +99,7 @@ class AgentLoopError(ValueError):
 
 
 JSON_BLOCK_RE = re.compile(r"```(?:json|tool|action)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+ACTION_JSON_SENTINEL = "David action JSON:"
 ALLOWED_ACTIONS = {"plan", "read", "write", "run", "shell", "verify", "done", "none", "no_action"}
 WRITE_CONTENT_RE = re.compile(r"\b(?:that\s+says|with\s+content|containing|contents?\s*:)\b", re.IGNORECASE)
 OPTIONAL_RUN_RE = re.compile(r"\b(?:then|and)\s+run\s+(.+)$", re.IGNORECASE | re.DOTALL)
@@ -233,6 +234,8 @@ def parse_agent_action(raw: ActionPayload) -> AgentAction | None:
         if match:
             parsed = _parse_json_object(match.group(1))
     if parsed is None:
+        parsed = _extract_single_json_object(text)
+    if parsed is None:
         return None
     return _action_from_mapping(parsed)
 
@@ -302,12 +305,12 @@ def render_model_action_prompt(state: AgentLoopState) -> str:
     ]
     return (
         "You are David's terminal coding-agent action planner.\n"
-        "Return exactly one JSON object and no prose.\n"
+        f"Return exactly one JSON object after the label `{ACTION_JSON_SENTINEL}` and no prose.\n"
         "Allowed actions: plan, read, write, run, shell, verify, done, none.\n"
         "Use run/shell only with command as an array of arguments, never a shell string.\n"
         "Use relative workspace paths only. Do not request deletion or path escapes.\n"
         "Prefer read/plan before write. Verify with passed or a command array when work is complete.\n"
-        "JSON schema: "
+        f"{ACTION_JSON_SENTINEL} "
         '{"action":"plan|read|write|run|verify|done|none","path":"relative/path",'
         '"content":"text","command":["program","arg"],"cwd":".","timeout":30,'
         '"passed":true,"reason":"short reason"}\n'
@@ -457,6 +460,56 @@ def _parse_json_object(text: str) -> Mapping[str, Any] | None:
     if not isinstance(parsed, Mapping):
         raise AgentLoopError("action JSON must be an object")
     return parsed
+
+
+def _extract_single_json_object(text: str) -> Mapping[str, Any] | None:
+    candidates: list[Mapping[str, Any]] = []
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
+            break
+        end = _balanced_json_object_end(text, start)
+        if end is None:
+            index = start + 1
+            continue
+        parsed = _parse_json_object(text[start:end])
+        if parsed is not None:
+            candidates.append(parsed)
+        index = end
+
+    if len(candidates) > 1:
+        raise AgentLoopError("multiple action JSON objects are not allowed")
+    if not candidates:
+        return None
+    return candidates[0]
+
+
+def _balanced_json_object_end(text: str, start: int) -> int | None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+            if depth < 0:
+                return None
+    return None
 
 
 def _fallback_plan_for_state(state: AgentLoopState, *, mode: str) -> tuple[ActionPayload, ...]:

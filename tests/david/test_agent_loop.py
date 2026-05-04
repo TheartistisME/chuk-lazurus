@@ -26,6 +26,55 @@ def test_parse_agent_action_from_fenced_model_text() -> None:
     assert action.path == "src/example.py"
 
 
+def test_parse_agent_action_from_prose_wrapped_json_object() -> None:
+    action = parse_agent_action(
+        'I will inspect the target first.\n{"action": "read", "path": "src/example.py"}\nThen I will wait.'
+    )
+
+    assert action is not None
+    assert action.action == "read"
+    assert action.path == "src/example.py"
+
+
+def test_parse_agent_action_from_sentinel_label() -> None:
+    action = parse_agent_action('David action JSON: {"action": "plan", "reason": "inspect before editing"}')
+
+    assert action is not None
+    assert action.action == "plan"
+    assert action.reason == "inspect before editing"
+
+
+def test_parse_agent_action_refuses_multiple_json_objects() -> None:
+    result = run_agent_loop(
+        [
+            (
+                'David action JSON: {"action": "read", "path": "notes.txt"}\n'
+                '{"action": "write", "path": "notes.txt", "content": "unsafe"}'
+            )
+        ],
+        LocalTools(Path.cwd()),
+    )
+
+    assert result.status == "refused"
+    assert "multiple action JSON objects" in result.reason
+
+
+def test_parse_agent_action_ignores_malformed_prose_json() -> None:
+    action = parse_agent_action('David action JSON: {"action": "read", "path": "src/example.py"')
+
+    assert action is None
+
+
+def test_parse_agent_action_refuses_command_string_in_prose_json(tmp_path: Path) -> None:
+    result = run_agent_loop(
+        ['David action JSON: {"action": "run", "command": "python -m pytest"}'],
+        LocalTools(tmp_path),
+    )
+
+    assert result.status == "refused"
+    assert "command must be a list of arguments" in result.reason
+
+
 def test_agent_loop_reads_workspace_file(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("remember me\n", encoding="utf-8")
 
