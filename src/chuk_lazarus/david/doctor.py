@@ -146,7 +146,31 @@ class DavidDoctorReport:
 
     @property
     def ready(self) -> bool:
-        return all(check.status not in {"blocked", "missing"} for check in self.checks)
+        ignored_checks = {".vindex.ple artifact"}
+        for check in self.checks:
+            if check.name in ignored_checks:
+                continue
+            if check.name == "validation report" and self._standard_decode_attested_ready():
+                continue
+            if check.status in {"blocked", "missing"}:
+                return False
+        return True
+
+    def _standard_decode_attested_ready(self) -> bool:
+        validation = self.validation_summary
+        attestation = self.attestation_summary
+        if self.validation_discovery.path is None or validation is None or attestation is None:
+            return False
+        if validation.validation_status != "needs_review" or validation.auto_load_allowed is not False:
+            return False
+        return (
+            attestation.readable
+            and attestation.standard_decode_allowed
+            and attestation.standard_decode_only
+            and not attestation.rejection_reasons
+            and not attestation.error
+            and not attestation.requested_replay_capabilities
+        )
 
 
 def run_doctor(

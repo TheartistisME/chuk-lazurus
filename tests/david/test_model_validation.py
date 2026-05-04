@@ -299,6 +299,11 @@ def test_doctor_surfaces_accepted_validation_report_summary(monkeypatch, tmp_pat
         "_wsl_tooling_check",
         lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
     )
+    monkeypatch.setattr(
+        doctor,
+        "_auto_validate_check",
+        lambda **_kwargs: doctor.DoctorCheck("--auto-validate-model", "ready", "not needed"),
+    )
     _disable_wsl_probe_checks(monkeypatch)
 
     report = doctor.run_doctor(model=str(model), workspace_path=workspace)
@@ -306,9 +311,11 @@ def test_doctor_surfaces_accepted_validation_report_summary(monkeypatch, tmp_pat
     formatted = doctor.format_doctor_report(report)
 
     assert checks["validation report"].status == "ready"
+    assert checks[".vindex.ple artifact"].status == "missing"
     assert "validation_status=accepted" in checks["validation report"].detail
     assert report.validation_summary is not None
     assert report.validation_summary.can_auto_load is True
+    assert report.ready is True
     assert "- validation report summary:" in formatted
     assert "  - validation_status: accepted" in formatted
     assert "  - selected_config_layer_scope: route_layer=11" in formatted
@@ -361,6 +368,117 @@ def test_doctor_blocks_needs_review_validation_report_with_reasons(monkeypatch, 
     assert "validation_status is 'needs_review', expected 'accepted'" in formatted
     assert "auto_load_allowed is false" in formatted
     assert "validation score margin 0.020 is below threshold 0.100" in formatted
+    assert report.ready is False
+
+
+def test_doctor_ready_for_needs_review_validation_with_standard_decode_attestation(
+    monkeypatch,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "gemma"
+    workspace.mkdir()
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    (model / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (model / "model.safetensors").write_text("", encoding="utf-8")
+    report_path = model / "validation_report.json"
+    report_path.write_text(
+        json.dumps(
+            _validation_report_payload(
+                validation_status="needs_review",
+                confidence="low",
+                auto_load_allowed=False,
+                harness_load_policy="manual_or_validation_required",
+                warnings=["operator standard-decode attestation required"],
+            )
+        ),
+        encoding="utf-8",
+    )
+    attestation_path = model / "model_attestation.json"
+    attestation_path.write_text(json.dumps(_attestation_payload()), encoding="utf-8")
+
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "ready", "CUDA available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_auto_validate_check",
+        lambda **_kwargs: doctor.DoctorCheck("--auto-validate-model", "ready", "not needed"),
+    )
+    _disable_wsl_probe_checks(monkeypatch)
+
+    report = doctor.run_doctor(model=str(model), workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["validation report"].status == "blocked"
+    assert checks["model attestation"].status == "ready"
+    assert checks[".vindex.ple artifact"].status == "missing"
+    assert report.attestation_summary is not None
+    assert report.attestation_summary.standard_decode_allowed is True
+    assert report.attestation_summary.standard_decode_only is True
+    assert report.attestation_summary.rejection_reasons == ()
+    assert report.ready is True
+
+
+def test_doctor_does_not_hide_validation_failure_with_invalid_attestation(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "gemma"
+    workspace.mkdir()
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    (model / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (model / "model.safetensors").write_text("", encoding="utf-8")
+    report_path = model / "validation_report.json"
+    report_path.write_text(
+        json.dumps(
+            _validation_report_payload(
+                validation_status="needs_review",
+                confidence="low",
+                auto_load_allowed=False,
+                harness_load_policy="manual_or_validation_required",
+            )
+        ),
+        encoding="utf-8",
+    )
+    attestation_path = model / "model_attestation.json"
+    attestation_payload = _attestation_payload()
+    attestation_payload.pop("reviewer")
+    attestation_path.write_text(json.dumps(attestation_payload), encoding="utf-8")
+
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "ready", "CUDA available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_auto_validate_check",
+        lambda **_kwargs: doctor.DoctorCheck("--auto-validate-model", "ready", "not needed"),
+    )
+    _disable_wsl_probe_checks(monkeypatch)
+
+    report = doctor.run_doctor(model=str(model), workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+
+    assert checks["validation report"].status == "blocked"
+    assert checks["model attestation"].status == "review"
+    assert report.attestation_summary is not None
+    assert "reviewer is missing" in report.attestation_summary.rejection_reasons
     assert report.ready is False
 
 
