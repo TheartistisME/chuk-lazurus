@@ -171,3 +171,55 @@ def test_adapter_materialization_mismatch_fails_with_details(tmp_path: Path) -> 
     assert result.checks["adapter_materialization_compatibility"]["mismatches"] == {
         "model_id": {"adapter": "gemma-e2b", "materialized": "other-model"}
     }
+
+
+def test_verifier_checks_decoder_product_route_and_backend_metadata(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+    evidence = [{"path": "src/example.py", "symbol": "boot", "text": "def boot(): ..."}]
+
+    result = verifier.verify(
+        capability="source_dependency",
+        evidence=evidence,
+        metadata={
+            "adapter": {
+                "model_id": "gemma-e2b",
+                "tokenizer_id": "gemma-tokenizer",
+                "adapter_family": "gemma",
+                "model_revision": "rev-a",
+                "insertion_family": "kv_direct",
+            },
+            "decoder_prior_scope": {
+                "model_id": "gemma-e2b",
+                "tokenizer_id": "gemma-tokenizer",
+                "adapter_family": "gemma",
+                "model_revision": "rev-a",
+                "insertion_family": "kv_direct",
+                "method": "source_dependency",
+            },
+            "decoder_prior": {
+                "scope": {
+                    "model_id": "gemma-e2b",
+                    "tokenizer_id": "gemma-tokenizer",
+                    "adapter_family": "gemma",
+                    "model_revision": "rev-a",
+                    "insertion_family": "kv_direct",
+                    "method": "source_dependency",
+                }
+            },
+            "product_route": {
+                "method": "source_dependency",
+                "methodology": "dependency_source",
+                "capability": "source/dependency routing",
+                "proof_rig": "LoCoBench source/dependency routing",
+                "route_reasons": ["source_dependency methodology selected"],
+                "evidence": evidence,
+            },
+            "route_evidence_chain": [{"path": "src/example.py", "kind": "source_index_record"}],
+            "backend": {"name": "offline-deterministic", "ok": True, "metadata": {"deterministic": True}},
+        },
+    )
+
+    assert result.ok is True
+    assert result.checks["decoder_prior_scope"]["has_persisted_prior"] is True
+    assert result.checks["product_route"]["route_evidence_chain_count"] == 1
+    assert result.checks["backend"]["name"] == "offline-deterministic"

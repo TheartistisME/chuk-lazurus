@@ -90,6 +90,18 @@ class Verifier:
         writeback = self._check_writeback_metadata(metadata, capability)
         if writeback is not None:
             checks["memory_writeback"] = writeback
+
+        decoder_prior = self._check_decoder_prior_metadata(metadata, capability)
+        if decoder_prior is not None:
+            checks["decoder_prior_scope"] = decoder_prior
+
+        product_route = self._check_product_route_metadata(metadata, capability, evidence)
+        if product_route is not None:
+            checks["product_route"] = product_route
+
+        backend = self._check_backend_metadata(metadata)
+        if backend is not None:
+            checks["backend"] = backend
         return checks
 
     @staticmethod
@@ -241,6 +253,109 @@ class Verifier:
             "expected_family": expected_family,
             "actual_family": writeback.get("family"),
             "kind": writeback.get("kind"),
+        }
+
+    @staticmethod
+    def _check_decoder_prior_metadata(metadata: dict[str, Any], capability: str) -> dict[str, Any] | None:
+        decoder = metadata.get("decoder") if isinstance(metadata.get("decoder"), dict) else {}
+        prior_scope = metadata.get("decoder_prior_scope") or decoder.get("prior_scope")
+        prior = metadata.get("decoder_prior")
+        adapter = metadata.get("adapter") or metadata.get("adapter_scope") or {}
+        if not isinstance(prior_scope, dict):
+            return None
+
+        required = ("model_id", "tokenizer_id", "adapter_family")
+        missing = [key for key in required if not prior_scope.get(key)]
+        expected_method = prior_scope.get("method") or prior_scope.get("task_type")
+        method_ok = expected_method in {None, "", capability}
+        scope = prior.get("scope") if isinstance(prior, dict) and isinstance(prior.get("scope"), dict) else {}
+        comparable_scope_keys = {
+            "model_id",
+            "tokenizer_id",
+            "adapter_family",
+            "model_revision",
+            "insertion_family",
+            "layer",
+            "kv_target_layer",
+        }
+        mismatches = {
+            key: {"decoder": prior_scope.get(key), "prior": scope.get(key)}
+            for key in sorted((set(prior_scope) & set(scope)) & comparable_scope_keys)
+            if prior_scope.get(key) is not None
+            and scope.get(key) is not None
+            and str(prior_scope.get(key)) != str(scope.get(key))
+        }
+        prior_method = scope.get("task_type") or scope.get("method") if scope else None
+        prior_method_ok = prior_method in {None, "", capability}
+        adapter_mismatches = {
+            key: {"adapter": adapter.get(key), "decoder": prior_scope.get(key)}
+            for key in ("model_id", "tokenizer_id", "adapter_family", "model_revision", "insertion_family")
+            if isinstance(adapter, dict)
+            and adapter.get(key) is not None
+            and prior_scope.get(key) is not None
+            and str(adapter.get(key)) != str(prior_scope.get(key))
+        }
+        return {
+            "ok": not missing and method_ok and prior_method_ok and not mismatches and not adapter_mismatches,
+            "missing": missing,
+            "method": expected_method,
+            "prior_method": prior_method,
+            "expected_method": capability,
+            "prior_scope_mismatches": mismatches,
+            "adapter_scope_mismatches": adapter_mismatches,
+            "has_persisted_prior": isinstance(prior, dict),
+        }
+
+    @staticmethod
+    def _check_product_route_metadata(
+        metadata: dict[str, Any],
+        capability: str,
+        evidence: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        product_route = metadata.get("product_route")
+        if not isinstance(product_route, dict):
+            return None
+        evidence_chain = metadata.get("route_evidence_chain")
+        route_reasons = product_route.get("route_reasons") or []
+        method = product_route.get("method")
+        product_evidence = product_route.get("evidence") or []
+        selected_paths = product_route.get("selected_paths") or []
+        ok = (
+            method == capability
+            and bool(product_route.get("methodology"))
+            and bool(product_route.get("capability"))
+            and bool(product_route.get("proof_rig"))
+            and len(product_evidence) >= len(evidence)
+            and (not evidence or isinstance(evidence_chain, list))
+        )
+        return {
+            "ok": ok,
+            "method": method,
+            "expected_method": capability,
+            "methodology": product_route.get("methodology"),
+            "proof_rig": product_route.get("proof_rig"),
+            "route_reason_count": len(route_reasons),
+            "evidence_count": len(product_evidence),
+            "runtime_evidence_count": len(evidence),
+            "route_evidence_chain_count": len(evidence_chain) if isinstance(evidence_chain, list) else 0,
+            "selected_paths": selected_paths,
+        }
+
+    @staticmethod
+    def _check_backend_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
+        backend = metadata.get("backend")
+        if not isinstance(backend, dict):
+            return None
+        ok_value = backend.get("ok")
+        name = backend.get("name") or backend.get("backend")
+        return {
+            "ok": bool(name) and isinstance(ok_value, bool) and (ok_value or bool(backend.get("error"))),
+            "name": name,
+            "backend_ok": ok_value,
+            "error": backend.get("error"),
+            "metadata_keys": sorted((backend.get("metadata") or {}).keys())
+            if isinstance(backend.get("metadata"), dict)
+            else [],
         }
 
     @staticmethod

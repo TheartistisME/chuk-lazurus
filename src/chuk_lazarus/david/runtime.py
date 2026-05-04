@@ -47,6 +47,7 @@ class RuntimeResult:
     decoder_prior: dict[str, Any] | None = None
     resume_snapshot: dict[str, Any] | None = None
     harness_session: dict[str, Any] | None = None
+    writeback_verification: VerificationResult | None = None
 
     def to_json(self) -> dict[str, Any]:
         data = {
@@ -75,6 +76,8 @@ class RuntimeResult:
             "verification": self.verification.to_json(),
             "writeback": self.writeback,
         }
+        if self.writeback_verification is not None:
+            data["writeback_verification"] = self.writeback_verification.to_json()
         if self.product_route is not None:
             data["product_route"] = self.product_route.to_json()
         if self.model_result is not None:
@@ -154,30 +157,49 @@ class DavidRuntime:
         )
         materialized = self.materializer.materialize(route, self.adapter)
         decoder = self.decoder.plan(route=route, adapter=self.adapter, session_id=self.config.session_id)
-        verification = self.verifier.verify(capability=method, evidence=evidence, command=verify_command if method == "verify" else None)
         model_result = self._generate(prompt, method, product_route)
+        verification = self.verifier.verify(
+            capability=method,
+            evidence=evidence,
+            command=verify_command if method == "verify" else None,
+            metadata=self._verification_metadata(
+                route=route,
+                materialized=materialized,
+                decoder=decoder,
+                product_route=product_route,
+                model_result=model_result,
+            ),
+        )
         answer = model_result.text if self.config.model_path and model_result.ok and model_result.text else self._answer(
             prompt, method, readiness, route, materialized, verification, model_result
         )
         decoder_prior = self._update_decoder_prior(method, decoder, verification)
+        writeback_metadata = {
+            "provenance": "david.runtime.run_once",
+            **self._verification_metadata(
+                route=route,
+                materialized=materialized,
+                decoder=decoder,
+                product_route=product_route,
+                model_result=model_result,
+                decoder_prior=decoder_prior,
+            ),
+            "verification": verification.to_json(),
+            "harness_session_id": getattr(self.harness_session, "session_id", None),
+        }
         artifact = self.memory.writeback(
             method=method,
             user_id=self.config.user_id,
             session_id=self.config.session_id,
             text=f"Prompt: {prompt}\nAnswer: {answer}",
+            metadata=writeback_metadata,
+        )
+        writeback_verification = self.verifier.verify(
+            capability=method,
+            evidence=evidence,
             metadata={
-                "provenance": "david.runtime.run_once",
-                "route": route.to_json(),
-                "product_route": product_route.to_json(),
-                "verification": verification.to_json(),
-                "decoder_prior_scope": decoder.prior_scope,
-                "decoder_prior": decoder_prior,
-                "harness_session_id": getattr(self.harness_session, "session_id", None),
-                "backend": {
-                    "name": model_result.backend,
-                    "ok": model_result.ok,
-                    "error": model_result.error,
-                },
+                **writeback_metadata,
+                "writeback": artifact.to_json(),
             },
         )
         result = RuntimeResult(
@@ -195,6 +217,7 @@ class DavidRuntime:
             source_index=source_index.to_json() if source_index is not None else None,
             decoder_prior=decoder_prior,
             harness_session=self._harness_session_json(),
+            writeback_verification=writeback_verification,
         )
         snapshot = self._save_resume_snapshot(result)
         return RuntimeResult(
@@ -510,6 +533,56 @@ class DavidRuntime:
             "Respond with the next concise coding-agent action."
         )
         return self.backend.generate(generation_prompt, max_new_tokens=160)
+
+    def _verification_metadata(
+        self,
+        *,
+        route: RoutePacket,
+        materialized: MaterializedContext,
+        decoder: DecoderPlan,
+        product_route: ProductRoutePacket,
+        model_result: ModelBackendResult,
+        decoder_prior: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        materialized_json = {
+            "strategy": materialized.strategy,
+            "text_context": materialized.text_context,
+            "compatibility": materialized.compatibility,
+            "refused": materialized.refused,
+            "reason": materialized.reason,
+        }
+        return {
+            "adapter": self.adapter.scope(),
+            "adapter_scope": self.adapter.scope(),
+            "route": route.to_json(),
+            "route_evidence_chain": [
+                {
+                    "artifact_id": item.get("artifact_id"),
+                    "path": item.get("path"),
+                    "kind": item.get("kind"),
+                    "ordinal": item.get("ordinal"),
+                    "provenance": item.get("provenance"),
+                    "route_reason": item.get("route_reason"),
+                }
+                for item in route.evidence
+            ],
+            "product_route": product_route.to_json(),
+            "materialized": materialized_json,
+            "materialization": materialized_json,
+            "compatibility": materialized.compatibility,
+            "decoder": {
+                "constraints": decoder.constraints,
+                "prior_scope": decoder.prior_scope,
+            },
+            "decoder_prior_scope": decoder.prior_scope,
+            "decoder_prior": decoder_prior,
+            "backend": {
+                "name": model_result.backend,
+                "ok": model_result.ok,
+                "error": model_result.error,
+                "metadata": model_result.metadata,
+            },
+        }
 
     def _update_decoder_prior(
         self,

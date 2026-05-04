@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from chuk_lazarus.david import DavidConfig, DavidRuntime
+from chuk_lazarus.david.routing import RoutePacket
 
 
 def _validation_report() -> dict[str, object]:
@@ -93,8 +94,49 @@ def test_repo_patch_routing_and_task_writeback(tmp_path: Path) -> None:
     assert any(item.get("path") == "src/example.py" for item in result.route.evidence)
     assert "patch_compatible_edits" in result.decoder.constraints["bias"]
     assert result.writeback["family"] == "task"
+    assert result.writeback_verification is not None
+    assert result.writeback_verification.ok is True
+    assert result.writeback_verification.checks["memory_writeback"]["kind"] == "repo_patch"
+    assert result.writeback_verification.checks["product_route"]["route_reason_count"] >= 1
+    assert result.writeback["metadata"]["route_evidence_chain"]
+    assert result.writeback["metadata"]["route"]["evidence"] == result.route.evidence
     assert (tmp_path / "state" / "memory" / "task-default.jsonl").exists()
     assert not (tmp_path / "state" / "memory" / "user-default.jsonl").exists()
+
+
+def test_runtime_surfaces_unsafe_materialization_in_writeback_verification(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "example.py"
+    source.parent.mkdir()
+    source.write_text("def broken_session():\n    return None\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    original_route = runtime.router.route
+
+    def route_with_mismatch(**kwargs: object) -> RoutePacket:
+        packet = original_route(**kwargs)
+        return RoutePacket(
+            **{
+                **packet.to_json(),
+                "provenance": {
+                    **packet.provenance,
+                    "materialization_scope": {
+                        "model_id": "other-model",
+                        "tokenizer_id": runtime.adapter.tokenizer_id,
+                    },
+                },
+            }
+        )
+
+    runtime.router.route = route_with_mismatch  # type: ignore[method-assign]
+
+    result = runtime.run_once("Fix the repo bug by patching src/example.py")
+
+    assert result.materialized.refused is True
+    assert "model_id mismatch" in result.materialized.reason
+    assert result.writeback_verification is not None
+    assert result.writeback_verification.ok is False
+    assert result.writeback_verification.checks["adapter_materialization_compatibility"]["materializer_refused"] is True
+    assert result.writeback["metadata"]["materialized"]["refused"] is True
 
 
 def test_verification_command_behavior(tmp_path: Path) -> None:
