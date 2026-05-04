@@ -5,6 +5,11 @@ from pathlib import Path
 
 from chuk_lazarus.david import runtime as runtime_module
 from chuk_lazarus.david import DavidConfig, DavidRuntime
+from chuk_lazarus.david.model_backend import (
+    ModelBackendResult,
+    ModelBackendStatus,
+    TransformersCausalLMBackend,
+)
 from chuk_lazarus.david.routing import RoutePacket
 
 
@@ -125,6 +130,12 @@ def test_repo_patch_routing_and_task_writeback(tmp_path: Path) -> None:
     assert result.writeback_verification.checks["product_route"]["route_reason_count"] >= 1
     assert result.writeback["metadata"]["route_evidence_chain"]
     assert result.writeback["metadata"]["route"]["evidence"] == result.route.evidence
+    assert result.model_result is not None
+    steering = result.model_result.metadata["decoder_steering"]
+    assert steering["attempted"] is True
+    assert steering["applied"] is False
+    assert steering["processor_count"] == 0
+    assert steering["refused_reason"] == "backend does not expose tokenizer for live steering"
     assert (tmp_path / "state" / "memory" / "task-default.jsonl").exists()
     assert not (tmp_path / "state" / "memory" / "user-default.jsonl").exists()
 
@@ -162,6 +173,89 @@ def test_runtime_surfaces_unsafe_materialization_in_writeback_verification(tmp_p
     assert result.writeback_verification.ok is False
     assert result.writeback_verification.checks["adapter_materialization_compatibility"]["materializer_refused"] is True
     assert result.writeback["metadata"]["materialized"]["refused"] is True
+
+
+def test_runtime_applies_live_decoder_steering_for_transformers_backend(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "app.js"
+    source.parent.mkdir()
+    source.write_text("const value = require('x')\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    captured: dict[str, object] = {}
+
+    class FakeTokenizer:
+        tokenizer_id = "offline-tokenizer"
+
+        def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+            del add_special_tokens
+            return {
+                "def ": [2],
+                "class ": [3],
+                "self": [4],
+                "None": [5],
+                "True": [6],
+                "False": [7],
+            }.get(text, [])
+
+    class LiveBackend(TransformersCausalLMBackend):
+        def __init__(self) -> None:
+            super().__init__("offline-deterministic")
+            self._tokenizer = FakeTokenizer()
+
+        def load(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            captured.update(kwargs)
+            processors = kwargs.get("logits_processor")
+            processor_count = len(processors) if isinstance(processors, list) else 0
+            return ModelBackendResult(
+                text="live answer",
+                backend=self.name,
+                metadata={"logits_processor_count": processor_count, "prompt": prompt},
+            )
+
+    runtime.backend = LiveBackend()
+
+    result = runtime.run_once("Fix the JavaScript repo bug by patching src/app.js")
+
+    assert result.model_result is not None
+    assert result.method == "repo_patch"
+    assert isinstance(captured["logits_processor"], list)
+    assert result.model_result.metadata["logits_processor_count"] == 1
+    steering = result.model_result.metadata["decoder_steering"]
+    assert steering["attempted"] is True
+    assert steering["applied"] is True
+    assert steering["processor_count"] == 1
+    assert steering["refused_reason"] is None
+    assert steering["forbidden_token_count"] >= 1
+
+
+def test_runtime_refuses_live_steering_when_transformers_backend_cannot_load(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "app.js"
+    source.parent.mkdir()
+    source.write_text("const value = 1\n", encoding="utf-8")
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    captured: dict[str, object] = {}
+
+    class UnloadedBackend(TransformersCausalLMBackend):
+        def load(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=False, reason="no local model")
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            captured.update(kwargs)
+            return ModelBackendResult(text="", backend=self.name, ok=False, error="no local model")
+
+    runtime.backend = UnloadedBackend("local/missing")
+
+    result = runtime.run_once("Fix the JavaScript repo bug by patching src/app.js")
+
+    assert captured["logits_processor"] is None
+    assert result.model_result is not None
+    steering = result.model_result.metadata["decoder_steering"]
+    assert steering["attempted"] is True
+    assert steering["applied"] is False
+    assert steering["processor_count"] == 0
+    assert steering["refused_reason"] == "backend not loaded: no local model"
 
 
 def test_verification_command_behavior(tmp_path: Path) -> None:

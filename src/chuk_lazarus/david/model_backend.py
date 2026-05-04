@@ -144,6 +144,10 @@ class TransformersCausalLMBackend:
             self._load_error = f"{type(exc).__name__}: {exc}"
         return self.status()
 
+    @property
+    def tokenizer(self) -> Any | None:
+        return self._tokenizer
+
     def generate(
         self,
         prompt: str,

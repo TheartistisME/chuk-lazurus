@@ -22,6 +22,7 @@ from .product_router import ProductRoutePacket, ProductRouter
 from .resume import SessionSnapshot, load_session_snapshot, save_session_snapshot, summarize_result
 from .routing import CentralRouter, MethodDetector, RoutePacket
 from .source_index import SourceIndexManifest, build_source_index, load_source_index, save_source_index
+from .steering import DecoderSteeringPolicy, build_decoder_logits_processor
 from .tools import LocalTools
 from .verifier import VerificationResult, Verifier
 
@@ -164,7 +165,7 @@ class DavidRuntime:
         )
         materialized = self.materializer.materialize(route, self.adapter)
         decoder = self.decoder.plan(route=route, adapter=self.adapter, session_id=self.config.session_id)
-        model_result = self._generate(prompt, method, product_route)
+        model_result = self._generate(prompt, method, product_route, decoder)
         verification = self.verifier.verify(
             capability=method,
             evidence=evidence,
@@ -180,7 +181,7 @@ class DavidRuntime:
         answer = model_result.text if self.config.model_path and model_result.ok and model_result.text else self._answer(
             prompt, method, readiness, route, materialized, verification, model_result
         )
-        decoder_prior = self._update_decoder_prior(method, decoder, verification)
+        decoder_prior = self._update_decoder_prior(method, decoder, verification, model_result)
         writeback_metadata = {
             "provenance": "david.runtime.run_once",
             **self._verification_metadata(
@@ -538,6 +539,7 @@ class DavidRuntime:
         prompt: str,
         method: str,
         product_route: ProductRoutePacket,
+        decoder: DecoderPlan,
     ) -> ModelBackendResult:
         generation_prompt = (
             f"Task: {prompt}\n"
@@ -546,7 +548,96 @@ class DavidRuntime:
             f"Evidence count: {len(product_route.evidence)}\n"
             "Respond with the next concise coding-agent action."
         )
-        return self.backend.generate(generation_prompt, max_new_tokens=160)
+        steering = self._decoder_steering_processor(decoder)
+        model_result = self.backend.generate(
+            generation_prompt,
+            max_new_tokens=160,
+            logits_processor=steering["processors"],
+        )
+        return ModelBackendResult(
+            text=model_result.text,
+            backend=model_result.backend,
+            ok=model_result.ok,
+            error=model_result.error,
+            metadata={
+                **model_result.metadata,
+                "decoder_steering": steering["metadata"],
+            },
+        )
+
+    def _decoder_steering_processor(self, decoder: DecoderPlan) -> dict[str, Any]:
+        steering = decoder.constraints.get("steering")
+        metadata: dict[str, Any] = {
+            "attempted": bool(steering),
+            "applied": False,
+            "processor_count": 0,
+            "refused_reason": None,
+        }
+        if isinstance(steering, dict):
+            metadata.update(
+                {
+                    "target_language": steering.get("target_language"),
+                    "task_type": steering.get("task_type"),
+                    "logit_lock": bool(steering.get("logit_lock")),
+                    "forbidden_token_families": list(steering.get("forbidden_token_families") or ()),
+                }
+            )
+        else:
+            metadata["refused_reason"] = "decoder plan has no steering metadata"
+            return {"processors": None, "metadata": metadata}
+
+        if not isinstance(self.backend, TransformersCausalLMBackend):
+            metadata["refused_reason"] = "backend does not expose tokenizer for live steering"
+            return {"processors": None, "metadata": metadata}
+
+        status = self.backend.load()
+        if not status.loaded:
+            metadata["refused_reason"] = f"backend not loaded: {status.reason}"
+            return {"processors": None, "metadata": metadata}
+        tokenizer = self.backend.tokenizer
+        if tokenizer is None:
+            metadata["refused_reason"] = "backend tokenizer unavailable"
+            return {"processors": None, "metadata": metadata}
+
+        alpha_bounds = steering.get("alpha_bounds") if isinstance(steering.get("alpha_bounds"), dict) else {}
+        try:
+            policy = DecoderSteeringPolicy(
+                task_type=str(
+                    steering.get("task_type")
+                    or decoder.prior_scope.get("task_type")
+                    or decoder.prior_scope.get("method")
+                    or "unknown"
+                ),
+                target_language=str(steering.get("target_language") or "unknown"),
+                forbidden_token_families=tuple(str(item) for item in steering.get("forbidden_token_families") or ()),
+                alpha_min=float(alpha_bounds.get("min", 0.0)),
+                alpha_max=float(alpha_bounds.get("max", 0.0)),
+                logit_lock=bool(steering.get("logit_lock")),
+                steering_version=str(
+                    steering.get("policy")
+                    or decoder.prior_scope.get("steering_version")
+                    or "unknown"
+                ),
+            )
+            processor = build_decoder_logits_processor(
+                policy=policy,
+                adapter=self.adapter,
+                tokenizer=tokenizer,
+                scope=decoder.prior_scope,
+            )
+        except Exception as exc:
+            metadata["refused_reason"] = f"{type(exc).__name__}: {exc}"
+            return {"processors": None, "metadata": metadata}
+
+        metadata.update(
+            {
+                "applied": True,
+                "processor_count": 1,
+                "refused_reason": None,
+                "forbidden_token_count": len(processor.forbidden_token_ids),
+            }
+        )
+        return {"processors": [processor], "metadata": metadata}
 
     def _verification_metadata(
         self,
@@ -561,7 +652,9 @@ class DavidRuntime:
         materialized_json = {
             "strategy": materialized.strategy,
             "text_context": materialized.text_context,
-            "compatibility": materialized.compatibility,
+            "compatibility": (
+                materialized.compatibility if route.evidence or materialized.strategy != "none" else None
+            ),
             "refused": materialized.refused,
             "reason": materialized.reason,
         }
@@ -583,7 +676,9 @@ class DavidRuntime:
             "product_route": product_route.to_json(),
             "materialized": materialized_json,
             "materialization": materialized_json,
-            "compatibility": materialized.compatibility,
+            "compatibility": (
+                materialized.compatibility if route.evidence or materialized.strategy != "none" else None
+            ),
             "decoder": {
                 "constraints": decoder.constraints,
                 "prior_scope": decoder.prior_scope,
@@ -603,6 +698,7 @@ class DavidRuntime:
         method: str,
         decoder: DecoderPlan,
         verification: VerificationResult,
+        model_result: ModelBackendResult,
     ) -> dict[str, Any]:
         layer = self.adapter.kv_target_layer or self.adapter.boundary_layer or self.adapter.route_layer or 0
         scope = DecoderPriorScope(
@@ -619,10 +715,17 @@ class DavidRuntime:
         record = self.decoder_prior_store.update(
             scope,
             accepted=verification.ok,
-            steering_applied=bool(decoder.constraints),
+            steering_applied=self._live_steering_applied(model_result),
         )
         self.decoder_prior_store.save()
         return record.to_json()
+
+    @staticmethod
+    def _live_steering_applied(model_result: ModelBackendResult) -> bool:
+        steering = model_result.metadata.get("decoder_steering")
+        if not isinstance(steering, dict):
+            return False
+        return bool(steering.get("applied"))
 
     def _harness_session_json(self) -> dict[str, Any] | None:
         if self.harness_session is None:

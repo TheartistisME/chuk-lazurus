@@ -127,6 +127,7 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
 
     assert load_status.available is True
     assert load_status.loaded is True
+    assert backend.tokenizer is not None
     assert result.ok is True
     assert result.text == "prompt answer "
     assert result.metadata["model_id"] == "local/test-model"
