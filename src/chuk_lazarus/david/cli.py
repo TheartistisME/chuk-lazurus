@@ -376,7 +376,8 @@ def format_capabilities_status() -> str:
                 "CLI/TUI terminal surface",
                 "boot harness and startup readiness gates",
                 "validation and model attestation checks",
-                "torch standard decode path",
+                "torch standard decode path guarded by validation/attestation",
+                "doctor readiness surface with WSL path checks when available",
                 "user/task memory artifact status",
                 "workspace index status and build hooks",
                 "capability router surface",
@@ -391,6 +392,7 @@ def format_capabilities_status() -> str:
             "GUARDED/PARTIAL",
             (
                 "model-driven repo autonomy remains guarded",
+                "repo patching is partially wired through guarded read -> patch -> verify",
                 "tensor replay is fail-closed behind compatibility evidence",
                 "live steering hooks are limited",
             ),
@@ -399,7 +401,7 @@ def format_capabilities_status() -> str:
             "TODO",
             (
                 "production tensor KV/residual replay",
-                "broad autonomous repo patching",
+                "broad multi-step autonomous repo patching",
             ),
         ),
     )

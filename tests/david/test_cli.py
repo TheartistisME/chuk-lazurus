@@ -656,7 +656,8 @@ def test_capabilities_command_prints_truthful_status_without_runtime(monkeypatch
     assert "CLI/TUI terminal surface" in output
     assert "boot harness and startup readiness gates" in output
     assert "validation and model attestation checks" in output
-    assert "torch standard decode path" in output
+    assert "torch standard decode path guarded by validation/attestation" in output
+    assert "doctor readiness surface with WSL path checks when available" in output
     assert "capability router surface" in output
     assert "materializer metadata and compatibility guards" in output
     assert "decoder prior store surface" in output
@@ -664,11 +665,12 @@ def test_capabilities_command_prints_truthful_status_without_runtime(monkeypatch
     assert "safe agent loop shell" in output
     assert "GUARDED/PARTIAL:" in output
     assert "model-driven repo autonomy remains guarded" in output
+    assert "repo patching is partially wired through guarded read -> patch -> verify" in output
     assert "tensor replay is fail-closed behind compatibility evidence" in output
     assert "live steering hooks are limited" in output
     assert "TODO:" in output
     assert "production tensor KV/residual replay" in output
-    assert "broad autonomous repo patching" in output
+    assert "broad multi-step autonomous repo patching" in output
     assert "tensor replay wired" not in output.lower()
 
 

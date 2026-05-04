@@ -102,8 +102,10 @@ Wired today:
 
 - CLI/TUI entrypoint, workspace config defaults, `doctor`, `code`, `verify`,
   and explicit `model scan` / `model validate`.
-- Torch-runtime live local decode when validated assets or an accepted manual
-  standard-decode attestation are supplied.
+- Startup/model readiness gates, including the doctor command surface. WSL path
+  readiness is reported when the corresponding doctor probe is present.
+- Torch-runtime live local standard decode when validated assets or an accepted
+  manual standard-decode attestation are supplied.
 - Direct verifier path, safe plain-write prompts, deterministic `/agent`
   action loop, path-safe file tools, strict patch application, routed context,
   memory, resume, and workspace index surfaces.
@@ -113,8 +115,9 @@ Guarded or still TODO:
 - Production tensor KV/residual replay. Current product surfaces carry
   compatibility metadata and fail-closed checks; they must not be described as
   completed tensor replay.
-- Arbitrary autonomous repo patching. David can route, propose, apply guarded
-  patches, and verify, but broad multi-step repo autonomy remains constrained.
+- Broad autonomous repo patching. David can perform a guarded read -> patch ->
+  verify path and can route, propose, apply focused patches, and verify, but
+  broad multi-step repo autonomy remains constrained.
 - Benchmark proof rigs. MRCR, RULER, LoCoBench, SWE-bench, and chat rows remain
   proof rigs for methodology validation, not product modules or operator
   commands.
