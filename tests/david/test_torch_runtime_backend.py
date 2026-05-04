@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import sys
 import types
+from pathlib import Path
 
 from chuk_lazarus.david import torch_backend
 from chuk_lazarus.david.config import AdapterSessionMetadata, DavidConfig
@@ -163,7 +163,7 @@ def test_torch_runtime_backend_loads_local_model_and_uses_standard_generation_co
         def __init__(self) -> None:
             self.device: str | None = None
 
-        def to(self, device: str, **kwargs: object) -> "FakeModel":
+        def to(self, device: str, **kwargs: object) -> FakeModel:
             self.device = device
             calls.append(("model.to", device, kwargs))
             return self
@@ -417,6 +417,206 @@ def test_torch_runtime_backend_reports_no_tensor_replay_capabilities() -> None:
     assert capabilities.metadata["supports_tensor_replay"] is False
 
 
+def test_torch_runtime_backend_advertises_residual_sidecar_only_when_enabled() -> None:
+    adapter = AdapterSessionMetadata(
+        model_id="model-a",
+        tokenizer_id="tokenizer-a",
+        model_revision="rev-a",
+        adapter_family="family-a",
+        insertion_family="kv_direct",
+    )
+    backend = TorchRuntimeModelBackend("local/model", enable_residual_sidecar_replay=True)
+
+    capabilities = backend.replay_consumer_capabilities(adapter)
+
+    assert capabilities is not None
+    assert capabilities.consumer_id == "torch-runtime:residual-sidecar"
+    assert capabilities.strategies == ("residual_sidecar",)
+    assert capabilities.capabilities == ("materialization.replay.residual_stream.v1",)
+    assert capabilities.metadata["supports_tensor_replay"] is True
+
+
+def test_torch_runtime_backend_applies_single_boundary_residual_sidecar(monkeypatch) -> None:
+    calls: list[tuple[str, object, object]] = []
+
+    class FakeTokenizer:
+        def apply_chat_template(
+            self,
+            messages: list[dict[str, str]],
+            *,
+            tokenize: bool,
+            add_generation_prompt: bool,
+        ) -> str:
+            assert messages == [{"role": "user", "content": "prompt"}]
+            return "formatted prompt"
+
+    class FakeGenerationConfig:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    fake_generation = types.ModuleType("chuk_lazarus.inference.generation")
+    fake_generation.GenerationConfig = FakeGenerationConfig
+
+    class FakeStats:
+        def model_dump(self) -> dict[str, object]:
+            return {"input_tokens": 3, "output_tokens": 2}
+
+    class FakeGenerationResult:
+        text = "seeded answer STOP trailing"
+        stats = FakeStats()
+        stop_reason = "max_tokens"
+
+    class FakeRuntime:
+        last_generation_path = None
+
+        def generate(self, prompt: str, config: object) -> object:
+            calls.append(("standard", prompt, config))
+            raise AssertionError("standard path must not run for residual sidecar")
+
+        def generate_with_residual_seeded_at_layer(
+            self,
+            prompt: str,
+            residual_state: object,
+            config: object,
+        ) -> FakeGenerationResult:
+            calls.append(("residual", prompt, residual_state))
+            assert prompt == "formatted prompt"
+            assert residual_state.layer_index == 7
+            assert residual_state.hidden_size == 4
+            assert tuple(residual_state.tensor.shape) == (1, 4)
+            assert config.kwargs == {"max_new_tokens": 5, "temperature": 0.0, "use_plugins": False}
+            self.last_generation_path = "torch.generate.residual_seeded_at_layer"
+            return FakeGenerationResult()
+
+    _install_loaded_fake_torch_backend(monkeypatch, fake_generation)
+    backend = TorchRuntimeModelBackend("local/test-model", device="cpu")
+    backend._tokenizer = FakeTokenizer()
+    backend._runtime = FakeRuntime()
+
+    result = backend.generate(
+        "prompt",
+        max_new_tokens=5,
+        stop=["STOP"],
+        materialization_plan=_residual_sidecar_plan(),
+        replay_consumer=_residual_sidecar_consumer(),
+    )
+
+    assert result.ok is True
+    assert result.text == "seeded answer "
+    assert calls and calls[0][0] == "residual"
+    assert result.metadata["engine"] == "residual_sidecar"
+    assert result.metadata["generation_path"] == "torch.generate.residual_seeded_at_layer"
+    replay = result.metadata["materialization_replay"]
+    assert replay["applied"] is True
+    assert replay["tensor_replay"] is True
+    sidecar_replay = result.metadata["residual_sidecar_replay"]
+    assert sidecar_replay["accepted"] is True
+    assert sidecar_replay["tensor_replay_applied"] is True
+    assert sidecar_replay["tensors_loaded"] is True
+    assert sidecar_replay["loaded_tensor"]["shape"] == [1, 4]
+    assert sidecar_replay["loaded_tensor"]["layer"] == 7
+    assert result.metadata["stats"] == {"input_tokens": 3, "output_tokens": 2}
+
+
+def test_torch_runtime_backend_refuses_residual_sidecar_mismatch_without_runtime_call(monkeypatch) -> None:
+    calls: list[tuple[str, object, object]] = []
+    fake_generation = types.ModuleType("chuk_lazarus.inference.generation")
+
+    class FakeRuntime:
+        def generate(self, prompt: str, config: object) -> object:
+            calls.append(("standard", prompt, config))
+            raise AssertionError("standard path must not run after residual mismatch")
+
+        def generate_with_residual_seeded_at_layer(self, *args: object) -> object:
+            calls.append(("residual", args, {}))
+            raise AssertionError("residual path must not run after mismatch")
+
+    _install_loaded_fake_torch_backend(monkeypatch, fake_generation)
+    backend = TorchRuntimeModelBackend("local/test-model", device="cpu")
+    backend._tokenizer = _RawTokenizer()
+    backend._runtime = FakeRuntime()
+
+    plan = _residual_sidecar_plan(sidecar_scope_overrides={"model_id": "model-b"})
+    result = backend.generate(
+        "prompt",
+        materialization_plan=plan,
+        replay_consumer=_residual_sidecar_consumer(),
+    )
+
+    assert result.ok is False
+    assert "model_id mismatch" in result.error
+    assert calls == []
+    assert result.metadata["materialization_replay"]["refused"] is True
+    assert "model_id mismatch" in result.metadata["materialization_replay"]["reason"]
+
+
+def test_torch_runtime_backend_refuses_multi_row_residual_stream_without_runtime_call(monkeypatch) -> None:
+    calls: list[tuple[str, object, object]] = []
+    fake_generation = types.ModuleType("chuk_lazarus.inference.generation")
+
+    class FakeRuntime:
+        def generate_with_residual_seeded_at_layer(self, *args: object) -> object:
+            calls.append(("residual", args, {}))
+            raise AssertionError("residual path must not run for multi-row stream")
+
+    _install_loaded_fake_torch_backend(monkeypatch, fake_generation)
+    backend = TorchRuntimeModelBackend("local/test-model", device="cpu")
+    backend._tokenizer = _RawTokenizer()
+    backend._runtime = FakeRuntime()
+
+    result = backend.generate(
+        "prompt",
+        materialization_plan=_residual_sidecar_plan(
+            ref={
+                "kind": "residual_stream",
+                "layer": 7,
+                "dtype": "float32",
+                "shape": [2, 4],
+                "inline_values": [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]],
+                "metadata": {},
+            },
+            sidecar_scope_overrides={"residual_layer": 7},
+        ),
+        replay_consumer=_residual_sidecar_consumer(),
+    )
+
+    assert result.ok is False
+    assert result.error == "multi-row residual_stream replay is not supported"
+    assert calls == []
+
+
+def test_torch_runtime_backend_refuses_logits_processors_on_residual_sidecar_path(monkeypatch) -> None:
+    calls: list[tuple[str, object, object]] = []
+    fake_generation = types.ModuleType("chuk_lazarus.inference.generation")
+
+    class FakeRuntime:
+        def generate_with_residual_seeded_at_layer(self, *args: object) -> object:
+            calls.append(("residual", args, {}))
+            raise AssertionError("residual path must not run with logits processors")
+
+    _install_loaded_fake_torch_backend(monkeypatch, fake_generation)
+    backend = TorchRuntimeModelBackend("local/test-model", device="cpu")
+    backend._tokenizer = _RawTokenizer()
+    backend._runtime = FakeRuntime()
+
+    result = backend.generate(
+        "prompt",
+        logits_processor=object(),
+        materialization_plan=_residual_sidecar_plan(),
+        replay_consumer=_residual_sidecar_consumer(),
+    )
+
+    assert result.ok is False
+    assert calls == []
+    assert result.metadata["logits_processor_count"] == 1
+    assert result.metadata["processors_refused"] is True
+    assert result.metadata["materialization_replay"]["refused"] is True
+    assert (
+        "torch-runtime residual-sidecar path cannot apply decoder logits processors"
+        in result.metadata["materialization_replay"]["reason"]
+    )
+
+
 def test_runtime_selects_torch_runtime_backend_when_requested_after_validated_boot(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -466,3 +666,89 @@ def test_runtime_rejects_unknown_backend_selector_after_validated_boot(tmp_path:
 
     assert runtime.backend.name == "offline-deterministic"
     assert runtime.boot_errors == ["unsupported model backend selector: mystery"]
+
+
+class _RawTokenizer:
+    def apply_chat_template(self, *args: object, **kwargs: object) -> str:
+        raise ValueError("no template")
+
+
+def _install_loaded_fake_torch_backend(monkeypatch, fake_generation: types.ModuleType) -> None:
+    monkeypatch.setitem(sys.modules, "chuk_lazarus.inference.generation", fake_generation)
+    monkeypatch.setattr(torch_backend.importlib, "import_module", lambda name: types.ModuleType(name))
+    monkeypatch.setattr(
+        "chuk_lazarus.david.torch_backend._missing_optional_packages",
+        lambda *names: [],
+    )
+
+
+def _residual_sidecar_plan(
+    *,
+    ref: dict[str, object] | None = None,
+    adapter_scope_overrides: dict[str, object] | None = None,
+    sidecar_scope_overrides: dict[str, object] | None = None,
+) -> dict[str, object]:
+    adapter_scope: dict[str, object] = {
+        "model_id": "model-a",
+        "tokenizer_id": "tokenizer-a",
+        "model_revision": "rev-a",
+        "adapter_family": "family-a",
+        "insertion_family": "kv_direct",
+        "boundary_layer": 7,
+        "hidden_size": 4,
+    }
+    adapter_scope.update(adapter_scope_overrides or {})
+    sidecar_scope = {
+        **adapter_scope,
+        "residual_layer": None,
+        "kv_source_layer": None,
+        "kv_target_layer": None,
+    }
+    sidecar_scope.update(sidecar_scope_overrides or {})
+    residual_ref = ref or {
+        "kind": "boundary_residual",
+        "layer": 7,
+        "dtype": "float32",
+        "shape": [1, 4],
+        "inline_values": [[1.0, 2.0, 3.0, 4.0]],
+        "metadata": {"span_id": "hot-1"},
+    }
+    return {
+        "version": 1,
+        "strategy": "residual_sidecar",
+        "requested_strategy": "residual_sidecar",
+        "requires_runtime_replay": True,
+        "memory_family": "task",
+        "adapter_scope": adapter_scope,
+        "runtime_replay": {
+            "strategy": "residual_sidecar",
+            "requires_runtime_replay": True,
+            "required_capability": "materialization.replay.residual_stream.v1",
+            "adapter_scope": adapter_scope,
+            "memory_family": "task",
+        },
+        "sidecars": [
+            {
+                "artifact_id": "hot-window-1",
+                "memory_family": "task",
+                "scope": sidecar_scope,
+                "refs": [residual_ref],
+                "provenance": {"source": "unit"},
+            }
+        ],
+        "replay_refs": [residual_ref],
+    }
+
+
+def _residual_sidecar_consumer() -> dict[str, object]:
+    return {
+        "consumer_id": "explicit-residual-sidecar",
+        "strategies": ["residual_sidecar"],
+        "capabilities": ["materialization.replay.residual_stream.v1"],
+        "model_id": "model-a",
+        "tokenizer_id": "tokenizer-a",
+        "model_revision": "rev-a",
+        "adapter_family": "family-a",
+        "insertion_families": ["kv_direct"],
+        "memory_families": ["task"],
+    }

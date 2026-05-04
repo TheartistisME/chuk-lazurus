@@ -14,7 +14,6 @@ from .materialization_replay import (
 )
 from .residual_store import ResidualReference, ResidualSidecarManifest
 
-
 BRIDGE_CONTRACT_VERSION = 1
 RESIDUAL_SIDECAR_STRATEGY = "residual_sidecar"
 RESIDUAL_REF_KINDS = {"boundary_residual", "residual_stream"}
@@ -97,6 +96,25 @@ def validate_residual_sidecar_bridge(
         sidecar_scope=sidecar_scope,
         consumer=None if normalized_consumer is None else normalized_consumer.to_json(),
         residual_refs=residual_refs,
+    )
+
+
+def validate_residual_sidecar_replay(
+    *,
+    adapter: AdapterSessionMetadata,
+    sidecar: ResidualSidecarManifest,
+    consumer: ReplayConsumerInput,
+    memory_family: str,
+    layer: int | None = None,
+) -> ResidualReplayBridgeDecision:
+    """Validate a residual sidecar before tensor replay by a runtime hook."""
+
+    return validate_residual_sidecar_bridge(
+        adapter=adapter,
+        sidecar=sidecar,
+        consumer=consumer,
+        memory_family=memory_family,
+        layer=layer,
     )
 
 
