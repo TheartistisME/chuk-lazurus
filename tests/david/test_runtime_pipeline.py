@@ -5,6 +5,8 @@ import hashlib
 import sys
 from pathlib import Path
 
+import pytest
+
 from chuk_lazarus.david import runtime as runtime_module
 from chuk_lazarus.david import DavidConfig, DavidRuntime
 from chuk_lazarus.david.config import AdapterSessionMetadata
@@ -17,6 +19,7 @@ from chuk_lazarus.david.model_backend import (
 )
 from chuk_lazarus.david.product_router import ProductRoutePacket
 from chuk_lazarus.david.routing import RoutePacket
+from chuk_lazarus.david.runtime_trace import RuntimeStateLockError, WorkspaceStateLock
 
 
 def _validation_report(
@@ -99,6 +102,16 @@ def _write_kv_sidecar_manifest(tmp_path: Path) -> Path:
     return manifest_path
 
 
+def _runtime_trace_events(state_dir: Path, *, session_id: str = "default") -> list[dict[str, object]]:
+    trace_path = state_dir / "sessions" / f"{session_id}-runtime.jsonl"
+    assert trace_path.exists()
+    return [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 def test_missing_index_requires_jit_plan(tmp_path: Path) -> None:
     runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
 
@@ -120,6 +133,26 @@ def test_missing_index_requires_jit_plan(tmp_path: Path) -> None:
     assert result.product_route.provenance["capture_metadata"]["activation_routes_expected"] is True
     assert result.route.provenance["product_route"]["index_readiness"]["jit_plan"]["action"] == "jit_index_workspace"
     assert result.materialized.materialization_plan["route_metadata"]["index_readiness"]["required"] is True
+
+
+def test_runtime_emits_run_once_jsonl_trace(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=state_dir))
+
+    result = runtime.run_once("Inspect source dependencies for this workspace")
+
+    events = _runtime_trace_events(state_dir)
+    event_types = [event["event_type"] for event in events]
+    assert "runtime.run_once.start" in event_types
+    assert "runtime.run_once.finish" in event_types
+    finish = next(event for event in events if event["event_type"] == "runtime.run_once.finish")
+    assert finish["session_id"] == "default"
+    assert finish["ok"] is True
+    assert finish["method"] == result.method
+    assert finish["route"]["method"] == result.route.method
+    assert finish["metadata"]["writeback_artifact_id"] == result.writeback["artifact_id"]
+    assert finish["metadata"]["resume_path"].endswith("resume.json")
+    assert finish["timestamp"]
 
 
 def test_runtime_falls_back_when_full_central_router_wrapper_unavailable(
@@ -861,8 +894,77 @@ def test_runtime_status_and_shell_commands_are_available_to_tui(tmp_path: Path) 
     assert "hello" in shell
 
 
+def test_runtime_state_lock_refuses_releases_and_breaks_safe_stale_lock(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    first = WorkspaceStateLock(state_dir, session_id="s1", reason="unit", stale_after_seconds=60)
+
+    with first:
+        assert first.path.exists()
+        with pytest.raises(RuntimeStateLockError):
+            WorkspaceStateLock(state_dir, session_id="s2", reason="competing", stale_after_seconds=60).acquire()
+
+    assert not first.path.exists()
+    with WorkspaceStateLock(state_dir, session_id="s3", reason="after-release", stale_after_seconds=60):
+        pass
+    assert not first.path.exists()
+
+    first.path.parent.mkdir(parents=True, exist_ok=True)
+    first.path.write_text("not json\n", encoding="utf-8")
+    with pytest.raises(RuntimeStateLockError):
+        WorkspaceStateLock(state_dir, session_id="s4", reason="unreadable", stale_after_seconds=0).acquire()
+    first.path.unlink()
+
+    first.path.write_text(
+        json.dumps(
+            {
+                "schema": "david.workspace_state_lock.v1",
+                "created_at": "2000-01-01T00:00:00+00:00",
+                "pid": 999999,
+                "session_id": "old",
+                "owner_token": "old-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with WorkspaceStateLock(state_dir, session_id="s5", reason="safe-stale", stale_after_seconds=1):
+        pass
+    assert not first.path.exists()
+
+
+def test_runtime_lock_releases_and_keeps_resume_intact_on_writeback_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "state"
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=state_dir))
+    runtime.run_once("Inspect source dependencies for this workspace")
+    resume_path = state_dir / "resume.json"
+    task_memory_path = state_dir / "memory" / "task-default.jsonl"
+    resume_before = resume_path.read_text(encoding="utf-8")
+    memory_before = task_memory_path.read_text(encoding="utf-8")
+
+    def fail_writeback(**kwargs: object) -> object:
+        del kwargs
+        raise RuntimeError("forced writeback failure")
+
+    monkeypatch.setattr(runtime.memory, "writeback", fail_writeback)
+
+    with pytest.raises(RuntimeError, match="forced writeback failure"):
+        runtime.run_once("Inspect source dependencies after a failing writeback")
+
+    assert not (state_dir / "locks" / "workspace-state.lock").exists()
+    assert resume_path.read_text(encoding="utf-8") == resume_before
+    assert task_memory_path.read_text(encoding="utf-8") == memory_before
+    events = _runtime_trace_events(state_dir)
+    error = next(event for event in reversed(events) if event["event_type"] == "runtime.run_once.error")
+    assert error["ok"] is False
+    assert error["error"]["type"] == "RuntimeError"
+    assert "forced writeback failure" in error["error"]["message"]
+
+
 def test_runtime_agent_loop_executes_actions_and_persists_trace(tmp_path: Path) -> None:
-    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+    state_dir = tmp_path / "state"
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=state_dir))
 
     result = runtime.run_agent_loop(
         [
@@ -883,6 +985,15 @@ def test_runtime_agent_loop_executes_actions_and_persists_trace(tmp_path: Path) 
     assert (tmp_path / "src" / "generated.py").read_text(encoding="utf-8") == "VALUE = 7\n"
     assert (tmp_path / "state" / "memory" / "task-default.jsonl").exists()
     assert (tmp_path / "state" / "resume.json").exists()
+    events = _runtime_trace_events(state_dir)
+    event_types = [event["event_type"] for event in events]
+    assert "runtime.agent_loop.start" in event_types
+    assert "runtime.agent_loop.finish" in event_types
+    finish = next(event for event in events if event["event_type"] == "runtime.agent_loop.finish")
+    assert finish["ok"] is True
+    assert finish["method"] == "agent_loop"
+    assert finish["metadata"]["status"] == "verified"
+    assert finish["metadata"]["writeback_artifact_id"] == result.writeback["artifact_id"]
 
 
 def test_runtime_agent_loop_uses_backend_for_natural_language_prompt(tmp_path: Path) -> None:

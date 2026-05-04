@@ -40,6 +40,7 @@ from .central_router_adapter import CentralRouterAdapter
 from .product_router import ProductRoutePacket, ProductRouter
 from .resume import SessionSnapshot, load_session_snapshot, save_session_snapshot, summarize_result
 from .routing import CentralRouter, MethodDetector, RoutePacket
+from .runtime_trace import RuntimeTraceWriter, WorkspaceStateLock
 from .source_index import SourceIndexManifest, load_source_index
 from .steering import DecoderSteeringPolicy, TOKEN_FAMILY_MARKERS, build_decoder_logits_processor
 from .tools import LocalTools
@@ -1155,6 +1156,7 @@ class DavidRuntime:
         self.decoder_prior_path = config.state_dir / "decoder_priors.json"
         self.decoder_prior_store = DecoderPriorProductStore.load(self.decoder_prior_path)
         self.resume_path = config.state_dir / "resume.json"
+        self.runtime_trace = RuntimeTraceWriter(config.state_dir, config.session_id)
         self.resume_snapshot = self._load_resume_snapshot()
         self.auto_jit_summary = self.jit_index() if self.config.auto_jit_index else None
 
@@ -1162,145 +1164,211 @@ class DavidRuntime:
     def create(cls, config: DavidConfig) -> "DavidRuntime":
         return cls(config)
 
-    def run_once(self, prompt: str, *, verify_command: Sequence[str] | None = None) -> RuntimeResult:
-        readiness = self.index.check()
-        if readiness.required and self.config.auto_jit_index:
-            self.jit_index()
-            readiness = self.index.check()
-        source_index = self._ensure_source_index() if self.config.auto_jit_index else self._loaded_source_index()
-        live_index_refresh = self._latest_live_index_refresh_json()
-        index_metadata = _index_runtime_metadata(
-            readiness,
-            source_index=source_index,
-            live_index_refresh=live_index_refresh,
+    def _state_write_lock(self, reason: str) -> WorkspaceStateLock:
+        return WorkspaceStateLock(
+            self.config.state_dir,
+            session_id=self.config.session_id,
+            reason=reason,
         )
 
-        method = self.detector.detect(prompt)
-        workspace_files = self._workspace_text_files() if method in {"repo_patch", "source_dependency"} else {}
-        evidence = self._recall(method, prompt, workspace_files=workspace_files)
-        fallback_route: RoutePacket | None = None
+    def _trace_event(
+        self,
+        event_type: str,
+        *,
+        method: str | None = None,
+        route: Any | None = None,
+        ok: bool | None = None,
+        error: BaseException | str | None = None,
+        metadata: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
         try:
-            product_route = self.product_router.route(
-                prompt,
-                session_id=self.config.session_id,
-                evidence=evidence,
-                files=workspace_files or None,
-                source_index=source_index,
+            self.runtime_trace.write(
+                event_type,
                 method=method,
-                max_tokens=self.config.max_route_tokens,
+                route=route,
+                ok=ok,
+                error=error,
+                metadata=metadata,
+                payload=payload,
             )
         except Exception as exc:
-            self.product_router_errors.append(f"product route failed: {type(exc).__name__}: {exc}")
-            fallback_route = self.router.route(
-                method=method,
-                prompt=prompt,
-                session_id=self.config.session_id,
-                evidence=evidence,
-                max_tokens=self.config.max_route_tokens,
-            )
-            product_route = ProductRouter(router=CentralRouter(), detector=self.detector).route(
-                prompt,
-                session_id=self.config.session_id,
-                evidence=fallback_route.evidence,
-                files=workspace_files or None,
+            self.boot_errors.append(f"runtime trace failed: {type(exc).__name__}: {exc}")
+
+    def run_once(self, prompt: str, *, verify_command: Sequence[str] | None = None) -> RuntimeResult:
+        method: str | None = None
+        route: RoutePacket | None = None
+        product_route: ProductRoutePacket | None = None
+        self._trace_event("runtime.run_once.start", payload={"prompt": prompt})
+        try:
+            readiness = self.index.check()
+            if readiness.required and self.config.auto_jit_index:
+                self.jit_index()
+                readiness = self.index.check()
+            source_index = self._ensure_source_index() if self.config.auto_jit_index else self._loaded_source_index()
+            live_index_refresh = self._latest_live_index_refresh_json()
+            index_metadata = _index_runtime_metadata(
+                readiness,
                 source_index=source_index,
-                method=fallback_route.method,
-                max_tokens=self.config.max_route_tokens,
+                live_index_refresh=live_index_refresh,
             )
-        if fallback_route is None and not _product_route_has_materialization_metadata(product_route):
+
+            method = self.detector.detect(prompt)
+            workspace_files = self._workspace_text_files() if method in {"repo_patch", "source_dependency"} else {}
+            evidence = self._recall(method, prompt, workspace_files=workspace_files)
+            fallback_route: RoutePacket | None = None
             try:
-                fallback_candidate = self.router.route(
+                product_route = self.product_router.route(
+                    prompt,
+                    session_id=self.config.session_id,
+                    evidence=evidence,
+                    files=workspace_files or None,
+                    source_index=source_index,
+                    method=method,
+                    max_tokens=self.config.max_route_tokens,
+                )
+            except Exception as exc:
+                self.product_router_errors.append(f"product route failed: {type(exc).__name__}: {exc}")
+                fallback_route = self.router.route(
                     method=method,
                     prompt=prompt,
                     session_id=self.config.session_id,
                     evidence=evidence,
                     max_tokens=self.config.max_route_tokens,
                 )
-            except Exception as exc:
-                self.product_router_errors.append(f"offline materialization fallback failed: {type(exc).__name__}: {exc}")
-            else:
-                if _route_has_materialization_metadata(fallback_candidate):
-                    fallback_route = fallback_candidate
-        product_route = _product_route_with_index_metadata(product_route, index_metadata)
-        route = _route_packet_from_product_route(product_route, fallback=fallback_route)
-        replay_consumer = self._backend_replay_consumer()
-        materialized = self.materializer.materialize(route, self.adapter, replay_consumer=replay_consumer)
-        materialized = _materialized_with_route_metadata(materialized, route)
-        decoder = self.decoder.plan(route=route, adapter=self.adapter, session_id=self.config.session_id)
-        decoder = _decoder_with_route_metadata(decoder, route)
-        model_result = self._generate(prompt, method, product_route, materialized, decoder, replay_consumer)
-        verification = self.verifier.verify(
-            capability=method,
-            evidence=evidence,
-            command=verify_command if method == "verify" else None,
-            metadata=self._verification_metadata(
+                product_route = ProductRouter(router=CentralRouter(), detector=self.detector).route(
+                    prompt,
+                    session_id=self.config.session_id,
+                    evidence=fallback_route.evidence,
+                    files=workspace_files or None,
+                    source_index=source_index,
+                    method=fallback_route.method,
+                    max_tokens=self.config.max_route_tokens,
+                )
+            if fallback_route is None and not _product_route_has_materialization_metadata(product_route):
+                try:
+                    fallback_candidate = self.router.route(
+                        method=method,
+                        prompt=prompt,
+                        session_id=self.config.session_id,
+                        evidence=evidence,
+                        max_tokens=self.config.max_route_tokens,
+                    )
+                except Exception as exc:
+                    self.product_router_errors.append(
+                        f"offline materialization fallback failed: {type(exc).__name__}: {exc}"
+                    )
+                else:
+                    if _route_has_materialization_metadata(fallback_candidate):
+                        fallback_route = fallback_candidate
+            product_route = _product_route_with_index_metadata(product_route, index_metadata)
+            route = _route_packet_from_product_route(product_route, fallback=fallback_route)
+            replay_consumer = self._backend_replay_consumer()
+            materialized = self.materializer.materialize(route, self.adapter, replay_consumer=replay_consumer)
+            materialized = _materialized_with_route_metadata(materialized, route)
+            decoder = self.decoder.plan(route=route, adapter=self.adapter, session_id=self.config.session_id)
+            decoder = _decoder_with_route_metadata(decoder, route)
+            model_result = self._generate(prompt, method, product_route, materialized, decoder, replay_consumer)
+            verification = self.verifier.verify(
+                capability=method,
+                evidence=evidence,
+                command=verify_command if method == "verify" else None,
+                metadata=self._verification_metadata(
+                    route=route,
+                    materialized=materialized,
+                    decoder=decoder,
+                    product_route=product_route,
+                    model_result=model_result,
+                ),
+            )
+            answer = (
+                model_result.text
+                if self.config.model_path and model_result.ok and model_result.text
+                else self._answer(prompt, method, readiness, route, materialized, verification, model_result)
+            )
+            with self._state_write_lock("run_once.writeback_resume") as state_lock:
+                decoder_prior = self._update_decoder_prior(method, decoder, verification, model_result)
+                writeback_metadata = {
+                    "provenance": "david.runtime.run_once",
+                    **self._verification_metadata(
+                        route=route,
+                        materialized=materialized,
+                        decoder=decoder,
+                        product_route=product_route,
+                        model_result=model_result,
+                        decoder_prior=decoder_prior,
+                    ),
+                    "verification": verification.to_json(),
+                    "harness_session_id": getattr(self.harness_session, "session_id", None),
+                    "live_index_refresh": live_index_refresh,
+                    "index_metadata": index_metadata,
+                }
+                artifact = self.memory.writeback(
+                    method=method,
+                    user_id=self.config.user_id,
+                    session_id=self.config.session_id,
+                    text=f"Prompt: {prompt}\nAnswer: {answer}",
+                    metadata=writeback_metadata,
+                )
+                writeback = artifact.to_json()
+                result = RuntimeResult(
+                    prompt=prompt,
+                    method=method,
+                    answer=answer,
+                    index=readiness,
+                    route=route,
+                    materialized=materialized,
+                    decoder=decoder,
+                    verification=verification,
+                    writeback=writeback,
+                    product_route=product_route,
+                    model_result=model_result,
+                    source_index=source_index.to_json() if source_index is not None else None,
+                    live_index_refresh=live_index_refresh,
+                    decoder_prior=decoder_prior,
+                    harness_session=self._harness_session_json(),
+                )
+                snapshot = self._save_resume_snapshot(result)
+                state_lock_metadata = state_lock.to_json()
+            writeback_verification = self.verifier.verify(
+                capability=method,
+                evidence=evidence,
+                metadata={
+                    **writeback_metadata,
+                    "decoder_prior": _decoder_prior_for_capability_verifier(decoder_prior),
+                    "writeback": writeback,
+                },
+            )
+            final_result = RuntimeResult(
+                **{
+                    **result.__dict__,
+                    "resume_snapshot": snapshot.to_json(),
+                    "writeback_verification": writeback_verification,
+                }
+            )
+            self._trace_event(
+                "runtime.run_once.finish",
+                method=method,
                 route=route,
-                materialized=materialized,
-                decoder=decoder,
-                product_route=product_route,
-                model_result=model_result,
-            ),
-        )
-        answer = model_result.text if self.config.model_path and model_result.ok and model_result.text else self._answer(
-            prompt, method, readiness, route, materialized, verification, model_result
-        )
-        decoder_prior = self._update_decoder_prior(method, decoder, verification, model_result)
-        writeback_metadata = {
-            "provenance": "david.runtime.run_once",
-            **self._verification_metadata(
-                route=route,
-                materialized=materialized,
-                decoder=decoder,
-                product_route=product_route,
-                model_result=model_result,
-                decoder_prior=decoder_prior,
-            ),
-            "verification": verification.to_json(),
-            "harness_session_id": getattr(self.harness_session, "session_id", None),
-            "live_index_refresh": live_index_refresh,
-            "index_metadata": index_metadata,
-        }
-        artifact = self.memory.writeback(
-            method=method,
-            user_id=self.config.user_id,
-            session_id=self.config.session_id,
-            text=f"Prompt: {prompt}\nAnswer: {answer}",
-            metadata=writeback_metadata,
-        )
-        writeback_verification = self.verifier.verify(
-            capability=method,
-            evidence=evidence,
-            metadata={
-                **writeback_metadata,
-                "decoder_prior": _decoder_prior_for_capability_verifier(decoder_prior),
-                "writeback": artifact.to_json(),
-            },
-        )
-        result = RuntimeResult(
-            prompt=prompt,
-            method=method,
-            answer=answer,
-            index=readiness,
-            route=route,
-            materialized=materialized,
-            decoder=decoder,
-            verification=verification,
-            writeback=artifact.to_json(),
-            product_route=product_route,
-            model_result=model_result,
-            source_index=source_index.to_json() if source_index is not None else None,
-            live_index_refresh=live_index_refresh,
-            decoder_prior=decoder_prior,
-            harness_session=self._harness_session_json(),
-            writeback_verification=writeback_verification,
-        )
-        snapshot = self._save_resume_snapshot(result)
-        return RuntimeResult(
-            **{
-                **result.__dict__,
-                "resume_snapshot": snapshot.to_json(),
-            }
-        )
+                ok=True,
+                metadata={
+                    "writeback_artifact_id": writeback.get("artifact_id"),
+                    "resume_path": str(self.resume_path),
+                    "lock": state_lock_metadata,
+                },
+                payload={"answer": answer},
+            )
+            return final_result
+        except Exception as exc:
+            self._trace_event(
+                "runtime.run_once.error",
+                method=method,
+                route=route if route is not None else product_route,
+                ok=False,
+                error=exc,
+                payload={"prompt": prompt},
+            )
+            raise
 
     def run_agent_loop(
         self,
@@ -1309,68 +1377,99 @@ class DavidRuntime:
         max_steps: int = 8,
         persist: bool = True,
     ) -> RuntimeAgentLoopResult:
-        requests = self._agent_loop_requests(prompt)
         original_prompt = prompt if isinstance(prompt, str) else repr(list(prompt))
-        if requests is None:
-            loop = run_agent_loop_core(
-                self._model_driven_agent_step(original_prompt),
-                self.tools,
-                max_steps=max_steps,
-                objective=original_prompt,
-                mode="model_driven",
+        self._trace_event(
+            "runtime.agent_loop.start",
+            payload={"prompt": original_prompt, "max_steps": max_steps, "persist": persist},
+        )
+        try:
+            requests = self._agent_loop_requests(prompt)
+            if requests is None:
+                loop = run_agent_loop_core(
+                    self._model_driven_agent_step(original_prompt),
+                    self.tools,
+                    max_steps=max_steps,
+                    objective=original_prompt,
+                    mode="model_driven",
+                )
+            else:
+                loop = run_agent_loop_core(
+                    requests,
+                    self.tools,
+                    max_steps=max_steps,
+                    objective=original_prompt,
+                    mode="explicit",
+                )
+            repair_summary = _agent_loop_repair_summary(loop)
+            writeback: dict[str, Any] | None = None
+            with self._state_write_lock("agent_loop.writeback_resume") as state_lock:
+                if persist:
+                    artifact = self.memory.writeback(
+                        method="agent_loop",
+                        user_id=self.config.user_id,
+                        session_id=self.config.session_id,
+                        text=(
+                            f"Agent loop: {original_prompt}\n"
+                            f"Status: {loop.status}\n"
+                            f"Reason: {loop.reason}\n"
+                            "Repair summary: "
+                            f"failures={repair_summary['failure_count']} "
+                            f"repairs={repair_summary['repair_attempt_count']} "
+                            f"retries={repair_summary['retry_count']} "
+                            f"verification={repair_summary['verification']['outcome']}"
+                        ),
+                        metadata={
+                            "provenance": "david.runtime.run_agent_loop",
+                            "adapter": self.adapter.scope(),
+                            "adapter_scope": self.adapter.scope(),
+                            "loop": loop.to_dict(),
+                            "repair_summary": repair_summary,
+                            "failure_recovery": repair_summary,
+                            "verification_outcome": repair_summary["verification"],
+                            "harness_session_id": getattr(self.harness_session, "session_id", None),
+                            "live_index_refresh": self._latest_live_index_refresh_json(),
+                        },
+                    )
+                    writeback = artifact.to_json()
+                result = RuntimeAgentLoopResult(
+                    prompt=original_prompt,
+                    loop=loop,
+                    writeback=writeback,
+                    repair_summary=repair_summary,
+                )
+                snapshot = self._save_resume_snapshot(result)
+                state_lock_metadata = state_lock.to_json()
+            final_result = RuntimeAgentLoopResult(
+                prompt=original_prompt,
+                loop=loop,
+                writeback=writeback,
+                resume_snapshot=snapshot.to_json(),
+                repair_summary=repair_summary,
             )
-        else:
-            loop = run_agent_loop_core(
-                requests,
-                self.tools,
-                max_steps=max_steps,
-                objective=original_prompt,
-                mode="explicit",
-            )
-        repair_summary = _agent_loop_repair_summary(loop)
-        writeback: dict[str, Any] | None = None
-        if persist:
-            artifact = self.memory.writeback(
+            self._trace_event(
+                "runtime.agent_loop.finish",
                 method="agent_loop",
-                user_id=self.config.user_id,
-                session_id=self.config.session_id,
-                text=(
-                    f"Agent loop: {original_prompt}\n"
-                    f"Status: {loop.status}\n"
-                    f"Reason: {loop.reason}\n"
-                    "Repair summary: "
-                    f"failures={repair_summary['failure_count']} "
-                    f"repairs={repair_summary['repair_attempt_count']} "
-                    f"retries={repair_summary['retry_count']} "
-                    f"verification={repair_summary['verification']['outcome']}"
-                ),
+                ok=final_result.ok,
                 metadata={
-                    "provenance": "david.runtime.run_agent_loop",
-                    "adapter": self.adapter.scope(),
-                    "adapter_scope": self.adapter.scope(),
-                    "loop": loop.to_dict(),
-                    "repair_summary": repair_summary,
-                    "failure_recovery": repair_summary,
-                    "verification_outcome": repair_summary["verification"],
-                    "harness_session_id": getattr(self.harness_session, "session_id", None),
-                    "live_index_refresh": self._latest_live_index_refresh_json(),
+                    "status": loop.status,
+                    "steps": loop.steps,
+                    "verified": loop.verified,
+                    "writeback_artifact_id": writeback.get("artifact_id") if writeback else None,
+                    "resume_path": str(self.resume_path),
+                    "lock": state_lock_metadata,
                 },
+                payload={"answer": final_result.answer},
             )
-            writeback = artifact.to_json()
-        result = RuntimeAgentLoopResult(
-            prompt=original_prompt,
-            loop=loop,
-            writeback=writeback,
-            repair_summary=repair_summary,
-        )
-        snapshot = self._save_resume_snapshot(result)
-        return RuntimeAgentLoopResult(
-            prompt=original_prompt,
-            loop=loop,
-            writeback=writeback,
-            resume_snapshot=snapshot.to_json(),
-            repair_summary=repair_summary,
-        )
+            return final_result
+        except Exception as exc:
+            self._trace_event(
+                "runtime.agent_loop.error",
+                method="agent_loop",
+                ok=False,
+                error=exc,
+                payload={"prompt": original_prompt},
+            )
+            raise
 
     def agent_loop(
         self,
@@ -1471,16 +1570,39 @@ class DavidRuntime:
         )
 
     def jit_index(self) -> str:
-        self.index.jit()
-        readiness = self.index.check()
-        refresh = self._refresh_source_index()
-        return (
-            f"index: {'ready' if readiness.ready else readiness.reason} at {readiness.manifest_path}\n"
-            f"source index: {refresh.file_count} files at {self.source_index_path}\n"
-            "source refresh: "
-            f"changed={len(refresh.changed_paths)} indexed={len(refresh.indexed_paths)} "
-            f"deleted={len(refresh.deleted_paths)} manifest_sha256={refresh.manifest_sha256}"
-        )
+        self._trace_event("runtime.index.start", method="jit_index")
+        try:
+            with self._state_write_lock("index.write") as state_lock:
+                self.index.jit()
+                readiness = self.index.check()
+                refresh = self._refresh_source_index()
+                state_lock_metadata = state_lock.to_json()
+            summary = (
+                f"index: {'ready' if readiness.ready else readiness.reason} at {readiness.manifest_path}\n"
+                f"source index: {refresh.file_count} files at {self.source_index_path}\n"
+                "source refresh: "
+                f"changed={len(refresh.changed_paths)} indexed={len(refresh.indexed_paths)} "
+                f"deleted={len(refresh.deleted_paths)} manifest_sha256={refresh.manifest_sha256}"
+            )
+            self._trace_event(
+                "runtime.index.finish",
+                method="jit_index",
+                ok=True,
+                metadata={
+                    "manifest_path": str(readiness.manifest_path),
+                    "source_index_path": str(self.source_index_path),
+                    "file_count": refresh.file_count,
+                    "changed_count": len(refresh.changed_paths),
+                    "indexed_count": len(refresh.indexed_paths),
+                    "deleted_count": len(refresh.deleted_paths),
+                    "manifest_sha256": refresh.manifest_sha256,
+                    "lock": state_lock_metadata,
+                },
+            )
+            return summary
+        except Exception as exc:
+            self._trace_event("runtime.index.error", method="jit_index", ok=False, error=exc)
+            raise
 
     def build_index(self) -> str:
         return self.jit_index()
@@ -1893,7 +2015,8 @@ class DavidRuntime:
         existing = self._loaded_source_index()
         if existing is not None and existing.adapter_scope == self.adapter.scope():
             return existing
-        refresh = self._refresh_source_index()
+        with self._state_write_lock("source_index.refresh"):
+            refresh = self._refresh_source_index()
         manifest = self._loaded_source_index()
         if manifest is None:
             raise RuntimeError(f"live source index refresh did not write {refresh.source_index_path}")
