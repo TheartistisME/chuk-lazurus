@@ -364,6 +364,106 @@ def test_doctor_blocks_needs_review_validation_report_with_reasons(monkeypatch, 
     assert report.ready is False
 
 
+def test_doctor_surfaces_manual_attestation_as_standard_decode_only(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "gemma"
+    workspace.mkdir()
+    model.mkdir()
+    attestation_dir = workspace / ".david"
+    attestation_dir.mkdir()
+    attestation_path = attestation_dir / "model_attestation.json"
+    attestation_path.write_text(json.dumps(_attestation_payload()), encoding="utf-8")
+
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "ready", "CUDA available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
+    )
+    _disable_wsl_probe_checks(monkeypatch)
+
+    report = doctor.run_doctor(model=str(model), workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+    formatted = doctor.format_doctor_report(report)
+
+    assert checks["validation report"].status == "missing"
+    assert checks["model attestation"].status == "ready"
+    assert str(attestation_path) in checks["model attestation"].detail
+    assert "standard_decode_only=True" in checks["model attestation"].detail
+    assert "tensor_replay_effective=False" in checks["model attestation"].detail
+    assert "unsafe replay capabilities refused" in checks["model attestation"].detail
+    assert report.attestation_summary is not None
+    assert report.attestation_summary.standard_decode_only is True
+    assert report.attestation_summary.selected_adapter_config_id == "gemma-e2b-reviewed"
+    assert "- model attestation summary:" in formatted
+    assert "  - attestation_status: manual_reviewed" in formatted
+    assert "  - reviewer: jehma" in formatted
+    assert "  - allowed_capabilities: standard_decode" in formatted
+    assert "  - standard_decode_only: True" in formatted
+    assert "  - tensor_replay_effective: False" in formatted
+    assert "  - rejection_reasons: none" in formatted
+    assert "- checked attestation paths:" in formatted
+    assert report.ready is False
+
+
+def test_doctor_refuses_unsafe_attestation_replay_capabilities(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    attestation_path = tmp_path / "reviewed-attestation.json"
+    attestation_path.write_text(
+        json.dumps(
+            _attestation_payload(
+                allowed_capabilities=[
+                    "standard_decode",
+                    "kv_direct_tensor_replay",
+                    "residual_tensor_replay",
+                ]
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "ready", "CUDA available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
+    )
+    _disable_wsl_probe_checks(monkeypatch)
+
+    report = doctor.run_doctor(
+        model=None,
+        workspace_path=workspace,
+        attestation_path=str(attestation_path),
+    )
+    checks = {check.name: check for check in report.checks}
+    formatted = doctor.format_doctor_report(report)
+
+    assert checks["model attestation"].status == "review"
+    assert "refused_replay_capabilities=kv_direct_tensor_replay, residual_tensor_replay" in (
+        checks["model attestation"].detail
+    )
+    assert "manual attestation permits standard decode only" in checks["model attestation"].detail
+    assert report.attestation_summary is not None
+    assert report.attestation_summary.standard_decode_allowed is True
+    assert report.attestation_summary.tensor_replay_effective is False
+    assert "  - allowed_capabilities: standard_decode, kv_direct_tensor_replay, residual_tensor_replay" in (
+        formatted
+    )
+    assert "  - refused_replay_capabilities: kv_direct_tensor_replay, residual_tensor_replay" in formatted
+    assert "  - rejection_reasons: none" in formatted
+
+
 def test_run_model_scan_reports_missing_helper_without_subprocess(monkeypatch, tmp_path):
     def fake_run(*_args, **_kwargs):
         raise AssertionError("subprocess should not run when helper is missing")
@@ -719,4 +819,36 @@ def _validation_report_payload(
         "topology_gate": {"status": "ok", "warnings": []},
         "projection_gate": {"status": "ok", "warnings": []},
         "behavior_gate": {"status": "ok", "warnings": []},
+    }
+
+
+def _attestation_payload(
+    *,
+    allowed_capabilities: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_name": "david.manual_model_attestation",
+        "schema_version": 1,
+        "validation_report_sha256": "sha256:reviewed-report-digest",
+        "model_identity": "google/gemma-4-E2B-it",
+        "tokenizer_identity": "google/gemma-4-E2B-it",
+        "model_revision_or_hash": "b4a601102c3d45e2b7b50e2057a6d5ec8ed4adcf",
+        "adapter_family": "gemma4",
+        "reviewer": "jehma",
+        "reviewed_at": "2026-05-04T07:30:00Z",
+        "expires_at": "2026-06-04T07:30:00Z",
+        "rationale": "Operator reviewed tied validator candidates for standard decode only.",
+        "selected_config": {
+            "adapter_config_id": "gemma-e2b-reviewed",
+            "route_layer": 14,
+            "boundary_layer": 23,
+            "kv_source_layer": 28,
+            "kv_target_layer": 29,
+            "insertion_family": "kv_direct",
+        },
+        "allowed_capabilities": allowed_capabilities or ["standard_decode"],
+        "refused_capabilities": [
+            "kv_direct_tensor_replay",
+            "residual_tensor_replay",
+        ],
     }

@@ -77,6 +77,9 @@ class DavidConfig:
     user_id: str = "default"
     model_path: str | None = None
     validation_report_path: str | None = None
+    model_attestation_path: str | None = field(
+        default_factory=lambda: _env_optional_string("DAVID_MODEL_ATTESTATION")
+    )
     require_validated_model: bool = True
     model_backend: str = field(default_factory=_env_model_backend)
     model_device: str | None = field(default_factory=lambda: _env_optional_string("DAVID_MODEL_DEVICE"))
@@ -107,6 +110,7 @@ class DavidConfig:
         model_device: str | None = None,
         model_dtype: str | None = None,
         model_max_new_tokens: int | None = None,
+        model_attestation_path: str | None = None,
     ) -> "DavidConfig":
         kwargs: dict[str, Any] = {
             "workspace_root": workspace_path,
@@ -119,6 +123,8 @@ class DavidConfig:
             "command_timeout_seconds": command_timeout_seconds,
             "auto_jit_index": auto_jit_index,
         }
+        if model_attestation_path is not None:
+            kwargs["model_attestation_path"] = model_attestation_path
         if model_device is not None:
             kwargs["model_device"] = model_device
         if model_dtype is not None:

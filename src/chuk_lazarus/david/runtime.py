@@ -25,6 +25,7 @@ from .live_indexer import LiveIndexer, LiveIndexRefresh, load_live_index_state
 from .materializer import MaterializedContext, Materializer
 from .materialization_replay import ReplayConsumerInput
 from .memory import JsonlMemoryStore, MemoryBank
+from .model_attestation import ManualModelAttestationResult, verify_model_attestation
 from .model_artifacts import is_vindex_artifact_path
 from .model_backend import (
     ModelBackend,
@@ -168,6 +169,7 @@ class DavidRuntime:
         self.product_router_errors: list[str] = []
         self.harness_session = self._boot_session()
         self.adapter = self._adapter_from_harness() or config.adapter
+        self.model_attestation = self._verify_model_attestation()
         self.index = WorkspaceIndex(config.workspace_root, self._index_manifest_path(), self.adapter)
         self.memory = MemoryBank(
             JsonlMemoryStore(config.user_memory_path, "user"),
@@ -615,12 +617,15 @@ class DavidRuntime:
             return None
         if not (self.config.model_path or self.config.validation_report_path):
             return None
+        require_validated_model = self.config.require_validated_model
+        if self.config.model_attestation_path and self.config.require_validated_model:
+            require_validated_model = False
         try:
             return boot_harness(
                 model_path=self.config.model_path or "offline-deterministic",
                 workspace_path=str(self.config.workspace_root),
                 validation_report_path=self.config.validation_report_path,
-                require_validated_model=self.config.require_validated_model,
+                require_validated_model=require_validated_model,
             )
         except Exception as exc:
             self.boot_errors.append(f"{type(exc).__name__}: {exc}")
@@ -650,7 +655,11 @@ class DavidRuntime:
         if self.config.model_path and is_vindex_artifact_path(self.config.model_path):
             return VindexArtifactBackend(self.config.model_path)
         can_auto_load = bool(getattr(self.harness_session, "can_auto_load", False))
-        if self.config.model_path and can_auto_load and not self.boot_errors:
+        can_standard_decode = bool(
+            self.config.require_validated_model
+            and (can_auto_load or self._manual_review_standard_decode_allowed())
+        )
+        if self.config.model_path and can_standard_decode and not self.boot_errors:
             backend_selector = str(self.config.model_backend or "transformers").strip().lower()
             if backend_selector in {"torch-runtime", "torch_runtime", "torch"}:
                 return TorchRuntimeModelBackend(
@@ -680,10 +689,32 @@ class DavidRuntime:
     def _model_validation_status(self) -> str:
         if self.boot_errors:
             return "blocked: " + "; ".join(self.boot_errors)
+        if self._manual_review_standard_decode_allowed():
+            return f"manual_reviewed ({self.adapter.adapter_family}:{self.adapter.model_id}; standard_decode_only)"
         if self.harness_session is not None:
             status = getattr(self.harness_session, "validation_status", None) or "unknown"
             return f"{status} ({self.adapter.adapter_family}:{self.adapter.model_id})"
         return f"offline shell mode ({self.adapter.adapter_family}:{self.adapter.model_id})"
+
+    def _verify_model_attestation(self) -> ManualModelAttestationResult | None:
+        if not self.config.model_attestation_path:
+            return None
+        result = verify_model_attestation(
+            self.config.model_attestation_path,
+            validation_report_path=self.config.validation_report_path,
+            model_path=self.config.model_path,
+        )
+        can_auto_load = bool(getattr(self.harness_session, "can_auto_load", False))
+        if self.config.require_validated_model and not can_auto_load and not result.standard_decode_allowed:
+            self.boot_errors.append(f"model attestation invalid: {result.reason}")
+        return result
+
+    def _manual_review_standard_decode_allowed(self) -> bool:
+        return bool(
+            self.config.require_validated_model
+            and self.model_attestation is not None
+            and self.model_attestation.standard_decode_allowed
+        )
 
     def _index_manifest_path(self) -> Path:
         return self.config.state_dir / "indexes" / f"{self._adapter_file_stem()}.json"
@@ -946,6 +977,7 @@ class DavidRuntime:
             },
             "decoder_prior_scope": decoder.prior_scope,
             "decoder_prior": decoder_prior,
+            "model_attestation": self._model_attestation_json(),
             "backend": {
                 "name": model_result.backend,
                 "ok": model_result.ok,
@@ -992,10 +1024,19 @@ class DavidRuntime:
         if self.harness_session is None:
             return None
         if hasattr(self.harness_session, "to_dict"):
-            return self.harness_session.to_dict()
+            data = self.harness_session.to_dict()
+            data["model_attestation"] = self._model_attestation_json()
+            return data
         if hasattr(self.harness_session, "__dict__"):
-            return dict(self.harness_session.__dict__)
-        return {"repr": repr(self.harness_session)}
+            data = dict(self.harness_session.__dict__)
+            data["model_attestation"] = self._model_attestation_json()
+            return data
+        return {"repr": repr(self.harness_session), "model_attestation": self._model_attestation_json()}
+
+    def _model_attestation_json(self) -> dict[str, Any] | None:
+        if self.model_attestation is None:
+            return None
+        return self.model_attestation.to_dict()
 
     def _answer(
         self,

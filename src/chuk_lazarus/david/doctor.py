@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
 from .model_artifacts import VindexArtifactMetadata, inspect_vindex_artifact, is_vindex_artifact_path
 from .model_validation import (
@@ -19,6 +20,34 @@ from .model_validation import (
     discover_validation_report,
     summarize_validation_report,
     workspace_auto_model_report_paths,
+)
+
+ATTESTATION_SCHEMA_NAMES = (
+    "david.model_attestation",
+    "lazarus.model_attestation",
+    "david.manual_model_attestation",
+)
+ATTESTATION_FILENAMES = (
+    "model_attestation.json",
+    "david_model_attestation.json",
+    "manual_model_attestation.json",
+)
+WORKSPACE_ATTESTATION_PATHS = (
+    Path(".david") / "model_attestation.json",
+    Path(".david") / "model" / "model_attestation.json",
+    Path(".david") / "model_validation" / "model_attestation.json",
+)
+STANDARD_DECODE_CAPABILITIES = frozenset(("standard_decode", "decode", "text_generation"))
+UNSAFE_REPLAY_CAPABILITIES = frozenset(
+    (
+        "tensor_replay",
+        "kv_replay",
+        "kv_direct",
+        "kv_direct_tensor_replay",
+        "residual_replay",
+        "residual_direct",
+        "residual_tensor_replay",
+    )
 )
 
 
@@ -32,6 +61,78 @@ class DoctorCheck:
 
 
 @dataclass(frozen=True)
+class AttestationDiscovery:
+    """Result of looking for a manual-reviewed model attestation."""
+
+    path: Path | None
+    checked_paths: tuple[Path, ...]
+    explicit: bool = False
+
+
+@dataclass(frozen=True)
+class ModelAttestationSummary:
+    """Display-only summary of an operator-reviewed model attestation."""
+
+    path: Path | None
+    readable: bool
+    attestation_status: str | None
+    reviewer: str | None
+    rationale: str | None
+    expires_at: str | None
+    model_identity: str | None
+    tokenizer_identity: str | None
+    model_revision: str | None
+    validation_report_digest: str | None
+    selected_adapter_config_id: str | None
+    allowed_capabilities: tuple[str, ...]
+    requested_replay_capabilities: tuple[str, ...]
+    refused_replay_capabilities: tuple[str, ...]
+    warnings: tuple[str, ...]
+    rejection_reasons: tuple[str, ...]
+    error: str | None = None
+
+    @property
+    def standard_decode_allowed(self) -> bool:
+        return any(
+            capability in STANDARD_DECODE_CAPABILITIES
+            for capability in self.allowed_capabilities
+        )
+
+    @property
+    def tensor_replay_effective(self) -> bool:
+        return False
+
+    @property
+    def standard_decode_only(self) -> bool:
+        return self.standard_decode_allowed and not self.tensor_replay_effective
+
+    def compact_detail(self) -> str:
+        reasons = "; ".join(self.rejection_reasons) if self.rejection_reasons else "none"
+        refused = (
+            ", ".join(self.refused_replay_capabilities)
+            if self.refused_replay_capabilities
+            else "none"
+        )
+        requested = (
+            ", ".join(self.requested_replay_capabilities)
+            if self.requested_replay_capabilities
+            else "none"
+        )
+        capabilities = ", ".join(self.allowed_capabilities) if self.allowed_capabilities else "none"
+        return (
+            f"attestation_status={self.attestation_status or 'unknown'}; "
+            f"reviewer={self.reviewer or 'unknown'}; "
+            f"standard_decode_allowed={self.standard_decode_allowed}; "
+            f"standard_decode_only={self.standard_decode_only}; "
+            f"tensor_replay_effective={self.tensor_replay_effective}; "
+            f"allowed_capabilities={capabilities}; "
+            f"requested_replay_capabilities={requested}; "
+            f"refused_replay_capabilities={refused}; "
+            f"rejection_reasons={reasons}"
+        )
+
+
+@dataclass(frozen=True)
 class DavidDoctorReport:
     """Complete filesystem/package readiness report."""
 
@@ -40,6 +141,8 @@ class DavidDoctorReport:
     checks: tuple[DoctorCheck, ...]
     validation_discovery: ValidationReportDiscovery
     validation_summary: ValidationReportSummary | None = None
+    attestation_discovery: AttestationDiscovery | None = None
+    attestation_summary: ModelAttestationSummary | None = None
 
     @property
     def ready(self) -> bool:
@@ -51,6 +154,7 @@ def run_doctor(
     model: str | None,
     workspace_path: Path,
     validation_report: str | None = None,
+    attestation_path: str | None = None,
     auto_validate_model: bool = False,
     repo_root: Path | None = None,
 ) -> DavidDoctorReport:
@@ -66,6 +170,17 @@ def run_doctor(
     validation_summary = (
         summarize_validation_report(discovery.path) if discovery.path is not None else None
     )
+    attestation_discovery = _discover_attestation(
+        model=model,
+        workspace_path=workspace_root,
+        validation_report_path=discovery.path,
+        attestation_path=attestation_path,
+    )
+    attestation_summary = (
+        summarize_model_attestation(attestation_discovery.path)
+        if attestation_discovery.path is not None
+        else None
+    )
     checks = [
         _workspace_check(workspace_root),
         _model_location_check(model),
@@ -73,6 +188,7 @@ def run_doctor(
         _wsl_hf_snapshot_check(model),
         _vindex_check(workspace_root, model),
         _validation_report_check(discovery, validation_summary),
+        _attestation_check(attestation_discovery, attestation_summary),
         *_optional_package_checks(),
         _torch_cuda_check(),
         _wsl_python_packages_check(),
@@ -91,6 +207,8 @@ def run_doctor(
         checks=tuple(checks),
         validation_discovery=discovery,
         validation_summary=validation_summary,
+        attestation_discovery=attestation_discovery,
+        attestation_summary=attestation_summary,
     )
 
 
@@ -123,10 +241,153 @@ def format_doctor_report(report: DavidDoctorReport) -> str:
         lines.append(f"  - selected_insertion_family: {summary.selected_insertion_family or 'unknown'}")
         lines.append(f"  - warnings: {warnings}")
         lines.append(f"  - rejection_reasons: {reasons}")
+    if report.attestation_summary is not None:
+        summary = report.attestation_summary
+        warnings = "; ".join(summary.warnings) if summary.warnings else "none"
+        reasons = (
+            "; ".join(summary.rejection_reasons) if summary.rejection_reasons else "none"
+        )
+        refused = (
+            ", ".join(summary.refused_replay_capabilities)
+            if summary.refused_replay_capabilities
+            else "none"
+        )
+        requested = (
+            ", ".join(summary.requested_replay_capabilities)
+            if summary.requested_replay_capabilities
+            else "none"
+        )
+        capabilities = (
+            ", ".join(summary.allowed_capabilities) if summary.allowed_capabilities else "none"
+        )
+        lines.append("- model attestation summary:")
+        lines.append(f"  - attestation_status: {summary.attestation_status or 'unknown'}")
+        lines.append(f"  - reviewer: {summary.reviewer or 'unknown'}")
+        lines.append(f"  - rationale: {summary.rationale or 'unknown'}")
+        lines.append(f"  - expires_at: {summary.expires_at or 'unknown'}")
+        lines.append(f"  - model_identity: {summary.model_identity or 'unknown'}")
+        lines.append(f"  - tokenizer_identity: {summary.tokenizer_identity or 'unknown'}")
+        lines.append(f"  - model_revision: {summary.model_revision or 'unknown'}")
+        lines.append(f"  - validation_report_digest: {summary.validation_report_digest or 'unknown'}")
+        lines.append(f"  - selected_adapter_config_id: {summary.selected_adapter_config_id or 'unknown'}")
+        lines.append(f"  - allowed_capabilities: {capabilities}")
+        lines.append(f"  - standard_decode_only: {summary.standard_decode_only}")
+        lines.append(f"  - tensor_replay_effective: {summary.tensor_replay_effective}")
+        lines.append(f"  - requested_replay_capabilities: {requested}")
+        lines.append(f"  - refused_replay_capabilities: {refused}")
+        lines.append(f"  - warnings: {warnings}")
+        lines.append(f"  - rejection_reasons: {reasons}")
     if report.validation_discovery.checked_paths:
         lines.append("- checked validation report paths:")
         lines.extend(f"  - {path}" for path in report.validation_discovery.checked_paths)
+    if report.attestation_discovery and report.attestation_discovery.checked_paths:
+        lines.append("- checked attestation paths:")
+        lines.extend(f"  - {path}" for path in report.attestation_discovery.checked_paths)
     return "\n".join(lines) + "\n"
+
+
+def summarize_model_attestation(path: str | Path) -> ModelAttestationSummary:
+    """Read a manual-reviewed attestation without changing boot policy."""
+
+    attestation_path = Path(path).expanduser()
+    try:
+        with attestation_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except OSError as exc:
+        return _unreadable_attestation_summary(attestation_path, f"could not read attestation: {exc}")
+    except json.JSONDecodeError as exc:
+        return _unreadable_attestation_summary(attestation_path, f"invalid JSON: {exc}")
+    return summarize_model_attestation_data(payload, path=attestation_path)
+
+
+def summarize_model_attestation_data(
+    payload: object,
+    *,
+    path: str | Path | None = None,
+) -> ModelAttestationSummary:
+    """Summarize an operator attestation while refusing replay capabilities."""
+
+    attestation_path = Path(path).expanduser() if path is not None else None
+    if not isinstance(payload, dict):
+        return _unreadable_attestation_summary(
+            attestation_path,
+            "model attestation must be a JSON object",
+        )
+
+    schema_name = _optional_str(payload.get("schema_name"))
+    status = _optional_str(payload.get("attestation_status") or payload.get("status"))
+    if status is None and schema_name == "david.manual_model_attestation":
+        status = "manual_reviewed"
+    reviewer = _optional_str(payload.get("reviewer") or payload.get("reviewed_by"))
+    rationale = _optional_str(payload.get("rationale") or payload.get("review_rationale"))
+    expires_at = _optional_str(payload.get("expires_at"))
+    allowed = tuple(_unique_strings(_string_list(payload.get("allowed_capabilities"))))
+    declared_refused = tuple(
+        capability
+        for capability in _string_list(payload.get("refused_capabilities"))
+        if capability in UNSAFE_REPLAY_CAPABILITIES
+    )
+    requested_replay = tuple(
+        capability for capability in allowed if capability in UNSAFE_REPLAY_CAPABILITIES
+    )
+    refused = tuple(_unique_strings([*requested_replay, *declared_refused]))
+    selected_config = payload.get("selected_config")
+    selected_config_map = selected_config if isinstance(selected_config, dict) else None
+    selected_config_sha256 = _optional_str(
+        payload.get("selected_config_sha256") or payload.get("selected_config_hash")
+    )
+    model_identity = _identity_text(payload, "model_identity", ("model_id", "model_name"))
+    tokenizer_identity = _identity_text(payload, "tokenizer_identity", ("tokenizer_id",))
+    validation_report_digest = _validation_report_digest(payload)
+    model_revision = _model_revision_text(payload)
+    warnings = _unique_strings(_string_list(payload.get("warnings")))
+
+    rejection_reasons: list[str] = []
+    if schema_name not in ATTESTATION_SCHEMA_NAMES:
+        rejection_reasons.append(f"unsupported schema {schema_name!r}")
+    if status not in {"manual_reviewed", "operator_reviewed", "approved"}:
+        rejection_reasons.append(
+            f"attestation_status is {status!r}, expected 'manual_reviewed'"
+        )
+    if not reviewer:
+        rejection_reasons.append("reviewer is missing")
+    if not rationale:
+        rejection_reasons.append("rationale is missing")
+    if not model_identity:
+        rejection_reasons.append("model_identity is missing")
+    if not tokenizer_identity:
+        rejection_reasons.append("tokenizer_identity is missing")
+    if not model_revision:
+        rejection_reasons.append("model_revision is missing")
+    if not validation_report_digest:
+        rejection_reasons.append("validation_report_digest is missing")
+    if selected_config_map is None and not selected_config_sha256:
+        rejection_reasons.append("selected_config or selected_config_sha256 is missing")
+    if not any(capability in STANDARD_DECODE_CAPABILITIES for capability in allowed):
+        rejection_reasons.append("standard_decode is not allowed by attestation")
+
+    return ModelAttestationSummary(
+        path=attestation_path,
+        readable=True,
+        attestation_status=status,
+        reviewer=reviewer,
+        rationale=rationale,
+        expires_at=expires_at,
+        model_identity=model_identity,
+        tokenizer_identity=tokenizer_identity,
+        model_revision=model_revision,
+        validation_report_digest=validation_report_digest,
+        selected_adapter_config_id=(
+            _optional_str(selected_config_map.get("adapter_config_id"))
+            if selected_config_map is not None
+            else selected_config_sha256
+        ),
+        allowed_capabilities=allowed,
+        requested_replay_capabilities=requested_replay,
+        refused_replay_capabilities=refused,
+        warnings=tuple(warnings),
+        rejection_reasons=tuple(_unique_strings(rejection_reasons)),
+    )
 
 
 def _discover_report(
@@ -139,6 +400,54 @@ def _discover_report(
         report = Path(validation_report).expanduser()
         return ValidationReportDiscovery(path=report if report.is_file() else None, checked_paths=(report,))
     return discover_validation_report(model_path=model, workspace_path=workspace_path)
+
+
+def _discover_attestation(
+    *,
+    model: str | None,
+    workspace_path: Path,
+    validation_report_path: Path | None,
+    attestation_path: str | None,
+) -> AttestationDiscovery:
+    if attestation_path:
+        candidate = Path(attestation_path).expanduser()
+        return AttestationDiscovery(
+            path=candidate if candidate.is_file() else None,
+            checked_paths=(candidate,),
+            explicit=True,
+        )
+
+    checked_paths: list[Path] = []
+    for candidate in _candidate_attestation_paths(
+        model=model,
+        workspace_path=workspace_path,
+        validation_report_path=validation_report_path,
+    ):
+        checked_paths.append(candidate)
+        if candidate.is_file():
+            return AttestationDiscovery(path=candidate, checked_paths=tuple(checked_paths))
+    return AttestationDiscovery(path=None, checked_paths=tuple(checked_paths))
+
+
+def _candidate_attestation_paths(
+    *,
+    model: str | None,
+    workspace_path: Path,
+    validation_report_path: Path | None,
+) -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    if model:
+        model_path = Path(model).expanduser()
+        if model_path.exists() or model_path.is_absolute():
+            model_root = model_path if model_path.is_dir() else model_path.parent
+            candidates.extend(model_root / name for name in ATTESTATION_FILENAMES)
+
+    if validation_report_path is not None:
+        candidates.extend(validation_report_path.parent / name for name in ATTESTATION_FILENAMES)
+
+    workspace_root = workspace_path.expanduser().resolve()
+    candidates.extend(workspace_root / path for path in WORKSPACE_ATTESTATION_PATHS)
+    return tuple(dict.fromkeys(candidates))
 
 
 def _workspace_check(workspace_root: Path) -> DoctorCheck:
@@ -347,6 +656,38 @@ def _validation_report_check(
             f"{discovery.path}; {summary.compact_detail()}",
         )
     return DoctorCheck("validation report", "missing", "no boot-safe validation report discovered")
+
+
+def _attestation_check(
+    discovery: AttestationDiscovery,
+    summary: ModelAttestationSummary | None,
+) -> DoctorCheck:
+    name = "model attestation"
+    if discovery.path is None:
+        if discovery.explicit:
+            return DoctorCheck(name, "missing", "explicit attestation path was not found")
+        return DoctorCheck(
+            name,
+            "review",
+            "no manual-reviewed attestation discovered; accepted validator report remains the auto-load path",
+        )
+    if summary is None:
+        status = "blocked" if discovery.explicit else "review"
+        return DoctorCheck(name, status, f"{discovery.path}; attestation could not be summarized")
+
+    if summary.error or summary.rejection_reasons:
+        status = "blocked" if discovery.explicit else "review"
+    elif summary.requested_replay_capabilities:
+        status = "review"
+    else:
+        status = "ready"
+
+    return DoctorCheck(
+        name,
+        status,
+        f"{discovery.path}; {summary.compact_detail()}; "
+        "manual attestation permits standard decode only; unsafe replay capabilities refused",
+    )
 
 
 def _optional_package_checks() -> tuple[DoctorCheck, ...]:
@@ -559,3 +900,94 @@ def _repo_root(repo_root: Path | None = None) -> Path:
     if repo_root is not None:
         return repo_root.expanduser().resolve()
     return Path(__file__).resolve().parents[3]
+
+
+def _unreadable_attestation_summary(
+    path: Path | None,
+    reason: str,
+) -> ModelAttestationSummary:
+    return ModelAttestationSummary(
+        path=path,
+        readable=False,
+        attestation_status=None,
+        reviewer=None,
+        rationale=None,
+        expires_at=None,
+        model_identity=None,
+        tokenizer_identity=None,
+        model_revision=None,
+        validation_report_digest=None,
+        selected_adapter_config_id=None,
+        allowed_capabilities=(),
+        requested_replay_capabilities=(),
+        refused_replay_capabilities=(),
+        warnings=(),
+        rejection_reasons=(reason,),
+        error=reason,
+    )
+
+
+def _identity_text(
+    payload: Mapping[str, Any],
+    mapping_key: str,
+    fallback_keys: tuple[str, ...],
+) -> str | None:
+    value = payload.get(mapping_key)
+    if isinstance(value, Mapping):
+        for key in ("id", "model_id", "tokenizer_id", "name", "repo_id"):
+            text = _optional_str(value.get(key))
+            if text:
+                return text
+    text = _optional_str(value)
+    if text:
+        return text
+    for key in fallback_keys:
+        text = _optional_str(payload.get(key))
+        if text:
+            return text
+    return None
+
+
+def _model_revision_text(payload: Mapping[str, Any]) -> str | None:
+    for key in ("model_revision_or_hash", "model_revision", "revision", "model_hash", "commit_hash"):
+        text = _optional_str(payload.get(key))
+        if text:
+            return text
+    value = payload.get("model_identity")
+    if isinstance(value, Mapping):
+        for key in ("revision", "model_revision", "hash", "sha256", "commit_hash"):
+            text = _optional_str(value.get(key))
+            if text:
+                return text
+    return None
+
+
+def _validation_report_digest(payload: Mapping[str, Any]) -> str | None:
+    for key in ("validation_report_digest", "validation_report_sha256", "report_sha256"):
+        text = _optional_str(payload.get(key))
+        if text:
+            return text
+    value = payload.get("validation_report")
+    if isinstance(value, Mapping):
+        for key in ("sha256", "digest", "report_sha256"):
+            text = _optional_str(value.get(key))
+            if text:
+                return text
+    return None
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _unique_strings(values: list[str] | tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(str(value) for value in values if str(value)))

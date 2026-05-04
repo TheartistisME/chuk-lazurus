@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -38,6 +39,8 @@ def test_main_preserves_boot_config_fields_with_real_config(monkeypatch, tmp_pat
             "google/gemma-e2b",
             "--validation-report",
             str(report_path),
+            "--model-attestation",
+            "manual-review.json",
             "--allow-unvalidated",
             "--once",
             "inspect boot config",
@@ -63,6 +66,7 @@ def test_main_preserves_boot_config_fields_with_real_config(monkeypatch, tmp_pat
     assert config.workspace_path == Path(tmp_path).resolve()
     assert config.model_path == "google/gemma-e2b"
     assert config.validation_report_path == str(report_path)
+    assert config.model_attestation_path == "manual-review.json"
     assert config.require_validated_model is False
     assert config.once == "inspect boot config"
     assert config.verify_command == "python -m pytest"
@@ -82,6 +86,7 @@ def test_main_preserves_model_runtime_env_defaults(monkeypatch, tmp_path):
     monkeypatch.setenv("DAVID_MODEL_DEVICE", "cuda")
     monkeypatch.setenv("DAVID_MODEL_DTYPE", "float16")
     monkeypatch.setenv("DAVID_MODEL_MAX_NEW_TOKENS", "77")
+    monkeypatch.setenv("DAVID_MODEL_ATTESTATION", "env-attestation.json")
 
     report_path = tmp_path / "validation.json"
     rc = cli.main(
@@ -105,6 +110,7 @@ def test_main_preserves_model_runtime_env_defaults(monkeypatch, tmp_path):
     assert config.model_device == "cuda"
     assert config.model_dtype == "float16"
     assert config.model_max_new_tokens == 77
+    assert config.model_attestation_path == "env-attestation.json"
 
 
 def test_main_status_uses_real_runtime_with_validation_report(tmp_path, capsys):
@@ -134,6 +140,91 @@ def test_main_status_uses_real_runtime_with_validation_report(tmp_path, capsys):
     assert "David startup readiness" in output
     assert "model validation: accepted (gemma:gemma-cli-test)" in output
     assert "workspace:" in output
+
+
+def test_main_manual_reviewed_attestation_opens_standard_decode_path(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "model"
+    workspace.mkdir()
+    model.mkdir()
+    report_path = tmp_path / "needs-review.json"
+    report_path.write_text(
+        json.dumps(_validation_report(status="needs_review", auto_load_allowed=False)),
+        encoding="utf-8",
+    )
+    attestation_path = tmp_path / "attestation.json"
+    attestation_path.write_text(
+        json.dumps(_model_attestation(report_path=report_path, model_path=str(model))),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(
+        [
+            "code",
+            str(workspace),
+            "--model",
+            str(model),
+            "--validation-report",
+            str(report_path),
+            "--model-attestation",
+            str(attestation_path),
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "David terminal agent" in output
+    assert "model validation: manual_reviewed (gemma:gemma-cli-test; standard_decode_only)" in output
+    assert "backend: transformers-causal-lm:" in output
+    assert "accepted (gemma:gemma-cli-test)" not in output
+
+
+def test_main_invalid_attestation_keeps_needs_review_report_blocked(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "model"
+    workspace.mkdir()
+    model.mkdir()
+    report_path = tmp_path / "needs-review.json"
+    report_path.write_text(
+        json.dumps(_validation_report(status="needs_review", auto_load_allowed=False)),
+        encoding="utf-8",
+    )
+    attestation_path = tmp_path / "bad-attestation.json"
+    attestation_path.write_text(
+        json.dumps(
+            {
+                **_model_attestation(report_path=report_path, model_path=str(model)),
+                "validation_report_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(
+        [
+            "code",
+            str(workspace),
+            "--model",
+            str(model),
+            "--validation-report",
+            str(report_path),
+            "--model-attestation",
+            str(attestation_path),
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 2
+    output = capsys.readouterr().out
+    assert "model validation: blocked:" in output
+    assert "model attestation invalid" in output
+    assert "validation_report_sha256 does not match validation report" in output
+    assert "David terminal agent" not in output
 
 
 def test_main_rejected_validation_report_fails_closed_before_tui(tmp_path, capsys):
@@ -207,6 +298,45 @@ def test_main_allow_unvalidated_opens_offline_shell_with_rejected_report(tmp_pat
     assert "backend: offline-deterministic: loaded" in output
 
 
+def test_main_allow_unvalidated_with_attestation_still_uses_offline_shell(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "model"
+    workspace.mkdir()
+    model.mkdir()
+    report_path = tmp_path / "needs-review.json"
+    report_path.write_text(
+        json.dumps(_validation_report(status="needs_review", auto_load_allowed=False)),
+        encoding="utf-8",
+    )
+    attestation_path = tmp_path / "attestation.json"
+    attestation_path.write_text(
+        json.dumps(_model_attestation(report_path=report_path, model_path=str(model))),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(
+        [
+            "code",
+            str(workspace),
+            "--model",
+            str(model),
+            "--validation-report",
+            str(report_path),
+            "--model-attestation",
+            str(attestation_path),
+            "--allow-unvalidated",
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "backend: offline-deterministic: loaded" in output
+    assert "manual_reviewed" not in output
+
+
 def _validation_report(
     *,
     status: str = "accepted",
@@ -262,3 +392,30 @@ def _validation_report(
         "provenance": {"loader_options": {"model": "gemma-cli-test"}},
         "warnings": [],
     }
+
+
+def _model_attestation(*, report_path: Path, model_path: str) -> dict[str, object]:
+    del model_path
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    selected_config = report["selected_config"]
+    return {
+        "schema_name": "david.manual_model_attestation",
+        "schema_version": 1,
+        "reviewer": "unit-test",
+        "reviewed_at": "2099-01-01T00:00:00Z",
+        "rationale": "reviewed ambiguous Gemma candidate for standard decode only",
+        "validation_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+        "selected_config_sha256": _canonical_sha256(selected_config),
+        "model_identity": "gemma-cli-test",
+        "tokenizer_identity": "gemma-cli-tokenizer",
+        "model_revision_or_hash": "cli-rev",
+        "adapter_family": "gemma",
+        "allowed_capabilities": ["standard_decode"],
+    }
+
+
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()

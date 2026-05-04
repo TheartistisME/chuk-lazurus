@@ -37,6 +37,7 @@ class _FallbackDavidConfig:
     workspace_path: Path
     model_path: str | None = None
     validation_report_path: str | None = None
+    model_attestation_path: str | None = None
     require_validated_model: bool = True
     color: bool = True
     once: str | None = None
@@ -63,11 +64,13 @@ class _FallbackDavidConfig:
         model_device: str | None = None,
         model_dtype: str | None = None,
         model_max_new_tokens: int | None = None,
+        model_attestation_path: str | None = None,
     ) -> "_FallbackDavidConfig":
         return cls(
             workspace_path=workspace_path.expanduser().resolve(),
             model_path=model_path,
             validation_report_path=validation_report_path,
+            model_attestation_path=model_attestation_path,
             require_validated_model=require_validated_model,
             color=color,
             once=once,
@@ -299,6 +302,7 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
         "workspace_root": workspace_path,
         "model_path": args.model,
         "validation_report_path": args.validation_report,
+        "model_attestation_path": args.model_attestation,
         "require_validated_model": not args.allow_unvalidated,
         "color": not args.no_color,
         "once": args.once,
@@ -325,6 +329,7 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
             model_device=args.model_device,
             model_dtype=args.model_dtype,
             model_max_new_tokens=args.model_max_new_tokens,
+            model_attestation_path=args.model_attestation,
         )
 
     signature = inspect.signature(DavidConfig)
@@ -337,6 +342,7 @@ def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:
     for name in (
         "model_path",
         "validation_report_path",
+        "model_attestation_path",
         "require_validated_model",
         "color",
         "once",
@@ -472,6 +478,11 @@ def _add_common_options(parser: argparse.ArgumentParser, *, suppress_defaults: b
         "--validation-report",
         default=absent_default,
         help="Path to a validator JSON report accepted by the harness boot gate",
+    )
+    parser.add_argument(
+        "--model-attestation",
+        default=absent_default,
+        help="Path to a manual-reviewed attestation JSON for standard decode of needs-review reports",
     )
     parser.add_argument(
         "--allow-unvalidated",

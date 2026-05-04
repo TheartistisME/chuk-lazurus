@@ -62,6 +62,8 @@ def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path,
             "root-model",
             "--validation-report",
             str(report),
+            "--model-attestation",
+            "review.json",
             "--model-device",
             "cuda:0",
             "--model-dtype",
@@ -80,6 +82,7 @@ def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path,
     assert FakeRuntime.created_with is not None
     assert FakeRuntime.created_with.model_path == "root-model"
     assert FakeRuntime.created_with.validation_report_path == str(report)
+    assert FakeRuntime.created_with.model_attestation_path == "review.json"
     assert FakeRuntime.created_with.model_device == "cuda:0"
     assert FakeRuntime.created_with.model_dtype == "bfloat16"
     assert FakeRuntime.created_with.model_max_new_tokens == 321
@@ -100,6 +103,8 @@ def test_main_keeps_common_options_after_workspace(monkeypatch, tmp_path, capsys
             "workspace-tail-model",
             "--validation-report",
             str(report),
+            "--model-attestation",
+            "tail-review.json",
             "--once",
             "/status",
             "--timeout",
@@ -119,6 +124,7 @@ def test_main_keeps_common_options_after_workspace(monkeypatch, tmp_path, capsys
     assert FakeRuntime.created_with is not None
     assert FakeRuntime.created_with.model_path == "workspace-tail-model"
     assert FakeRuntime.created_with.validation_report_path == str(report)
+    assert FakeRuntime.created_with.model_attestation_path == "tail-review.json"
     assert FakeRuntime.created_with.once == "/status"
     assert FakeRuntime.created_with.command_timeout_seconds == 9
     assert FakeRuntime.created_with.auto_jit_index is True
@@ -293,6 +299,8 @@ def test_parser_keeps_code_subcommand_and_once_option():
             "google/gemma-e2b",
             "--validation-report",
             "report.json",
+            "--model-attestation",
+            "attestation.json",
             "--allow-unvalidated",
             "--once",
             "/status",
@@ -311,6 +319,7 @@ def test_parser_keeps_code_subcommand_and_once_option():
     assert args.workspace == "."
     assert args.model == "google/gemma-e2b"
     assert args.validation_report == "report.json"
+    assert args.model_attestation == "attestation.json"
     assert args.allow_unvalidated is True
     assert args.once == "/status"
     assert args.auto_jit_index is True

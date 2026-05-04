@@ -22,15 +22,19 @@ from chuk_lazarus.harness.model_config import (
 
 
 ATTESTATION_SCHEMA_NAME = "david.manual_model_attestation"
+LEGACY_ATTESTATION_SCHEMA_NAME = "david.model_attestation"
 ATTESTATION_SCHEMA_VERSION = 1
 STANDARD_DECODE_CAPABILITY = "standard_decode"
+REVIEW_REQUIRED_VALIDATION_STATUSES = frozenset({"needs_review", "review_required"})
 SUPPORTED_CAPABILITIES = frozenset({STANDARD_DECODE_CAPABILITY})
 DANGEROUS_CAPABILITIES = frozenset(
     {
         "kv_replay",
         "kv_direct",
+        "kv_direct_replay",
         "residual_replay",
         "residual_direct",
+        "residual_direct_replay",
         "tensor_replay",
     }
 )
@@ -78,6 +82,44 @@ class ManualModelAttestationResult:
     source_validation_status: str | None
     source_auto_load_allowed: bool | None
     adapter_metadata: AdapterSessionMetadata | None
+
+    @property
+    def standard_decode_allowed(self) -> bool:
+        """Whether this attestation may unlock standard decode only."""
+
+        return self.accepted and STANDARD_DECODE_CAPABILITY in self.allowed_capabilities
+
+    @property
+    def reason(self) -> str:
+        """Compatibility detail string for runtime boot errors."""
+
+        return self.compact_detail()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return stable JSON metadata for runtime/session writeback."""
+
+        return {
+            "accepted": self.accepted,
+            "standard_decode_allowed": self.standard_decode_allowed,
+            "reason": self.reason,
+            "reasons": list(self.reasons),
+            "attestation_path": str(self.attestation_path) if self.attestation_path else None,
+            "validation_report_path": str(self.validation_report_path)
+            if self.validation_report_path
+            else None,
+            "validation_report_sha256": self.validation_report_sha256,
+            "allowed_capabilities": list(self.allowed_capabilities),
+            "reviewer": self.reviewer,
+            "reviewed_at": self.reviewed_at,
+            "expires_at": self.expires_at,
+            "model_identity": self.model_identity,
+            "tokenizer_identity": self.tokenizer_identity,
+            "model_revision_or_hash": self.model_revision_or_hash,
+            "adapter_family": self.adapter_family,
+            "source_validation_status": self.source_validation_status,
+            "source_auto_load_allowed": self.source_auto_load_allowed,
+            "adapter_scope": self.adapter_scope(),
+        }
 
     def adapter_scope(self) -> dict[str, Any] | None:
         """Return the runtime compatibility scope when verification accepted."""
@@ -195,6 +237,34 @@ def verify_manual_model_attestation(
     )
 
 
+def verify_model_attestation(
+    attestation_path: str | Path,
+    *,
+    validation_report_path: str | Path | None,
+    model_path: str | Path | None = None,
+    now: datetime | None = None,
+) -> ManualModelAttestationResult:
+    """Compatibility wrapper used by the David runtime.
+
+    The attestation always binds to a validator report. ``model_path`` is
+    accepted for the runtime call site but the binding itself is against the
+    report digest, selected config, and identity scope.
+    """
+
+    del model_path
+    if validation_report_path is None:
+        return _rejected_result(
+            reasons=("validation_report_path is required for manual attestation",),
+            attestation_path=Path(attestation_path).expanduser(),
+            validation_report_path=None,
+        )
+    return verify_manual_model_attestation(
+        attestation_path=attestation_path,
+        validation_report_path=validation_report_path,
+        now=now,
+    )
+
+
 def verify_manual_model_attestation_data(
     attestation_data: Mapping[str, Any],
     *,
@@ -210,7 +280,7 @@ def verify_manual_model_attestation_data(
     validation_digest = _normalize_digest(validation_report_sha256)
     reasons: list[str] = []
 
-    if attestation.schema_name != ATTESTATION_SCHEMA_NAME:
+    if attestation.schema_name not in {ATTESTATION_SCHEMA_NAME, LEGACY_ATTESTATION_SCHEMA_NAME}:
         reasons.append(f"unsupported attestation schema {attestation.schema_name!r}")
     if attestation.schema_version != ATTESTATION_SCHEMA_VERSION:
         reasons.append(
@@ -232,6 +302,13 @@ def verify_manual_model_attestation_data(
         )
     except ModelConfigReportError as exc:
         reasons.append(f"validation report cannot be parsed: {exc}")
+    source_validation_status = _optional_str(validation_report.get("validation_status"))
+    source_auto_load_allowed = _optional_bool(validation_report.get("auto_load_allowed"))
+    if source_validation_status not in REVIEW_REQUIRED_VALIDATION_STATUSES:
+        reasons.append(
+            "manual attestation can only unlock review-required reports; "
+            f"validation_status is {source_validation_status!r}"
+        )
 
     selected_config = _mapping_or_none(validation_report.get("selected_config"))
     selected_config_dict = dict(selected_config) if selected_config is not None else None
@@ -267,8 +344,8 @@ def verify_manual_model_attestation_data(
         tokenizer_identity=actual_scope.get("tokenizer_identity"),
         model_revision_or_hash=actual_scope.get("model_revision_or_hash"),
         adapter_family=actual_scope.get("adapter_family"),
-        source_validation_status=_optional_str(validation_report.get("validation_status")),
-        source_auto_load_allowed=_optional_bool(validation_report.get("auto_load_allowed")),
+        source_validation_status=source_validation_status,
+        source_auto_load_allowed=source_auto_load_allowed,
         adapter_metadata=adapter_metadata if accepted else None,
     )
 
@@ -303,7 +380,13 @@ def _review_reasons(
         reasons.append("rationale is missing")
 
     reviewed_at = _parse_datetime(attestation.reviewed_at)
-    if attestation.reviewed_at is None:
+    if (
+        attestation.reviewed_at is None
+        and attestation.schema_name == LEGACY_ATTESTATION_SCHEMA_NAME
+        and _optional_str(attestation.raw.get("attestation_status")) == "manual_reviewed"
+    ):
+        pass
+    elif attestation.reviewed_at is None:
         reasons.append("reviewed_at is missing")
     elif reviewed_at is None:
         reasons.append("reviewed_at is not a valid ISO timestamp")
@@ -363,6 +446,12 @@ def _scope_reasons(
     }
     for field_name, expected_value in expected.items():
         actual_value = actual_scope.get(field_name)
+        if (
+            field_name == "adapter_family"
+            and not expected_value
+            and attestation.schema_name == LEGACY_ATTESTATION_SCHEMA_NAME
+        ):
+            continue
         if not expected_value:
             reasons.append(f"{field_name} is missing")
         elif not actual_value:

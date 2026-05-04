@@ -151,6 +151,33 @@ sequenceDiagram
   populated `HarnessSession`.
 - Local-only Transformers backend with fail-closed smoke coverage.
 
+### Manual-Reviewed Model Attestations
+
+`david doctor` can surface nearby `model_attestation.json` artifacts for
+operator-reviewed configs. This does not relax validator policy: an accepted
+validator report remains the auto-load path, while a manual attestation is
+standard decode only and unsafe KV/residual replay capabilities are refused.
+
+Example artifact shape:
+
+```json
+{
+  "schema_name": "david.manual_model_attestation",
+  "schema_version": 1,
+  "validation_report_sha256": "sha256:original-report-digest",
+  "model_identity": "google/gemma-4-E2B-it",
+  "tokenizer_identity": "google/gemma-4-E2B-it",
+  "model_revision_or_hash": "commit-or-hash",
+  "adapter_family": "gemma4",
+  "selected_config_sha256": "sha256:canonical-selected-config-digest",
+  "allowed_capabilities": ["standard_decode"],
+  "reviewer": "operator-id",
+  "reviewed_at": "2026-05-04T00:00:00Z",
+  "expires_at": "2026-06-04T00:00:00Z",
+  "rationale": "Reviewed validator ambiguity for standard decode only."
+}
+```
+
 ### Remaining Production Work
 
 - Run the real Gemma E2B local backend smoke on hardware with WSL

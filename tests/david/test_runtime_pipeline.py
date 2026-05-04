@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 from chuk_lazarus.david import runtime as runtime_module
@@ -15,7 +16,11 @@ from chuk_lazarus.david.model_backend import (
 from chuk_lazarus.david.routing import RoutePacket
 
 
-def _validation_report() -> dict[str, object]:
+def _validation_report(
+    *,
+    status: str = "accepted",
+    auto_load_allowed: bool = True,
+) -> dict[str, object]:
     selected_config = {
         "adapter_config_id": "gemma-runtime-layer-23",
         "route_layer": 11,
@@ -35,10 +40,10 @@ def _validation_report() -> dict[str, object]:
     return {
         "schema_name": "lazarus.model_config_validation_report",
         "schema_version": 1,
-        "validation_status": "accepted",
+        "validation_status": status,
         "confidence": "high",
         "validation_level": "behavioral",
-        "auto_load_allowed": True,
+        "auto_load_allowed": auto_load_allowed,
         "harness_load_policy": "auto",
         "selected_config": selected_config,
         "source_report_summary": {
@@ -593,6 +598,119 @@ def test_runtime_uses_validated_harness_adapter_for_prior_scope(tmp_path: Path) 
     assert result.decoder_prior["scope"]["model_id"] == "gemma-runtime-test"
 
 
+def test_runtime_uses_manual_reviewed_attestation_for_standard_decode_only(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    model_root = tmp_path / "model"
+    model_root.mkdir()
+    report_path = tmp_path / "needs-review.json"
+    report_path.write_text(
+        json.dumps(_validation_report(status="needs_review", auto_load_allowed=False)),
+        encoding="utf-8",
+    )
+    attestation_path = tmp_path / "attestation.json"
+    attestation_path.write_text(
+        json.dumps(_model_attestation(report_path=report_path, model_path=str(model_root))),
+        encoding="utf-8",
+    )
+
+    runtime = DavidRuntime.create(
+        DavidConfig(
+            workspace_root=workspace,
+            state_dir=tmp_path / "state",
+            model_path=str(model_root),
+            validation_report_path=str(report_path),
+            model_attestation_path=str(attestation_path),
+            require_validated_model=True,
+        )
+    )
+
+    assert not runtime.boot_errors
+    assert runtime.model_attestation is not None
+    assert runtime.model_attestation.standard_decode_allowed is True
+    assert runtime.model_attestation.to_dict()["adapter_scope"]["insertion_family"] == "kv_direct"
+    assert runtime.readiness()["model validation"] == (
+        "manual_reviewed (gemma:gemma-runtime-test; standard_decode_only)"
+    )
+    assert isinstance(runtime.backend, TransformersCausalLMBackend)
+    replay = runtime.backend.replay_consumer_capabilities(runtime.adapter)
+    assert replay is not None
+    assert replay.capabilities == ()
+    assert replay.metadata["supports_tensor_replay"] is False
+    assert getattr(runtime.harness_session, "validation_status") == "needs_review"
+
+
+def test_runtime_invalid_attestation_keeps_needs_review_report_offline(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    model_root = tmp_path / "model"
+    model_root.mkdir()
+    report_path = tmp_path / "needs-review.json"
+    report_path.write_text(
+        json.dumps(_validation_report(status="needs_review", auto_load_allowed=False)),
+        encoding="utf-8",
+    )
+    attestation_path = tmp_path / "bad-attestation.json"
+    attestation_path.write_text(
+        json.dumps(
+            {
+                **_model_attestation(report_path=report_path, model_path=str(model_root)),
+                "allowed_capabilities": ["standard_decode", "kv_direct_replay"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = DavidRuntime.create(
+        DavidConfig(
+            workspace_root=workspace,
+            state_dir=tmp_path / "state",
+            model_path=str(model_root),
+            validation_report_path=str(report_path),
+            model_attestation_path=str(attestation_path),
+            require_validated_model=True,
+        )
+    )
+
+    assert any("model attestation invalid" in error for error in runtime.boot_errors)
+    assert "kv_direct_replay" in runtime.readiness()["model validation"]
+    assert runtime.backend.name == "offline-deterministic"
+
+
+def test_runtime_allow_unvalidated_with_attestation_does_not_live_load(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    model_root = tmp_path / "model"
+    model_root.mkdir()
+    report_path = tmp_path / "needs-review.json"
+    report_path.write_text(
+        json.dumps(_validation_report(status="needs_review", auto_load_allowed=False)),
+        encoding="utf-8",
+    )
+    attestation_path = tmp_path / "attestation.json"
+    attestation_path.write_text(
+        json.dumps(_model_attestation(report_path=report_path, model_path=str(model_root))),
+        encoding="utf-8",
+    )
+
+    runtime = DavidRuntime.create(
+        DavidConfig(
+            workspace_root=workspace,
+            state_dir=tmp_path / "state",
+            model_path=str(model_root),
+            validation_report_path=str(report_path),
+            model_attestation_path=str(attestation_path),
+            require_validated_model=False,
+        )
+    )
+
+    assert runtime.boot_errors == []
+    assert runtime.model_attestation is not None
+    assert runtime.model_attestation.standard_decode_allowed is True
+    assert runtime.backend.name == "offline-deterministic"
+    assert runtime.readiness()["model validation"] == "needs_review (gemma:gemma-runtime-test)"
+
+
 def test_runtime_passes_model_execution_controls_to_validated_backend(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -635,3 +753,30 @@ def test_runtime_passes_model_execution_controls_to_validated_backend(tmp_path: 
     assert captured["max_new_tokens"] == 37
     assert result.model_result is not None
     assert result.model_result.text == "controlled answer"
+
+
+def _model_attestation(*, report_path: Path, model_path: str) -> dict[str, object]:
+    del model_path
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    selected_config = report["selected_config"]
+    return {
+        "schema_name": "david.manual_model_attestation",
+        "schema_version": 1,
+        "reviewer": "unit-test",
+        "reviewed_at": "2099-01-01T00:00:00Z",
+        "rationale": "reviewed ambiguous Gemma candidate for standard decode only",
+        "validation_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+        "selected_config_sha256": _canonical_sha256(selected_config),
+        "model_identity": "gemma-runtime-test",
+        "tokenizer_identity": "gemma-runtime-tokenizer",
+        "model_revision_or_hash": "runtime-rev",
+        "adapter_family": "gemma",
+        "allowed_capabilities": ["standard_decode"],
+    }
+
+
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()
