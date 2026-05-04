@@ -182,6 +182,62 @@ def _render_patch_action_guidance(method: str, selected_tests: Sequence[str], pa
     return "\n".join(lines)
 
 
+def _render_generation_route_guidance(product_route: ProductRoutePacket) -> str:
+    route_metadata = _product_route_runtime_metadata(product_route)
+    lines = [
+        "Product route context:",
+        f"- Method: {product_route.method}",
+        f"- Methodology: {product_route.methodology}",
+        f"- Capability: {product_route.capability}",
+        f"- Provenance proof rig: {product_route.proof_rig}",
+    ]
+    selected_paths = [
+        path
+        for path in route_metadata.get("selected_paths") or ()
+        if path and not is_protected_path(str(path))
+    ]
+    selected_tests = [
+        path
+        for path in route_metadata.get("selected_tests") or ()
+        if path and not is_protected_path(str(path))
+    ]
+    route_reasons = [str(reason) for reason in route_metadata.get("route_reasons") or () if reason]
+    protected_exclusions = route_metadata.get("protected_path_exclusions") or ()
+    provenance = route_metadata.get("provenance") or {}
+    lines.append(
+        "- Selected paths: "
+        + (", ".join(str(path) for path in selected_paths[:8]) if selected_paths else "none routed")
+    )
+    lines.append(
+        "- Selected tests: "
+        + (", ".join(str(path) for path in selected_tests[:4]) if selected_tests else "none routed")
+    )
+    if route_reasons:
+        lines.append("- Route reasons: " + " | ".join(route_reasons[:4]))
+    if protected_exclusions:
+        excluded_paths = [
+            str(item.get("path"))
+            for item in protected_exclusions
+            if isinstance(item, dict) and item.get("path")
+        ]
+        if excluded_paths:
+            lines.append("- Protected proof-rig exclusions: " + ", ".join(excluded_paths[:4]))
+    if isinstance(provenance, dict):
+        provenance_bits = [
+            f"{key}={provenance[key]}"
+            for key in ("router", "product_router", "methodology", "proof_rig")
+            if key in provenance
+        ]
+        if provenance_bits:
+            lines.append("- Route provenance: " + "; ".join(provenance_bits))
+    if product_route.method in {"repo_patch", "source_dependency"}:
+        lines.append(
+            "- Use selected paths and tests as first-class grounding for the answer; "
+            "keep edits and verification scoped to those hints unless evidence says otherwise."
+        )
+    return "\n".join(lines)
+
+
 def _protected_path_exclusions(product_route: ProductRoutePacket) -> list[dict[str, Any]]:
     exclusions: dict[str, dict[str, Any]] = {}
     for path, reasons in product_route.patch_rejected_paths.items():
@@ -1198,9 +1254,8 @@ class DavidRuntime:
             "You are David, a terminal coding agent operating inside the user's workspace.\n"
             "Use the routed methodology and evidence to produce the smallest useful next answer.\n"
             f"Task: {prompt}\n"
-            f"Methodology: {method}\n"
-            f"Capability: {product_route.capability}\n"
             f"Evidence count: {len(product_route.evidence)}\n"
+            f"{_render_generation_route_guidance(product_route)}\n"
             f"{context_block}"
             "Answer only in the response slot below. Do not repeat this prompt, labels, or instructions.\n"
             f"{DAVID_RESPONSE_SENTINEL}"

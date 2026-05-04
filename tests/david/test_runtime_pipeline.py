@@ -514,6 +514,56 @@ def test_runtime_generation_prompt_uses_production_response_slot(tmp_path: Path)
     assert result.model_result.text == "Ready."
 
 
+def test_runtime_generation_prompt_includes_product_route_guidance_and_selected_targets(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "service.py"
+    source.parent.mkdir()
+    source.write_text("def broken_service():\n    return None\n", encoding="utf-8")
+    test_file = tmp_path / "tests" / "test_service.py"
+    test_file.parent.mkdir()
+    test_file.write_text(
+        "from src.service import broken_service\n\n"
+        "def test_broken_service():\n"
+        "    assert broken_service() == 'fixed'\n",
+        encoding="utf-8",
+    )
+    runtime = DavidRuntime.create(
+        DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state", max_route_tokens=240)
+    )
+    captured: dict[str, object] = {}
+
+    class PromptCaptureBackend:
+        name = "product-route-prompt-capture"
+
+        def status(self) -> ModelBackendStatus:
+            return ModelBackendStatus(name=self.name, available=True, loaded=True)
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelBackendResult:
+            del kwargs
+            captured["prompt"] = prompt
+            return ModelBackendResult(text="Use the selected patch target and focused test.", backend=self.name)
+
+    runtime.backend = PromptCaptureBackend()
+
+    result = runtime.run_once("Fix the repo bug in src/service.py and run tests/test_service.py")
+
+    generation_prompt = str(captured["prompt"])
+    assert "Product route context:" in generation_prompt
+    assert "- Method: repo_patch" in generation_prompt
+    assert "- Methodology: patch_target" in generation_prompt
+    assert "- Capability: repo patch-target routing" in generation_prompt
+    assert "- Provenance proof rig: SWE-bench patch-target routing" in generation_prompt
+    assert "- Selected paths: src/service.py" in generation_prompt
+    assert "- Selected tests: tests/test_service.py" in generation_prompt
+    assert "Route provenance:" in generation_prompt
+    assert "Use selected paths and tests as first-class grounding" in generation_prompt
+    assert "Methodology: repo_patch" not in generation_prompt
+    assert result.model_result is not None
+    context_metadata = result.model_result.metadata["generation_context"]
+    assert context_metadata["methodology"] == "patch_target"
+    assert "src/service.py" in context_metadata["selected_paths"]
+    assert context_metadata["selected_tests"] == ["tests/test_service.py"]
+
+
 def test_runtime_generation_prompt_includes_bounded_routed_workspace_context(tmp_path: Path) -> None:
     source = tmp_path / "src" / "tiny.py"
     source.parent.mkdir()
