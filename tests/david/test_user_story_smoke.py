@@ -47,6 +47,54 @@ def test_david_code_once_status_uses_cli_main_on_tiny_repo(tmp_path: Path, capsy
     assert "index: missing" in output
 
 
+def test_david_bare_once_status_uses_current_workspace(tmp_path: Path, capsys, monkeypatch) -> None:
+    repo = _tiny_repo(tmp_path)
+    monkeypatch.chdir(repo)
+
+    rc = david_main(["--once", "/status", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "David terminal agent" in output
+    assert "David startup readiness" in output
+    assert f"workspace: {repo.resolve()}" in output
+
+
+def test_direct_product_commands_use_tiny_workspace(tmp_path: Path, capsys) -> None:
+    repo = _tiny_repo(tmp_path)
+    runtime = _runtime(repo)
+    runtime.run_once("Remember my preference: direct command smoke")
+    command = f'"{sys.executable}" -c "print(\'direct-verify-ok\')"'
+
+    assert david_main(["memory", str(repo), "--allow-unvalidated", "--no-color"]) == 0
+    memory_output = capsys.readouterr().out
+    assert "memory:" in memory_output
+    assert "user-default.jsonl" in memory_output
+    assert "task-default.jsonl" in memory_output
+
+    assert david_main(["resume", str(repo), "--allow-unvalidated", "--no-color"]) == 0
+    resume_output = capsys.readouterr().out
+    assert "David resume" in resume_output
+    assert "direct command smoke" in resume_output
+
+    assert david_main(["index", str(repo), "--build", "--allow-unvalidated", "--no-color"]) == 0
+    index_output = capsys.readouterr().out
+    assert "index: ready" in index_output
+    assert "source index:" in index_output
+    assert (repo / ".david" / "indexes").exists()
+
+    assert david_main(["verify", str(repo), "--cmd", command, "--allow-unvalidated", "--no-color"]) == 0
+    verify_output = capsys.readouterr().out
+    assert "rc=0" in verify_output
+    assert "direct-verify-ok" in verify_output
+
+    assert david_main(["capabilities"]) == 0
+    capabilities_output = capsys.readouterr().out
+    assert "David capabilities" in capabilities_output
+    assert "WIRED:" in capabilities_output
+    assert "verification command surface" in capabilities_output
+
+
 def test_index_jit_command_builds_tiny_repo_index_via_cli_main(tmp_path: Path, capsys) -> None:
     repo = _tiny_repo(tmp_path)
 
@@ -75,6 +123,48 @@ def test_agent_loop_command_writes_file_via_cli_main(tmp_path: Path, capsys) -> 
     assert "agent loop: verified steps=2 verified=True" in output
     assert "path=src/agent_loop_note.txt bytes=16" in output
     assert (repo / "src" / "agent_loop_note.txt").read_text(encoding="utf-8") == "loop wrote this\n"
+    assert (repo / ".david" / "memory" / "task-default.jsonl").exists()
+
+
+def test_agent_loop_strict_patch_then_verify_via_cli_main(tmp_path: Path, capsys) -> None:
+    repo = _tiny_repo(tmp_path)
+    payload = json.dumps(
+        [
+            {
+                "action": "patch",
+                "content": """src/session.py
+<<<< SEARCH
+def session_cleanup(user_id):
+    return None
+==== REPLACE
+def session_cleanup(user_id):
+    return True
+>>>>
+""",
+            },
+            {
+                "action": "verify",
+                "command": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; "
+                        "text = Path('src/session.py').read_text(encoding='utf-8'); "
+                        "assert 'return True' in text"
+                    ),
+                ],
+            },
+        ]
+    )
+
+    rc = david_main(["code", str(repo), "--once", f"/agent {payload}", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "agent loop: verified steps=2 verified=True" in output
+    assert "- 1: patch ok=True" in output
+    assert "- 2: verify ok=True rc=0" in output
+    assert "return True" in (repo / "src" / "session.py").read_text(encoding="utf-8")
     assert (repo / ".david" / "memory" / "task-default.jsonl").exists()
 
 
