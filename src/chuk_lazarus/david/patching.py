@@ -139,6 +139,8 @@ def apply_patch_candidate(workspace_root: str | Path, patch_text: str) -> PatchA
         return PatchApplyDiagnostic(
             mode="none", applied=False, failures=(f"workspace root does not exist: {root}",)
         )
+    if not (patch_text or "").strip():
+        return PatchApplyDiagnostic(mode="none", applied=False, failures=("empty patch content",))
     blocks = parse_strict_search_replace_blocks(patch_text)
     if blocks:
         return _apply_strict_blocks(root, blocks)
@@ -225,23 +227,43 @@ def _apply_strict_blocks(root: Path, blocks: tuple[StrictSearchReplaceBlock, ...
             block_count=len(blocks),
             protected_paths=tuple(protected),
         )
-    changed: list[str] = []
+    staged: dict[Path, tuple[str, str]] = {}
+    path_by_resolved: dict[Path, str] = {}
     for block in blocks:
         resolved, failure = _resolve_workspace_path(root, block.path)
         if failure:
             failures.append(f"block {block.block_index}: {failure}")
             continue
         assert resolved is not None
-        try:
-            content = resolved.read_text(encoding="utf-8")
-        except OSError as exc:
-            failures.append(f"block {block.block_index}: cannot read {block.path}: {exc}")
-            continue
+        if resolved in staged:
+            _original, content = staged[resolved]
+        else:
+            try:
+                content = resolved.read_text(encoding="utf-8")
+            except OSError as exc:
+                failures.append(f"block {block.block_index}: cannot read {block.path}: {exc}")
+                continue
+            staged[resolved] = (content, content)
+            path_by_resolved[resolved] = block.path
         if block.old not in content:
             failures.append(f"block {block.block_index}: SEARCH text not found in {block.path}")
             continue
-        resolved.write_text(content.replace(block.old, block.new, 1), encoding="utf-8")
-        changed.append(block.path)
+        original, _current = staged[resolved]
+        staged[resolved] = (original, content.replace(block.old, block.new, 1))
+    if failures:
+        return PatchApplyDiagnostic(
+            mode="strict_search_replace",
+            applied=False,
+            failures=tuple(failures),
+            block_count=len(blocks),
+            protected_paths=tuple(protected),
+        )
+    changed: list[str] = []
+    for resolved, (original, updated) in staged.items():
+        if updated == original:
+            continue
+        resolved.write_text(updated, encoding="utf-8")
+        changed.append(path_by_resolved[resolved])
     return PatchApplyDiagnostic(
         mode="strict_search_replace",
         applied=not failures and bool(changed),
@@ -264,6 +286,8 @@ def _apply_unified_diff(
             block_count=sum(len(item.hunks) for item in diff_files),
             protected_paths=tuple(protected),
         )
+    staged_writes: dict[Path, str] = {}
+    staged_deletes: dict[Path, str] = {}
     changed: list[str] = []
     for diff_file in diff_files:
         path = diff_file.target_path
@@ -272,28 +296,51 @@ def _apply_unified_diff(
             failures.append(f"{path}: {failure}")
             continue
         assert resolved is not None
-        original = ""
+        if resolved in staged_writes:
+            original = staged_writes[resolved]
+        else:
+            original = ""
         if diff_file.old_path != "/dev/null":
-            try:
-                original = resolved.read_text(encoding="utf-8")
-            except OSError as exc:
-                failures.append(f"{path}: cannot read: {exc}")
-                continue
+            if resolved not in staged_writes:
+                try:
+                    original = resolved.read_text(encoding="utf-8")
+                except OSError as exc:
+                    failures.append(f"{path}: cannot read: {exc}")
+                    continue
         try:
             updated = _apply_hunks_to_text(original, diff_file.hunks)
         except ValueError as exc:
             failures.append(f"{path}: {exc}")
             continue
         if diff_file.new_path == "/dev/null":
-            try:
-                resolved.unlink()
-            except OSError as exc:
-                failures.append(f"{path}: cannot delete: {exc}")
-                continue
+            staged_writes.pop(resolved, None)
+            staged_deletes[resolved] = path
         else:
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(updated, encoding="utf-8")
+            staged_deletes.pop(resolved, None)
+            staged_writes[resolved] = updated
         changed.append(path)
+    if failures:
+        return PatchApplyDiagnostic(
+            mode="unified_diff",
+            applied=False,
+            failures=tuple(failures),
+            block_count=sum(len(item.hunks) for item in diff_files),
+            protected_paths=tuple(protected),
+        )
+    for resolved, updated in staged_writes.items():
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_text(updated, encoding="utf-8")
+    for resolved, path in staged_deletes.items():
+        try:
+            resolved.unlink()
+        except OSError as exc:
+            return PatchApplyDiagnostic(
+                mode="unified_diff",
+                applied=False,
+                failures=(f"{path}: cannot delete: {exc}",),
+                block_count=sum(len(item.hunks) for item in diff_files),
+                protected_paths=tuple(protected),
+            )
     return PatchApplyDiagnostic(
         mode="unified_diff",
         applied=not failures and bool(changed),

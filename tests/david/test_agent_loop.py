@@ -6,7 +6,9 @@ import sys
 from chuk_lazarus.david.agent_loop import (
     parse_agent_action,
     plan_natural_language_fallback_actions,
+    render_model_action_prompt,
     run_agent_loop,
+    AgentLoopState,
 )
 from chuk_lazarus.david.tools import LocalTools
 
@@ -94,6 +96,97 @@ def test_agent_loop_writes_workspace_file(tmp_path: Path) -> None:
     assert result.status == "no_action"
     assert (tmp_path / "src" / "new.py").read_text(encoding="utf-8") == "VALUE = 42\n"
     assert result.trace[0].observation["bytes"] == len("VALUE = 42\n")
+
+
+def test_agent_loop_applies_strict_patch_then_verifies(tmp_path: Path) -> None:
+    target = tmp_path / "src" / "example.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    result = run_agent_loop(
+        [
+            {
+                "action": "patch",
+                "content": """src/example.py
+<<<< SEARCH
+VALUE = 1
+==== REPLACE
+VALUE = 2
+>>>>
+""",
+            },
+            {
+                "action": "verify",
+                "command": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; "
+                        "raise SystemExit(0 if Path('src/example.py').read_text(encoding='utf-8') == 'VALUE = 2\\n' else 1)"
+                    ),
+                ],
+            },
+        ],
+        LocalTools(tmp_path),
+    )
+
+    assert result.status == "verified"
+    assert result.trace[0].action == "patch"
+    assert result.trace[0].ok is True
+    assert result.trace[0].observation["mode"] == "strict_search_replace"
+    assert result.trace[0].observation["changed_paths"] == ["src/example.py"]
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_agent_loop_refuses_protected_patch_path(tmp_path: Path) -> None:
+    target = tmp_path / "scripts" / "run_swebench_pro_parity.py"
+    target.parent.mkdir()
+    target.write_text("old\n", encoding="utf-8")
+
+    result = run_agent_loop(
+        [
+            {
+                "action": "patch",
+                "content": """scripts/run_swebench_pro_parity.py
+<<<< SEARCH
+old
+==== REPLACE
+new
+>>>>
+""",
+            },
+        ],
+        LocalTools(tmp_path),
+    )
+
+    assert result.status == "refused"
+    assert result.trace[0].action == "patch"
+    assert result.trace[0].ok is False
+    assert result.trace[0].observation["protected_paths"] == ["scripts/run_swebench_pro_parity.py"]
+    assert any("protected proof-rig" in failure for failure in result.trace[0].observation["failures"])
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_agent_loop_refuses_empty_patch_content(tmp_path: Path) -> None:
+    result = run_agent_loop([{"action": "patch", "content": "  \n"}], LocalTools(tmp_path))
+
+    assert result.status == "refused"
+    assert "patch requires non-empty content" in result.reason
+
+
+def test_model_action_prompt_includes_patch_schema() -> None:
+    prompt = render_model_action_prompt(
+        AgentLoopState(
+            workspace_root="/workspace",
+            step=1,
+            max_steps=3,
+            objective="fix repo bug",
+        )
+    )
+
+    assert "read -> patch -> verify" in prompt
+    assert "patch|write" in prompt
+    assert "command as an array" in prompt
 
 
 def test_agent_loop_runs_shell_command(tmp_path: Path) -> None:

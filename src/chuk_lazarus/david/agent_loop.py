@@ -12,6 +12,7 @@ import subprocess
 import sys
 from typing import Any, Callable
 
+from .patching import apply_patch_candidate
 from .tools import LocalTools, PathSafetyError
 
 
@@ -100,7 +101,7 @@ class AgentLoopError(ValueError):
 
 JSON_BLOCK_RE = re.compile(r"```(?:json|tool|action)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 ACTION_JSON_SENTINEL = "David action JSON:"
-ALLOWED_ACTIONS = {"plan", "read", "write", "run", "shell", "verify", "done", "none", "no_action"}
+ALLOWED_ACTIONS = {"plan", "read", "patch", "write", "run", "shell", "verify", "done", "none", "no_action"}
 WRITE_CONTENT_RE = re.compile(r"\b(?:that\s+says|with\s+content|containing|contents?\s*:)\b", re.IGNORECASE)
 OPTIONAL_RUN_RE = re.compile(r"\b(?:then|and)\s+run\s+(.+)$", re.IGNORECASE | re.DOTALL)
 QUOTED_OR_TOKEN_RE = r"`[^`]+`|\"[^\"]+\"|'[^']+'|[^\s]+"
@@ -208,6 +209,8 @@ def run_agent_loop(
 
         if not step_trace.ok and step_trace.action == "refuse":
             return AgentLoopResult("refused", index, tuple(trace), reason=str(step_trace.observation.get("error", "")))
+        if not step_trace.ok and step_trace.action == "patch":
+            return AgentLoopResult("refused", index, tuple(trace), reason="patch failed")
         if step_trace.action == "verify":
             passed = bool(step_trace.observation.get("passed"))
             if passed:
@@ -306,12 +309,13 @@ def render_model_action_prompt(state: AgentLoopState) -> str:
     return (
         "You are David's terminal coding-agent action planner.\n"
         f"Return exactly one JSON object after the label `{ACTION_JSON_SENTINEL}` and no prose.\n"
-        "Allowed actions: plan, read, write, run, shell, verify, done, none.\n"
+        "Allowed actions: plan, read, patch, write, run, shell, verify, done, none.\n"
         "Use run/shell only with command as an array of arguments, never a shell string.\n"
         "Use relative workspace paths only. Do not request deletion or path escapes.\n"
+        "For repo fixes, prefer read -> patch -> verify. Use patch content for strict search/replace blocks or unified diff text.\n"
         "Prefer read/plan before write. Verify with passed or a command array when work is complete.\n"
         f"{ACTION_JSON_SENTINEL} "
-        '{"action":"plan|read|write|run|verify|done|none","path":"relative/path",'
+        '{"action":"plan|read|patch|write|run|verify|done|none","path":"relative/path",'
         '"content":"text","command":["program","arg"],"cwd":".","timeout":30,'
         '"passed":true,"reason":"short reason"}\n'
         f"Workspace: {state.workspace_root}\n"
@@ -353,6 +357,17 @@ def execute_agent_action(
                 "write",
                 True,
                 {"path": action.path, "bytes": len(action.content.encode("utf-8")), "resolved": str(target)},
+                {"raw": raw, "action": action.to_dict()},
+            )
+        if action.action == "patch":
+            if action.content is None or not action.content.strip():
+                raise AgentLoopError("patch requires non-empty content")
+            diagnostic = apply_patch_candidate(tools.workspace_root, action.content)
+            return _trace(
+                step,
+                "patch",
+                diagnostic.ok,
+                diagnostic.to_dict(),
                 {"raw": raw, "action": action.to_dict()},
             )
         if action.action in {"run", "shell"}:
