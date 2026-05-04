@@ -168,7 +168,11 @@ class TransformersCausalLMBackend:
             return ModelBackendResult(
                 text=_apply_stop(text, stop),
                 backend=self.name,
-                metadata=self._metadata(),
+                metadata={
+                    **self._metadata(),
+                    "max_new_tokens": max_new_tokens,
+                    "stop_count": len(stop or ()),
+                },
             )
         except Exception as exc:  # pragma: no cover - defensive fail-close path
             return ModelBackendResult(
