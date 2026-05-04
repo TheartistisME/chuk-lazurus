@@ -8,16 +8,26 @@ from pathlib import Path
 import subprocess
 from typing import Any, Sequence
 
-from .config import DavidConfig
+from .config import AdapterSessionMetadata, DavidConfig
 from .decoder import DecoderController, DecoderPlan
+from .decoder_prior_store import DecoderPriorProductStore, DecoderPriorScope
 from .indexing import IndexReadiness, WorkspaceIndex
 from .materializer import MaterializedContext, Materializer
 from .memory import JsonlMemoryStore, MemoryBank
+from .model_backend import ModelBackend, ModelBackendResult, OfflineModelBackend, TransformersCausalLMBackend
 from .patch_routing import DOC_SUFFIXES, SOURCE_SUFFIXES, is_protected_path, route_patch_targets
 from .patching import PatchApplyDiagnostic, apply_patch_candidate, validate_patch_candidate
+from .product_router import ProductRoutePacket, ProductRouter
+from .resume import SessionSnapshot, load_session_snapshot, save_session_snapshot, summarize_result
 from .routing import CentralRouter, MethodDetector, RoutePacket
+from .source_index import SourceIndexManifest, build_source_index, load_source_index, save_source_index
 from .tools import LocalTools
 from .verifier import VerificationResult, Verifier
+
+try:
+    from chuk_lazarus.harness.boot import boot_harness
+except ImportError:  # pragma: no cover - only used if harness package is unavailable.
+    boot_harness = None
 
 
 @dataclass(frozen=True)
@@ -31,9 +41,15 @@ class RuntimeResult:
     decoder: DecoderPlan
     verification: VerificationResult
     writeback: dict[str, Any]
+    product_route: ProductRoutePacket | None = None
+    model_result: ModelBackendResult | None = None
+    source_index: dict[str, Any] | None = None
+    decoder_prior: dict[str, Any] | None = None
+    resume_snapshot: dict[str, Any] | None = None
+    harness_session: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        data = {
             "prompt": self.prompt,
             "method": self.method,
             "answer": self.answer,
@@ -59,22 +75,52 @@ class RuntimeResult:
             "verification": self.verification.to_json(),
             "writeback": self.writeback,
         }
+        if self.product_route is not None:
+            data["product_route"] = self.product_route.to_json()
+        if self.model_result is not None:
+            data["model_result"] = {
+                "text": self.model_result.text,
+                "backend": self.model_result.backend,
+                "ok": self.model_result.ok,
+                "error": self.model_result.error,
+                "metadata": self.model_result.metadata,
+            }
+        if self.source_index is not None:
+            data["source_index"] = self.source_index
+        if self.decoder_prior is not None:
+            data["decoder_prior"] = self.decoder_prior
+        if self.resume_snapshot is not None:
+            data["resume_snapshot"] = self.resume_snapshot
+        if self.harness_session is not None:
+            data["harness_session"] = self.harness_session
+        return data
 
 
 class DavidRuntime:
     def __init__(self, config: DavidConfig) -> None:
         self.config = config
-        self.index = WorkspaceIndex(config.workspace_root, config.index_manifest_path, config.adapter)
+        self.boot_errors: list[str] = []
+        self.harness_session = self._boot_session()
+        self.adapter = self._adapter_from_harness() or config.adapter
+        self.index = WorkspaceIndex(config.workspace_root, self._index_manifest_path(), self.adapter)
         self.memory = MemoryBank(
             JsonlMemoryStore(config.user_memory_path, "user"),
             JsonlMemoryStore(config.task_memory_path, "task"),
         )
         self.detector = MethodDetector()
         self.router = CentralRouter()
+        self.product_router = ProductRouter(router=self.router, detector=self.detector)
         self.materializer = Materializer()
         self.decoder = DecoderController()
         self.tools = LocalTools(config.workspace_root)
         self.verifier = Verifier(self.tools)
+        self.backend = self._create_backend()
+        self.source_index_path = config.state_dir / "indexes" / f"{self._adapter_file_stem()}-source.json"
+        self.decoder_prior_path = config.state_dir / "decoder_priors.json"
+        self.decoder_prior_store = DecoderPriorProductStore.load(self.decoder_prior_path)
+        self.resume_path = config.state_dir / "resume.json"
+        self.resume_snapshot = self._load_resume_snapshot()
+        self.auto_jit_summary = self.jit_index() if self.config.auto_jit_index else None
 
     @classmethod
     def create(cls, config: DavidConfig) -> "DavidRuntime":
@@ -85,9 +131,11 @@ class DavidRuntime:
         if readiness.required and self.config.auto_jit_index:
             self.index.jit()
             readiness = self.index.check()
+        source_index = self._ensure_source_index() if self.config.auto_jit_index else self._loaded_source_index()
 
         method = self.detector.detect(prompt)
-        evidence = self._recall(method, prompt)
+        workspace_files = self._workspace_text_files() if method in {"repo_patch", "source_dependency"} else {}
+        evidence = self._recall(method, prompt, workspace_files=workspace_files)
         route = self.router.route(
             method=method,
             prompt=prompt,
@@ -95,10 +143,22 @@ class DavidRuntime:
             evidence=evidence,
             max_tokens=self.config.max_route_tokens,
         )
-        materialized = self.materializer.materialize(route, self.config.adapter)
-        decoder = self.decoder.plan(route=route, adapter=self.config.adapter, session_id=self.config.session_id)
+        product_route = self.product_router.route(
+            prompt,
+            session_id=self.config.session_id,
+            evidence=evidence,
+            files=workspace_files or None,
+            method=method,
+            max_tokens=self.config.max_route_tokens,
+        )
+        materialized = self.materializer.materialize(route, self.adapter)
+        decoder = self.decoder.plan(route=route, adapter=self.adapter, session_id=self.config.session_id)
         verification = self.verifier.verify(capability=method, evidence=evidence, command=verify_command if method == "verify" else None)
-        answer = self._answer(prompt, method, readiness, route, materialized, verification)
+        model_result = self._generate(prompt, method, product_route)
+        answer = model_result.text if self.config.model_path and model_result.ok and model_result.text else self._answer(
+            prompt, method, readiness, route, materialized, verification, model_result
+        )
+        decoder_prior = self._update_decoder_prior(method, decoder, verification)
         artifact = self.memory.writeback(
             method=method,
             user_id=self.config.user_id,
@@ -107,11 +167,19 @@ class DavidRuntime:
             metadata={
                 "provenance": "david.runtime.run_once",
                 "route": route.to_json(),
+                "product_route": product_route.to_json(),
                 "verification": verification.to_json(),
                 "decoder_prior_scope": decoder.prior_scope,
+                "decoder_prior": decoder_prior,
+                "harness_session_id": getattr(self.harness_session, "session_id", None),
+                "backend": {
+                    "name": model_result.backend,
+                    "ok": model_result.ok,
+                    "error": model_result.error,
+                },
             },
         )
-        return RuntimeResult(
+        result = RuntimeResult(
             prompt=prompt,
             method=method,
             answer=answer,
@@ -121,14 +189,31 @@ class DavidRuntime:
             decoder=decoder,
             verification=verification,
             writeback=artifact.to_json(),
+            product_route=product_route,
+            model_result=model_result,
+            source_index=source_index.to_json() if source_index is not None else None,
+            decoder_prior=decoder_prior,
+            harness_session=self._harness_session_json(),
+        )
+        snapshot = self._save_resume_snapshot(result)
+        return RuntimeResult(
+            **{
+                **result.__dict__,
+                "resume_snapshot": snapshot.to_json(),
+            }
         )
 
     def readiness(self) -> dict[str, str]:
         index = self.index.check()
+        backend = self.backend.status()
+        source = self._loaded_source_index()
         return {
-            "model validation": f"ready ({self.config.adapter.adapter_family}:{self.config.adapter.model_id})",
+            "model validation": self._model_validation_status(),
+            "backend": f"{backend.name}: {'loaded' if backend.loaded else backend.reason}",
             "index": "ready" if index.ready else f"missing: {index.reason}",
+            "source index": "ready" if source is not None else "missing",
             "memory": self._memory_readiness(),
+            "resume": "ready" if self.resume_snapshot is not None else "missing",
             "workspace": str(self.config.workspace_root),
         }
 
@@ -143,9 +228,15 @@ class DavidRuntime:
 
     def index_status(self) -> str:
         readiness = self.index.check()
+        source = self._loaded_source_index()
+        source_line = (
+            f"source index: ready at {self.source_index_path} ({len(source.files)} files)"
+            if source is not None
+            else f"source index: missing at {self.source_index_path}"
+        )
         if readiness.ready:
-            return f"index: ready at {readiness.manifest_path}"
-        return f"index: {readiness.reason}\nplan: {readiness.jit_plan}"
+            return f"index: ready at {readiness.manifest_path}\n{source_line}"
+        return f"index: {readiness.reason}\nplan: {readiness.jit_plan}\n{source_line}"
 
     def verify(self, command: str | None = None) -> str:
         command = command or getattr(self.config, "verify_command", None)
@@ -154,6 +245,21 @@ class DavidRuntime:
             return result.answer
         shell = self.run_shell(command)
         return shell
+
+    def jit_index(self) -> str:
+        self.index.jit()
+        readiness = self.index.check()
+        source = self._ensure_source_index()
+        return (
+            f"index: {'ready' if readiness.ready else readiness.reason} at {readiness.manifest_path}\n"
+            f"source index: {len(source.files)} files at {self.source_index_path}"
+        )
+
+    def build_index(self) -> str:
+        return self.jit_index()
+
+    def refresh_index(self) -> str:
+        return self.jit_index()
 
     def run_shell(self, command: str) -> str:
         completed = subprocess.run(
@@ -184,7 +290,13 @@ class DavidRuntime:
         written = self.tools.write(path, content)
         return f"wrote {written.relative_to(self.config.workspace_root)}"
 
-    def _recall(self, method: str, prompt: str) -> list[dict[str, Any]]:
+    def _recall(
+        self,
+        method: str,
+        prompt: str,
+        *,
+        workspace_files: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
         if method == "symbolic_multi_hop":
             return self.memory.symbolic_chain(prompt)
         if method == "temporal_recall":
@@ -192,11 +304,16 @@ class DavidRuntime:
             return [latest] if latest else []
         evidence = self.memory.recall_for_method(method, prompt)
         if method in {"repo_patch", "source_dependency"}:
-            evidence = [*evidence, *self._workspace_route_evidence(prompt)]
+            evidence = [*evidence, *self._workspace_route_evidence(prompt, workspace_files=workspace_files)]
         return evidence
 
-    def _workspace_route_evidence(self, prompt: str) -> list[dict[str, Any]]:
-        files = self._workspace_text_files()
+    def _workspace_route_evidence(
+        self,
+        prompt: str,
+        *,
+        workspace_files: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
+        files = workspace_files if workspace_files is not None else self._workspace_text_files()
         if not files:
             return []
         plan = route_patch_targets(prompt, files=files, limit=8)
@@ -279,6 +396,155 @@ class DavidRuntime:
             missing.append("task")
         return "missing: " + ", ".join(missing)
 
+    def _boot_session(self) -> Any | None:
+        if boot_harness is None:
+            self.boot_errors.append("harness boot module unavailable")
+            return None
+        if not (self.config.model_path or self.config.validation_report_path):
+            return None
+        try:
+            return boot_harness(
+                model_path=self.config.model_path or "offline-deterministic",
+                workspace_path=str(self.config.workspace_root),
+                validation_report_path=self.config.validation_report_path,
+                require_validated_model=self.config.require_validated_model,
+            )
+        except Exception as exc:
+            self.boot_errors.append(f"{type(exc).__name__}: {exc}")
+            return None
+
+    def _adapter_from_harness(self) -> AdapterSessionMetadata | None:
+        session = self.harness_session
+        model_adapter = getattr(session, "model_adapter", None)
+        if model_adapter is None:
+            return None
+        return AdapterSessionMetadata(
+            model_id=str(model_adapter.model_identity),
+            tokenizer_id=str(model_adapter.tokenizer_identity),
+            model_revision=str(model_adapter.model_revision or "validated"),
+            adapter_family=str(model_adapter.adapter_family),
+            hidden_size=model_adapter.hidden_size,
+            route_layer=model_adapter.route_layer_candidate,
+            route_query_head=model_adapter.route_query_head_candidate,
+            boundary_layer=model_adapter.boundary_layer_candidate,
+            kv_source_layer=model_adapter.kv_source_layer_candidate,
+            kv_target_layer=model_adapter.kv_target_layer_candidate,
+            insertion_family=str(model_adapter.insertion_family or "text_only"),
+            memory_family="david-runtime",
+        )
+
+    def _create_backend(self) -> ModelBackend:
+        can_auto_load = bool(getattr(self.harness_session, "can_auto_load", False))
+        if self.config.model_path and can_auto_load and not self.boot_errors:
+            return TransformersCausalLMBackend(self.config.model_path, local_files_only=True)
+        return OfflineModelBackend(prefix="david")
+
+    def _model_validation_status(self) -> str:
+        if self.boot_errors:
+            return "blocked: " + "; ".join(self.boot_errors)
+        if self.harness_session is not None:
+            status = getattr(self.harness_session, "validation_status", None) or "unknown"
+            return f"{status} ({self.adapter.adapter_family}:{self.adapter.model_id})"
+        return f"offline shell mode ({self.adapter.adapter_family}:{self.adapter.model_id})"
+
+    def _index_manifest_path(self) -> Path:
+        return self.config.state_dir / "indexes" / f"{self._adapter_file_stem()}.json"
+
+    def _adapter_file_stem(self) -> str:
+        safe_model = self.adapter.model_id.replace("/", "_").replace("\\", "_")
+        safe_revision = self.adapter.model_revision.replace("/", "_").replace("\\", "_")
+        return f"{safe_model}-{safe_revision}"
+
+    def _loaded_source_index(self) -> SourceIndexManifest | None:
+        try:
+            return load_source_index(self.source_index_path)
+        except (OSError, ValueError):
+            return None
+
+    def _ensure_source_index(self) -> SourceIndexManifest:
+        existing = self._loaded_source_index()
+        if existing is not None and existing.adapter_scope == self.adapter.scope():
+            return existing
+        manifest = build_source_index(
+            self.config.workspace_root,
+            self.adapter.scope(),
+            max_files=120,
+            max_file_bytes=128_000,
+        )
+        return save_source_index(self.source_index_path, manifest)
+
+    def _load_resume_snapshot(self) -> SessionSnapshot | None:
+        try:
+            return load_session_snapshot(self.resume_path)
+        except (OSError, ValueError):
+            return None
+
+    def _save_resume_snapshot(self, result: RuntimeResult) -> SessionSnapshot:
+        snapshot = SessionSnapshot(
+            session_id=self.config.session_id,
+            workspace=str(self.config.workspace_root),
+            adapter_scope=self.adapter.scope(),
+            memory_paths={
+                "user": str(self.config.user_memory_path),
+                "task": str(self.config.task_memory_path),
+                "decoder_prior": str(self.decoder_prior_path),
+                "source_index": str(self.source_index_path),
+            },
+            last_result_summary=summarize_result(result),
+        )
+        self.resume_snapshot = save_session_snapshot(snapshot, self.resume_path)
+        return self.resume_snapshot
+
+    def _generate(
+        self,
+        prompt: str,
+        method: str,
+        product_route: ProductRoutePacket,
+    ) -> ModelBackendResult:
+        generation_prompt = (
+            f"Task: {prompt}\n"
+            f"Method: {method}\n"
+            f"Capability: {product_route.capability}\n"
+            f"Evidence count: {len(product_route.evidence)}\n"
+            "Respond with the next concise coding-agent action."
+        )
+        return self.backend.generate(generation_prompt, max_new_tokens=160)
+
+    def _update_decoder_prior(
+        self,
+        method: str,
+        decoder: DecoderPlan,
+        verification: VerificationResult,
+    ) -> dict[str, Any]:
+        layer = self.adapter.kv_target_layer or self.adapter.boundary_layer or self.adapter.route_layer or 0
+        scope = DecoderPriorScope(
+            model_id=self.adapter.model_id,
+            tokenizer_id=self.adapter.tokenizer_id,
+            adapter_family=self.adapter.adapter_family,
+            layer=int(layer),
+            task_type=method,
+            steering_version="david-decoder-v1",
+            model_revision=self.adapter.model_revision,
+            adapter_config_id=str(decoder.prior_scope.get("adapter_config_id") or ""),
+            insertion_family=self.adapter.insertion_family,
+        )
+        record = self.decoder_prior_store.update(
+            scope,
+            accepted=verification.ok,
+            steering_applied=bool(decoder.constraints),
+        )
+        self.decoder_prior_store.save()
+        return record.to_json()
+
+    def _harness_session_json(self) -> dict[str, Any] | None:
+        if self.harness_session is None:
+            return None
+        if hasattr(self.harness_session, "to_dict"):
+            return self.harness_session.to_dict()
+        if hasattr(self.harness_session, "__dict__"):
+            return dict(self.harness_session.__dict__)
+        return {"repr": repr(self.harness_session)}
+
     def _answer(
         self,
         prompt: str,
@@ -287,6 +553,7 @@ class DavidRuntime:
         route: RoutePacket,
         materialized: MaterializedContext,
         verification: VerificationResult,
+        model_result: ModelBackendResult | None = None,
     ) -> str:
         parts = [f"method={method}", f"tier={route.tier}", f"evidence={len(route.evidence)}"]
         if readiness.required:
@@ -295,6 +562,8 @@ class DavidRuntime:
             parts.append(f"materializer_refused={materialized.reason}")
         if method == "verify":
             parts.append(f"verification={'passed' if verification.ok else 'failed'}")
+        if model_result is not None and not model_result.ok:
+            parts.append(f"backend_blocked={model_result.error}")
         if self.config.model_tool_protocol:
             parts.append("tool_protocol=available")
         parts.append(f"summary={prompt[:120]}")
