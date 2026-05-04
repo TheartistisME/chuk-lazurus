@@ -895,6 +895,114 @@ def test_doctor_command_prints_report_without_runtime(monkeypatch, tmp_path, cap
     assert "validation report: missing: no report" in output
 
 
+def test_doctor_command_uses_workspace_config_defaults(monkeypatch, tmp_path, capsys):
+    FakeRuntime.created_with = None
+    calls = []
+    workspace = tmp_path / "workspace"
+    model = workspace / "models" / "gemma"
+    workspace_config = workspace / ".david" / "config.json"
+    workspace_config.parent.mkdir(parents=True)
+    model.mkdir(parents=True)
+    workspace_config.write_text(
+        json.dumps(
+            {
+                "model": "models/gemma",
+                "validation_report": "reports/validation.json",
+                "model_attestation": "review/attestation.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_doctor(**kwargs):
+        calls.append(kwargs)
+        return DavidDoctorReport(
+            model=kwargs["model"],
+            workspace_path=workspace.resolve(),
+            checks=(DoctorCheck("validation report", "ready", "config default"),),
+            validation_discovery=ValidationReportDiscovery(
+                path=Path(kwargs["validation_report"]),
+                checked_paths=(),
+            ),
+        )
+
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    monkeypatch.setattr(cli, "run_doctor", fake_doctor)
+
+    rc = cli.main(["doctor", "--workspace", str(workspace)])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is None
+    assert calls == [
+        {
+            "model": str(model),
+            "workspace_path": workspace,
+            "validation_report": str(workspace / "reports" / "validation.json"),
+            "attestation_path": str(workspace / "review" / "attestation.json"),
+            "auto_validate_model": False,
+        }
+    ]
+    assert "validation report: ready: config default" in capsys.readouterr().out
+
+
+def test_doctor_command_cli_flags_override_workspace_config(monkeypatch, tmp_path):
+    FakeRuntime.created_with = None
+    calls = []
+    workspace_config = tmp_path / ".david" / "config.json"
+    workspace_config.parent.mkdir(parents=True)
+    workspace_config.write_text(
+        json.dumps(
+            {
+                "model": "config-model",
+                "validation_report": "config-report.json",
+                "model_attestation": "config-attestation.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_doctor(**kwargs):
+        calls.append(kwargs)
+        return DavidDoctorReport(
+            model=kwargs["model"],
+            workspace_path=tmp_path.resolve(),
+            checks=(DoctorCheck("validation report", "ready", "explicit"),),
+            validation_discovery=ValidationReportDiscovery(
+                path=Path(kwargs["validation_report"]),
+                checked_paths=(),
+            ),
+        )
+
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    monkeypatch.setattr(cli, "run_doctor", fake_doctor)
+
+    rc = cli.main(
+        [
+            "doctor",
+            "--workspace",
+            str(tmp_path),
+            "--model",
+            "cli-model",
+            "--validation-report",
+            "cli-report.json",
+            "--model-attestation",
+            "cli-attestation.json",
+        ]
+    )
+
+    assert rc == 0
+    assert FakeRuntime.created_with is None
+    assert calls == [
+        {
+            "model": "cli-model",
+            "workspace_path": tmp_path,
+            "validation_report": "cli-report.json",
+            "attestation_path": "cli-attestation.json",
+            "auto_validate_model": False,
+        }
+    ]
+
+
 def test_parser_adds_explicit_model_validate_command():
     parser = cli.build_parser()
 

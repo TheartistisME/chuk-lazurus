@@ -265,7 +265,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv_list)
     if getattr(args, "command", None) == "doctor":
-        _apply_operator_defaults(args)
+        explicit_args = _explicit_common_args(argv_list)
+        workspace_path = Path(args.workspace)
+        workspace_defaults = _load_workspace_config_defaults(workspace_path)
+        if isinstance(workspace_defaults, WorkspaceConfigError):
+            _write_workspace_config_error(workspace_defaults)
+            return 2
+        _apply_workspace_config_defaults(args, workspace_path, workspace_defaults, explicit_args)
+        _apply_operator_defaults(args, explicit_args=explicit_args)
         return _run_doctor_command(args)
     if getattr(args, "command", None) == "model":
         return _run_model_command(args)
