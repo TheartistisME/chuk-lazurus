@@ -23,6 +23,7 @@ from .model_validation import (
     run_model_validate,
 )
 from .model_onboarding import ModelOnboardingResult, onboard_model
+from .resume import default_resume_path, format_resume_status, load_session_snapshot_status
 from .tui import DavidTui
 from .workspace_init import WorkspaceInitError, WorkspaceInitResult, initialize_workspace
 
@@ -520,9 +521,22 @@ def _run_memory_command(runtime: Any) -> int:
 
 
 def _run_resume_command(args: argparse.Namespace, runtime: Any) -> int:
-    text = DavidTui(runtime, color=not args.no_color).format_resume()
-    _write_command_text(text)
+    status = load_session_snapshot_status(_resume_path_for_cli(args, runtime))
+    _write_command_text(format_resume_status(status))
     return 0
+
+
+def _resume_path_for_cli(args: argparse.Namespace, runtime: Any) -> Path:
+    runtime_path = getattr(runtime, "resume_path", None)
+    if runtime_path is not None:
+        return Path(runtime_path)
+
+    config = getattr(runtime, "config", None)
+    for name in ("workspace_path", "workspace_root"):
+        workspace_path = getattr(config, name, None)
+        if workspace_path is not None:
+            return default_resume_path(Path(workspace_path))
+    return default_resume_path(Path(args.workspace))
 
 
 def _run_builtin_verify(runtime: Any, *, patch: bool = False) -> str:

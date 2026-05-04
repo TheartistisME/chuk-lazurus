@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from chuk_lazarus.david.resume import (
     SessionSnapshot,
     compact_summary,
     default_resume_path,
     format_resume_snapshot,
+    format_resume_status,
     load_session_snapshot,
+    load_session_snapshot_status,
     save_session_snapshot,
     summarize_result,
 )
@@ -37,12 +37,55 @@ def test_resume_snapshot_missing_file_returns_none(tmp_path: Path) -> None:
     assert load_session_snapshot(tmp_path / ".david" / "resume.json") is None
 
 
-def test_resume_snapshot_rejects_unknown_schema(tmp_path: Path) -> None:
+def test_resume_snapshot_status_reports_missing_file(tmp_path: Path) -> None:
+    path = tmp_path / ".david" / "resume.json"
+
+    status = load_session_snapshot_status(path)
+
+    assert status.state == "missing"
+    assert status.snapshot is None
+    assert format_resume_status(status) == "David resume\n- status: no saved session"
+
+
+def test_resume_snapshot_status_reports_corrupt_json(tmp_path: Path) -> None:
+    path = tmp_path / "resume.json"
+    path.write_text('{"schema": ', encoding="utf-8")
+
+    assert load_session_snapshot(path) is None
+    status = load_session_snapshot_status(path)
+    text = format_resume_status(status)
+
+    assert status.state == "corrupt"
+    assert status.snapshot is None
+    assert "invalid JSON at line 1, column 12" in status.message
+    assert "status: corrupt saved session" in text
+    assert str(path) in text
+    assert "invalid JSON" in text
+
+
+def test_resume_snapshot_status_reports_unreadable_file(tmp_path: Path) -> None:
+    path = tmp_path / "resume.json"
+    path.mkdir()
+
+    assert load_session_snapshot(path) is None
+    status = load_session_snapshot_status(path)
+    text = format_resume_status(status)
+
+    assert status.state == "unreadable"
+    assert status.snapshot is None
+    assert "status: unreadable saved session" in text
+    assert str(path) in text
+
+
+def test_resume_snapshot_status_reports_unknown_schema(tmp_path: Path) -> None:
     path = tmp_path / "resume.json"
     path.write_text(json.dumps({"schema": "wrong"}), encoding="utf-8")
 
-    with pytest.raises(ValueError):
-        load_session_snapshot(path)
+    assert load_session_snapshot(path) is None
+    status = load_session_snapshot_status(path)
+
+    assert status.state == "corrupt"
+    assert "unsupported resume schema: 'wrong'" in status.message
 
 
 def test_summarize_result_uses_answer_from_json() -> None:

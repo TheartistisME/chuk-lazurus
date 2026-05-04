@@ -7,6 +7,7 @@ import pytest
 
 from chuk_lazarus.david import cli
 from chuk_lazarus.david.doctor import DavidDoctorReport, DoctorCheck
+from chuk_lazarus.david.resume import SessionSnapshot, save_session_snapshot
 from chuk_lazarus.david.model_validation import (
     AutoModelValidationResult,
     ModelCommandResult,
@@ -980,7 +981,68 @@ def test_resume_command_prints_no_saved_session_without_tui(monkeypatch, tmp_pat
     assert FakeRuntime.created_with is not None
     output = capsys.readouterr().out
     assert "David resume" in output
-    assert "no saved session" in output
+    assert "status: no saved session" in output
+
+
+def test_resume_command_prints_valid_saved_session_without_tui(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    save_session_snapshot(
+        SessionSnapshot(
+            session_id="session-cli",
+            workspace=str(tmp_path),
+            adapter_scope={"model_id": "offline"},
+            memory_paths={},
+            updated_at="2026-05-04T01:02:03+00:00",
+            last_result_summary="finished safely",
+        )
+    )
+
+    rc = cli.main(["resume", str(tmp_path), "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    output = capsys.readouterr().out
+    assert "David resume" in output
+    assert "session: session-cli" in output
+    assert f"workspace: {tmp_path}" in output
+    assert "last result: finished safely" in output
+    assert "no saved session" not in output
+    assert "corrupt saved session" not in output
+
+
+def test_resume_command_reports_corrupt_saved_session_without_tui(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    resume_path = tmp_path / ".david" / "resume.json"
+    resume_path.parent.mkdir()
+    resume_path.write_text('{"schema": ', encoding="utf-8")
+
+    rc = cli.main(["resume", str(tmp_path), "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    output = capsys.readouterr().out
+    assert "David resume" in output
+    assert "status: corrupt saved session" in output
+    assert str(resume_path) in output
+    assert "invalid JSON at line 1, column 12" in output
+
+
+def test_resume_command_reports_unreadable_saved_session_without_tui(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    resume_path = tmp_path / ".david" / "resume.json"
+    resume_path.mkdir(parents=True)
+
+    rc = cli.main(["resume", str(tmp_path), "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    output = capsys.readouterr().out
+    assert "David resume" in output
+    assert "status: unreadable saved session" in output
+    assert str(resume_path) in output
 
 
 def test_parser_adds_explicit_model_scan_command():

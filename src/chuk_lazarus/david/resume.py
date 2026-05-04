@@ -47,6 +47,18 @@ class SessionSnapshot:
         )
 
 
+@dataclass(frozen=True)
+class ResumeLoadStatus:
+    path: Path
+    state: str
+    snapshot: SessionSnapshot | None = None
+    message: str = ""
+
+    @property
+    def is_valid(self) -> bool:
+        return self.state == "valid" and self.snapshot is not None
+
+
 def default_resume_path(workspace: Path) -> Path:
     return Path(workspace).resolve() / ".david" / "resume.json"
 
@@ -59,10 +71,57 @@ def save_session_snapshot(snapshot: SessionSnapshot, path: Path | None = None) -
 
 
 def load_session_snapshot(path: Path) -> SessionSnapshot | None:
+    status = load_session_snapshot_status(path)
+    if status.is_valid:
+        return status.snapshot
+    return None
+
+
+def load_session_snapshot_status(path: Path) -> ResumeLoadStatus:
     source = Path(path)
-    if not source.exists():
-        return None
-    return SessionSnapshot.from_json(json.loads(source.read_text(encoding="utf-8")))
+    try:
+        exists = source.exists()
+    except OSError as exc:
+        return ResumeLoadStatus(path=source, state="unreadable", message=str(exc))
+    if not exists:
+        return ResumeLoadStatus(path=source, state="missing", message="no saved session")
+
+    try:
+        raw = source.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        return ResumeLoadStatus(
+            path=source,
+            state="unreadable",
+            message=f"resume is not valid UTF-8: {exc.reason}",
+        )
+    except OSError as exc:
+        return ResumeLoadStatus(path=source, state="unreadable", message=str(exc))
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return ResumeLoadStatus(
+            path=source,
+            state="corrupt",
+            message=f"invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}",
+        )
+    if not isinstance(data, dict):
+        return ResumeLoadStatus(
+            path=source,
+            state="corrupt",
+            message=f"resume root must be a JSON object, got {type(data).__name__}",
+        )
+
+    try:
+        snapshot = SessionSnapshot.from_json(data)
+    except (KeyError, TypeError, ValueError) as exc:
+        return ResumeLoadStatus(path=source, state="corrupt", message=str(exc))
+    return ResumeLoadStatus(
+        path=source,
+        state="valid",
+        snapshot=snapshot,
+        message="saved session ready",
+    )
 
 
 def summarize_result(result: Any, *, max_chars: int = 500) -> str:
@@ -97,5 +156,23 @@ def format_resume_snapshot(snapshot: SessionSnapshot | None, *, max_summary_char
             f"- workspace: {snapshot.workspace or 'unknown'}",
             f"- updated: {snapshot.updated_at or 'unknown'}",
             f"- last result: {summary or 'none'}",
+        ]
+    )
+
+
+def format_resume_status(status: ResumeLoadStatus, *, max_summary_chars: int = 240) -> str:
+    if status.is_valid:
+        return format_resume_snapshot(status.snapshot, max_summary_chars=max_summary_chars)
+    if status.state == "missing":
+        return format_resume_snapshot(None, max_summary_chars=max_summary_chars)
+
+    label = "unreadable saved session" if status.state == "unreadable" else "corrupt saved session"
+    detail = compact_summary(status.message or "unknown resume error", max_chars=500)
+    return "\n".join(
+        [
+            "David resume",
+            f"- status: {label}",
+            f"- path: {status.path}",
+            f"- detail: {detail}",
         ]
     )
