@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from chuk_lazarus.david import cli
+from chuk_lazarus.david.model_validation import ModelCommandResult
 
 
 class FakeRuntime:
@@ -135,3 +136,94 @@ def test_parser_keeps_code_subcommand_and_once_option():
     assert args.allow_unvalidated is True
     assert args.once == "/status"
     assert args.auto_jit_index is True
+
+
+def test_parser_adds_explicit_model_scan_command():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "model",
+            "scan",
+            "google/gemma-e2b",
+            "--output",
+            "scan.json",
+        ]
+    )
+
+    assert args.command == "model"
+    assert args.model_command == "scan"
+    assert args.model == "google/gemma-e2b"
+    assert args.output == "scan.json"
+
+
+def test_parser_adds_explicit_model_validate_command():
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "model",
+            "validate",
+            "scan.json",
+            "--output",
+            "validated.json",
+            "--model",
+            "local-model",
+        ]
+    )
+
+    assert args.command == "model"
+    assert args.model_command == "validate"
+    assert args.report == "scan.json"
+    assert args.output == "validated.json"
+    assert args.model == "local-model"
+
+
+def test_model_scan_command_invokes_wrapper_without_runtime(monkeypatch, capsys):
+    FakeRuntime.created_with = None
+    calls = []
+
+    def fake_scan(**kwargs):
+        calls.append(kwargs)
+        return ModelCommandResult(
+            returncode=0,
+            command=("python", "David/get_model_config.py"),
+            stdout="scanner output\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    monkeypatch.setattr(cli, "run_model_scan", fake_scan)
+
+    rc = cli.main(["model", "scan", "m", "--output", "scan.json"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is None
+    assert calls == [
+        {
+            "model": "m",
+            "output": Path("scan.json"),
+        }
+    ]
+    assert "scanner output" in capsys.readouterr().out
+
+
+def test_model_validate_failure_is_readable(monkeypatch, capsys):
+    def fake_validate(**kwargs):
+        return ModelCommandResult(
+            returncode=7,
+            command=("python", "David/validate_model_config.py", "--config-report", "scan.json"),
+            stdout="partial stdout",
+            stderr="bad report",
+        )
+
+    monkeypatch.setattr(cli, "run_model_validate", fake_validate)
+
+    rc = cli.main(["model", "validate", "scan.json", "--output", "validated.json"])
+
+    assert rc == 7
+    err = capsys.readouterr().err
+    assert "Model validation failed (rc=7)" in err
+    assert "command: python David/validate_model_config.py --config-report scan.json" in err
+    assert "bad report" in err
+    assert "partial stdout" in err

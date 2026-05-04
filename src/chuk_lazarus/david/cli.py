@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .model_validation import ValidationReportDiscovery, discover_validation_report
+from .model_validation import (
+    ModelCommandResult,
+    ValidationReportDiscovery,
+    discover_validation_report,
+    run_model_scan,
+    run_model_validate,
+)
 from .tui import DavidTui
 
 try:  # Prefer the real harness objects when another worker has provided them.
@@ -142,12 +148,32 @@ def build_parser() -> argparse.ArgumentParser:
     code = subparsers.add_parser("code", help="Open David in a workspace")
     code.add_argument("workspace", nargs="?", default=".", help="Workspace path")
     _add_common_options(code)
+    model = subparsers.add_parser("model", help="Explicit model scan and validation commands")
+    model_subparsers = model.add_subparsers(dest="model_command", required=True)
+    scan = model_subparsers.add_parser(
+        "scan",
+        help="Run the standalone David model-config scanner",
+        description="Run David/get_model_config.py explicitly.",
+    )
+    scan.add_argument("model", help="HF model id or local model path to scan")
+    scan.add_argument("--output", required=True, help="Path for the generated scan report JSON")
+    validate = model_subparsers.add_parser(
+        "validate",
+        help="Run the standalone David model-config validator",
+        description="Run David/validate_model_config.py explicitly.",
+    )
+    validate.add_argument("report", help="Path to a model scan report JSON")
+    validate.add_argument("--output", required=True, help="Path for the validation report JSON")
+    validate.add_argument("--model", default=None, help="Optional model path/id override")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "command", None) == "model":
+        return _run_model_command(args)
+
     workspace = getattr(args, "workspace", ".")
     if getattr(args, "command", None) not in (None, "code"):
         parser.error(f"unknown command: {args.command}")
@@ -163,6 +189,65 @@ def main(argv: list[str] | None = None) -> int:
     runtime = DavidRuntime.create(config)
     tui = DavidTui(runtime, color=config.color)
     return tui.run(once=config.once)
+
+
+def _run_model_command(args: argparse.Namespace) -> int:
+    if args.model_command == "scan":
+        result = run_model_scan(
+            model=args.model,
+            output=Path(args.output).expanduser(),
+        )
+        return _write_model_command_result(
+            result,
+            success_message=f"Model scan report written to {Path(args.output).expanduser()}",
+            failure_label="Model scan failed",
+        )
+
+    if args.model_command == "validate":
+        result = run_model_validate(
+            report=Path(args.report).expanduser(),
+            output=Path(args.output).expanduser(),
+            model=args.model,
+        )
+        return _write_model_command_result(
+            result,
+            success_message=f"Model validation report written to {Path(args.output).expanduser()}",
+            failure_label="Model validation failed",
+        )
+
+    raise AssertionError(f"Unhandled model command: {args.model_command}")
+
+
+def _write_model_command_result(
+    result: ModelCommandResult,
+    *,
+    success_message: str,
+    failure_label: str,
+) -> int:
+    if result.returncode == 0:
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+            if not result.stdout.endswith("\n"):
+                sys.stdout.write("\n")
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+            if not result.stderr.endswith("\n"):
+                sys.stderr.write("\n")
+        sys.stdout.write(f"{success_message}\n")
+        return 0
+
+    command_text = " ".join(result.command)
+    sys.stderr.write(f"{failure_label} (rc={result.returncode})\n")
+    sys.stderr.write(f"command: {command_text}\n")
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+        if not result.stderr.endswith("\n"):
+            sys.stderr.write("\n")
+    if result.stdout:
+        sys.stderr.write(result.stdout)
+        if not result.stdout.endswith("\n"):
+            sys.stderr.write("\n")
+    return result.returncode
 
 
 def _build_config(args: argparse.Namespace, workspace_path: Path) -> Any:

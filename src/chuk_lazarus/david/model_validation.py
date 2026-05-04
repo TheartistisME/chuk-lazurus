@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 
 MODEL_REPORT_FILENAMES = ("validation_report.json", "model_validation_report.json")
 WORKSPACE_REPORT_PATHS = (Path(".david") / "model_validation_report.json",)
+GET_MODEL_CONFIG_RELATIVE_PATH = Path("David") / "get_model_config.py"
+VALIDATE_MODEL_CONFIG_RELATIVE_PATH = Path("David") / "validate_model_config.py"
 
 
 @dataclass(frozen=True)
@@ -16,6 +21,16 @@ class ValidationReportDiscovery:
 
     path: Path | None
     checked_paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class ModelCommandResult:
+    """Result of running an explicit standalone model-report command."""
+
+    returncode: int
+    command: tuple[str, ...]
+    stdout: str
+    stderr: str
 
 
 def discover_validation_report(
@@ -31,6 +46,55 @@ def discover_validation_report(
         if candidate.is_file():
             return ValidationReportDiscovery(path=candidate, checked_paths=tuple(checked_paths))
     return ValidationReportDiscovery(path=None, checked_paths=tuple(checked_paths))
+
+
+def run_model_scan(
+    *,
+    model: str,
+    output: Path,
+    repo_root: Path | None = None,
+    extra_args: Sequence[str] = (),
+) -> ModelCommandResult:
+    """Run David/get_model_config.py explicitly for a user-requested model scan."""
+
+    root = _repo_root(repo_root)
+    script = root / GET_MODEL_CONFIG_RELATIVE_PATH
+    command = (
+        sys.executable,
+        str(script),
+        "--model",
+        model,
+        "--json-out",
+        str(output),
+        *tuple(extra_args),
+    )
+    return _run_standalone_model_command(command=command, script=script, cwd=root)
+
+
+def run_model_validate(
+    *,
+    report: Path,
+    output: Path,
+    model: str | None = None,
+    repo_root: Path | None = None,
+    extra_args: Sequence[str] = (),
+) -> ModelCommandResult:
+    """Run David/validate_model_config.py explicitly for a user-requested validation."""
+
+    root = _repo_root(repo_root)
+    script = root / VALIDATE_MODEL_CONFIG_RELATIVE_PATH
+    command = [
+        sys.executable,
+        str(script),
+        "--config-report",
+        str(report),
+        "--json-out",
+        str(output),
+    ]
+    if model:
+        command.extend(("--model", model))
+    command.extend(extra_args)
+    return _run_standalone_model_command(command=tuple(command), script=script, cwd=root)
 
 
 def _candidate_report_paths(*, model_path: str | None, workspace_path: Path) -> tuple[Path, ...]:
@@ -53,3 +117,48 @@ def _looks_like_local_model_path(model_root: Path) -> bool:
         return True
     text = str(model_root)
     return text.startswith(".") or "\\" in text or "/" in text
+
+
+def _repo_root(repo_root: Path | None = None) -> Path:
+    if repo_root is not None:
+        return repo_root.expanduser().resolve()
+    return Path(__file__).resolve().parents[3]
+
+
+def _run_standalone_model_command(
+    *,
+    command: Sequence[str],
+    script: Path,
+    cwd: Path,
+) -> ModelCommandResult:
+    command_tuple = tuple(str(part) for part in command)
+    if not script.is_file():
+        return ModelCommandResult(
+            returncode=2,
+            command=command_tuple,
+            stdout="",
+            stderr=f"Standalone David model helper not found: {script}",
+        )
+
+    try:
+        completed = subprocess.run(
+            command_tuple,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return ModelCommandResult(
+            returncode=2,
+            command=command_tuple,
+            stdout="",
+            stderr=f"Failed to start standalone David model helper: {exc}",
+        )
+
+    return ModelCommandResult(
+        returncode=completed.returncode,
+        command=command_tuple,
+        stdout=completed.stdout or "",
+        stderr=completed.stderr or "",
+    )
