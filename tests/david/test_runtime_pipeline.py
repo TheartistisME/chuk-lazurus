@@ -139,6 +139,9 @@ def test_runtime_auto_jit_builds_bounded_source_index(tmp_path: Path) -> None:
     assert result.source_index["file_count"] == 1
     assert result.source_index["files"][0]["path"] == "src/agent.py"
     assert "boot_agent" in result.source_index["files"][0]["symbols"]
+    assert result.product_route is not None
+    assert "src/agent.py" in result.product_route.source_index_paths
+    assert "boot_agent" in result.product_route.selected_symbols
 
 
 def test_runtime_jit_index_hook_refreshes_manifest_and_source_index(tmp_path: Path) -> None:

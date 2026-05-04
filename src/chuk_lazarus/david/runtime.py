@@ -148,6 +148,7 @@ class DavidRuntime:
             session_id=self.config.session_id,
             evidence=evidence,
             files=workspace_files or None,
+            source_index=source_index,
             method=method,
             max_tokens=self.config.max_route_tokens,
         )
