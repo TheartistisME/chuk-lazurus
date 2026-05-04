@@ -7,18 +7,18 @@ from dataclasses import dataclass
 from typing import Any, TextIO
 
 
-HELP_TEXT = """Commands:
-  /status          Show model validation, index, and memory readiness
-  /memory          Show memory readiness/details
-  /index           Show workspace index readiness
-  /verify [cmd]    Run the verifier or configured verify command
-  /run <cmd>       Run a local shell command in the workspace
-  /read <path>     Read a workspace-local file
-  /write <path> <text>
-                   Write a workspace-local file
-  /apply <patch>   Apply a strict search/replace or unified diff patch
-  /help            Show this help
-  /exit            Exit David"""
+HELP_TEXT = """David commands:
+  prompt text              Send a one-shot prompt to the runtime
+  /status, /readiness      Show model validation, index, and memory readiness
+  /memory                  Show user/task memory readiness and artifact details
+  /index [jit|build]       Show or refresh the workspace index
+  /verify [cmd]            Run the verifier or a workspace command as the gate
+  /shell, /run <cmd>       Run a local shell command in the workspace
+  /read <path>             Read a workspace-local file
+  /write <path> <text>     Write a workspace-local file
+  /patch, /apply <patch>   Apply strict search/replace or unified diff text
+  /help                    Show this help
+  /exit, /quit             Exit David"""
 
 
 @dataclass(frozen=True)
@@ -74,26 +74,25 @@ class DavidTui:
         command = command.lower()
         arg = arg.strip() or None
 
-        if command == "/exit":
+        if command in {"/exit", "/quit"}:
             return CommandResult("bye", should_exit=True)
         if command == "/help":
             return CommandResult(HELP_TEXT)
-        if command == "/status":
+        if command in {"/status", "/readiness"}:
             return CommandResult(self.format_readiness())
         if command == "/memory":
             fallback = f"memory: {self._readiness().get('memory', 'unknown')}"
             return CommandResult(self._runtime_call(("memory_status",), fallback=fallback))
         if command == "/index":
-            fallback = f"index: {self._readiness().get('index', 'unknown')}"
-            return CommandResult(self._runtime_call(("index_status",), fallback=fallback))
+            return CommandResult(self._index_command(arg))
         if command == "/verify":
             if hasattr(self.runtime, "verify"):
                 return CommandResult(self._runtime_call(("verify",), arg))
             prompt = f"/verify {arg}" if arg else "/verify"
             return CommandResult(self._runtime_call(("run_once",), prompt))
-        if command == "/run":
+        if command in {"/run", "/shell"}:
             if not arg:
-                return CommandResult("run: missing command")
+                return CommandResult("shell: missing command")
             return CommandResult(self._runtime_call(("run_shell", "run"), arg))
         if command == "/read":
             if not arg:
@@ -103,9 +102,9 @@ class DavidTui:
             if not arg:
                 return CommandResult("write: missing path and text")
             return CommandResult(self._runtime_call(("write_file", "write"), arg))
-        if command == "/apply":
+        if command in {"/apply", "/patch"}:
             if not arg:
-                return CommandResult("apply: missing patch text")
+                return CommandResult("patch: missing patch text")
             patch_text = arg.replace("\\n", "\n")
             return CommandResult(self._runtime_call(("apply_patch",), patch_text))
         return CommandResult(f"unknown command: {command}\n{HELP_TEXT}")
@@ -155,6 +154,29 @@ class DavidTui:
             }
         return {"status": str(value)}
 
+    def _index_command(self, arg: str | None) -> str:
+        action = (arg or "status").strip().lower()
+        if action in {"status", "check"}:
+            fallback = f"index: {self._readiness().get('index', 'unknown')}"
+            return self._runtime_call(("index_status",), fallback=fallback)
+        if action not in {"jit", "build", "refresh"}:
+            return "index: expected /index [jit|build]"
+
+        direct = self._runtime_call(("jit_index", "build_index", "refresh_index"), fallback=None)
+        if direct != "runtime hook unavailable":
+            return direct
+
+        index = getattr(self.runtime, "index", None)
+        jit = getattr(index, "jit", None)
+        if callable(jit):
+            value = jit()
+            summary = self._stringify_runtime_value(value)
+            status = self._runtime_call(("index_status",), fallback="")
+            if summary and status:
+                return f"{summary}\n{status}"
+            return summary or status or "index: refreshed"
+        return "index: JIT hook unavailable"
+
     def _runtime_call(
         self,
         names: tuple[str, ...],
@@ -177,6 +199,9 @@ class DavidTui:
         to_dict = getattr(value, "to_dict", None)
         if callable(to_dict):
             return str(to_dict())
+        to_json = getattr(value, "to_json", None)
+        if callable(to_json):
+            return str(to_json())
         return str(value)
 
     def _model_validation_status(self) -> str:
