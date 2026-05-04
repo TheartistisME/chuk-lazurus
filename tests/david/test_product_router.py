@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from chuk_lazarus.david.product_router import ProductRouter, route_product
+from chuk_lazarus.david.source_index import SourceFileRecord, SourceIndexManifest
 
 
 def test_product_router_adds_temporal_methodology_metadata() -> None:
@@ -37,6 +38,60 @@ def test_product_router_exposes_patch_paths_tests_and_rejections() -> None:
     assert "scripts/run_swebench_pro_parity.py" in packet.patch_rejected_paths
     assert any("ranked ahead of tests" in reason for reason in packet.route_reasons)
     assert packet.provenance["patch_plan"]["selected_path_count"] >= 1
+
+
+def test_product_router_uses_source_index_records_as_patch_hints() -> None:
+    manifest = SourceIndexManifest(
+        workspace_root="/repo",
+        adapter_scope={"model_id": "offline"},
+        files=[
+            SourceFileRecord(
+                path="src/payments/stripe_gateway.py",
+                size_bytes=120,
+                sha256="abc",
+                language="python",
+                symbols=["StripeGateway", "refund_payment"],
+                import_tokens=["decimal", "requests"],
+            ),
+            SourceFileRecord(
+                path="tests/payments/test_stripe_gateway.py",
+                size_bytes=90,
+                sha256="def",
+                language="python",
+                symbols=["test_refund_payment"],
+                import_tokens=["pytest"],
+            ),
+            SourceFileRecord(
+                path="scripts/run_swebench_pro_parity.py",
+                size_bytes=30,
+                sha256="ghi",
+                language="python",
+                symbols=["proof_rig"],
+                import_tokens=[],
+            ),
+        ],
+        pruned_dirs=[],
+    )
+
+    packet = route_product(
+        "Fix Stripe refund handling in the payment gateway",
+        methodology="patch_target",
+        source_index=manifest,
+    )
+
+    assert packet.selected_paths[0] == "src/payments/stripe_gateway.py"
+    assert "tests/payments/test_stripe_gateway.py" in packet.selected_tests
+    assert packet.source_index_paths == [
+        "src/payments/stripe_gateway.py",
+        "tests/payments/test_stripe_gateway.py",
+    ]
+    assert "scripts/run_swebench_pro_parity.py" not in packet.source_index_paths
+    assert "StripeGateway" in packet.selected_symbols
+    assert "requests" in packet.import_tokens
+    assert any("imports decimal" in hint for hint in packet.dependency_source_hints)
+    assert any(item["kind"] == "source_index_record" for item in packet.evidence)
+    assert packet.provenance["source_index"]["record_count"] == 2
+    assert "source index records enriched routing evidence and path hints" in packet.route_reasons
 
 
 def test_product_router_fails_safe_when_underlying_router_errors() -> None:

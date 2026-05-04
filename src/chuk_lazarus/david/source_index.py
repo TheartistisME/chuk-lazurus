@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
+from .patch_routing import is_protected_path, normalize_path
+
 
 SCHEMA = "david.source_index.v1"
 DEFAULT_MAX_FILES = 200
@@ -195,7 +197,9 @@ def _index_file(root: Path, path: Path, size_bytes: int) -> SourceFileRecord | N
         return None
     except OSError:
         return None
-    relative = path.relative_to(root).as_posix()
+    relative = normalize_path(path.relative_to(root).as_posix())
+    if is_protected_path(relative):
+        return None
     return SourceFileRecord(
         path=relative,
         size_bytes=size_bytes,

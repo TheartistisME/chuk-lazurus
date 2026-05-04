@@ -42,6 +42,21 @@ def test_source_index_prunes_dirs_skips_large_files_and_truncates(tmp_path: Path
     assert "node_modules" in manifest.pruned_dirs
 
 
+def test_source_index_excludes_protected_proof_rig_files(tmp_path: Path) -> None:
+    protected = tmp_path / "scripts" / "run_swebench_pro_parity.py"
+    protected.parent.mkdir()
+    protected.write_text("def proof_rig(): pass\n", encoding="utf-8")
+    source = tmp_path / "src" / "agent.py"
+    source.parent.mkdir()
+    source.write_text("def boot_agent(): pass\n", encoding="utf-8")
+
+    manifest = build_source_index(tmp_path, {}, max_files=10)
+
+    paths = {record.path for record in manifest.files}
+    assert "src/agent.py" in paths
+    assert "scripts/run_swebench_pro_parity.py" not in paths
+
+
 def test_source_index_round_trips_manifest(tmp_path: Path) -> None:
     (tmp_path / "main.rs").write_text("use std::path::Path;\npub fn main_task() {}\n", encoding="utf-8")
     manifest = build_source_index(tmp_path, {"adapter_family": "offline"})
