@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from chuk_lazarus.david import runtime as runtime_module
 from chuk_lazarus.david import DavidConfig, DavidRuntime
 from chuk_lazarus.david.routing import RoutePacket
 
@@ -75,6 +76,30 @@ def test_missing_index_requires_jit_plan(tmp_path: Path) -> None:
     assert (tmp_path / "state" / "decoder_priors.json").exists()
     assert result.resume_snapshot is not None
     assert (tmp_path / "state" / "resume.json").exists()
+    assert result.product_route.provenance["router"] == "david.central_router.full"
+    assert result.product_route.provenance["proof_router_available"] is True
+
+
+def test_runtime_falls_back_when_full_central_router_wrapper_unavailable(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    def unavailable() -> object:
+        raise RuntimeError("wrapper load failed")
+
+    monkeypatch.setattr(
+        runtime_module.CentralRouterAdapter,
+        "from_stable_wrapper_if_available",
+        unavailable,
+    )
+    runtime = DavidRuntime.create(DavidConfig(workspace_root=tmp_path, state_dir=tmp_path / "state"))
+
+    result = runtime.run_once("Inspect source dependencies for this workspace")
+
+    assert runtime.product_router_errors == ["RuntimeError: wrapper load failed"]
+    assert result.product_route is not None
+    assert result.product_route.provenance["router"] == "david.central_router.offline"
+    assert result.product_route.provenance["proof_router_available"] is False
 
 
 def test_repo_patch_routing_and_task_writeback(tmp_path: Path) -> None:

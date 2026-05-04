@@ -17,6 +17,7 @@ from .memory import JsonlMemoryStore, MemoryBank
 from .model_backend import ModelBackend, ModelBackendResult, OfflineModelBackend, TransformersCausalLMBackend
 from .patch_routing import DOC_SUFFIXES, SOURCE_SUFFIXES, is_protected_path, route_patch_targets
 from .patching import PatchApplyDiagnostic, apply_patch_candidate, validate_patch_candidate
+from .central_router_adapter import CentralRouterAdapter
 from .product_router import ProductRoutePacket, ProductRouter
 from .resume import SessionSnapshot, load_session_snapshot, save_session_snapshot, summarize_result
 from .routing import CentralRouter, MethodDetector, RoutePacket
@@ -103,6 +104,7 @@ class DavidRuntime:
     def __init__(self, config: DavidConfig) -> None:
         self.config = config
         self.boot_errors: list[str] = []
+        self.product_router_errors: list[str] = []
         self.harness_session = self._boot_session()
         self.adapter = self._adapter_from_harness() or config.adapter
         self.index = WorkspaceIndex(config.workspace_root, self._index_manifest_path(), self.adapter)
@@ -112,7 +114,12 @@ class DavidRuntime:
         )
         self.detector = MethodDetector()
         self.router = CentralRouter()
-        self.product_router = ProductRouter(router=self.router, detector=self.detector)
+        product_router = self._product_central_router()
+        self.product_router = ProductRouter(
+            router=product_router or self.router,
+            detector=self.detector,
+            proof_router_available=product_router is not None,
+        )
         self.materializer = Materializer()
         self.decoder = DecoderController()
         self.tools = LocalTools(config.workspace_root)
@@ -462,6 +469,13 @@ class DavidRuntime:
         if self.config.model_path and can_auto_load and not self.boot_errors:
             return TransformersCausalLMBackend(self.config.model_path, local_files_only=True)
         return OfflineModelBackend(prefix="david")
+
+    def _product_central_router(self) -> CentralRouterAdapter | None:
+        try:
+            return CentralRouterAdapter.from_stable_wrapper_if_available()
+        except Exception as exc:
+            self.product_router_errors.append(f"{type(exc).__name__}: {exc}")
+            return None
 
     def _model_validation_status(self) -> str:
         if self.boot_errors:
