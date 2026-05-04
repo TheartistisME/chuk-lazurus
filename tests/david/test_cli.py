@@ -630,6 +630,7 @@ def test_parser_adds_index_memory_resume_subcommands():
     index_args = parser.parse_args(["index", ".", "--build", "--allow-unvalidated", "--no-color"])
     memory_args = parser.parse_args(["memory", ".", "--allow-unvalidated"])
     resume_args = parser.parse_args(["resume", ".", "--allow-unvalidated"])
+    capabilities_args = parser.parse_args(["capabilities"])
 
     assert index_args.command == "index"
     assert index_args.workspace == "."
@@ -638,6 +639,37 @@ def test_parser_adds_index_memory_resume_subcommands():
     assert memory_args.workspace == "."
     assert resume_args.command == "resume"
     assert resume_args.workspace == "."
+    assert capabilities_args.command == "capabilities"
+
+
+def test_capabilities_command_prints_truthful_status_without_runtime(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+
+    rc = cli.main(["capabilities"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is None
+    output = capsys.readouterr().out
+    assert "David capabilities" in output
+    assert "WIRED:" in output
+    assert "CLI/TUI terminal surface" in output
+    assert "boot harness and startup readiness gates" in output
+    assert "validation and model attestation checks" in output
+    assert "torch standard decode path" in output
+    assert "capability router surface" in output
+    assert "materializer metadata and compatibility guards" in output
+    assert "decoder prior store surface" in output
+    assert "verification command surface" in output
+    assert "safe agent loop shell" in output
+    assert "GUARDED/PARTIAL:" in output
+    assert "model-driven repo autonomy remains guarded" in output
+    assert "tensor replay is fail-closed behind compatibility evidence" in output
+    assert "live steering hooks are limited" in output
+    assert "TODO:" in output
+    assert "production tensor KV/residual replay" in output
+    assert "broad autonomous repo patching" in output
+    assert "tensor replay wired" not in output.lower()
 
 
 def test_verify_command_prints_output_and_returns_command_rc(monkeypatch, tmp_path, capsys):

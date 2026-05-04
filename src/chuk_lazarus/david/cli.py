@@ -236,6 +236,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report whether David can run the standalone scanner and validator",
     )
+    subparsers.add_parser(
+        "capabilities",
+        help="Print wired, guarded, and TODO David product surfaces without model load",
+    )
     model = subparsers.add_parser("model", help="Explicit model scan and validation commands")
     model_subparsers = model.add_subparsers(dest="model_command", required=True)
     scan = model_subparsers.add_parser(
@@ -265,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_doctor_command(args)
     if getattr(args, "command", None) == "model":
         return _run_model_command(args)
+    if getattr(args, "command", None) == "capabilities":
+        return _run_capabilities_command()
 
     workspace = getattr(args, "workspace", ".")
     direct_commands = {"verify", "index", "memory", "resume"}
@@ -348,6 +354,53 @@ def _run_doctor_command(args: argparse.Namespace) -> int:
     )
     sys.stdout.write(format_doctor_report(report))
     return 0 if report.ready else 2
+
+
+def _run_capabilities_command() -> int:
+    sys.stdout.write(format_capabilities_status())
+    return 0
+
+
+def format_capabilities_status() -> str:
+    sections = (
+        (
+            "WIRED",
+            (
+                "CLI/TUI terminal surface",
+                "boot harness and startup readiness gates",
+                "validation and model attestation checks",
+                "torch standard decode path",
+                "user/task memory artifact status",
+                "workspace index status and build hooks",
+                "capability router surface",
+                "materializer metadata and compatibility guards",
+                "decoder prior store surface",
+                "verification command surface",
+                "operator tools surface",
+                "safe agent loop shell",
+            ),
+        ),
+        (
+            "GUARDED/PARTIAL",
+            (
+                "model-driven repo autonomy remains guarded",
+                "tensor replay is fail-closed behind compatibility evidence",
+                "live steering hooks are limited",
+            ),
+        ),
+        (
+            "TODO",
+            (
+                "production tensor KV/residual replay",
+                "broad autonomous repo patching",
+            ),
+        ),
+    )
+    lines = ["David capabilities"]
+    for label, items in sections:
+        lines.append(f"{label}:")
+        lines.extend(f"- {item}" for item in items)
+    return "\n".join(lines) + "\n"
 
 
 def _run_verify_command(args: argparse.Namespace, runtime: Any) -> int:
