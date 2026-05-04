@@ -44,18 +44,39 @@ uv pip install -e .
 david --help
 ```
 
+Initialize each workspace before using model-backed David flows:
+
+```bash
+david init . --model ./models/gemma --model-backend transformers --model-device cuda --model-dtype bfloat16
+```
+
+`david init` creates the deterministic `.david/` layout, writes
+`.david/config.json`, and writes `.david/NEXT_STEPS.md`. It does not index the
+workspace, scan model weights, validate a model, or start a runtime. Existing
+managed files are preserved unless `--force` is supplied.
+
 Workspace defaults live in `.david/config.json`. CLI flags and `DAVID_*`
-environment variables override these values. Supported keys are:
+environment variables override these values. Current init writes keys shaped
+like:
 
 ```json
 {
+  "schema_name": "david.workspace_config",
+  "schema_version": 1,
+  "paths": {
+    "state_dir": ".david",
+    "memory_dir": ".david/memory",
+    "indexes_dir": ".david/indexes",
+    "model_validation_dir": ".david/model_validation",
+    "sessions_dir": ".david/sessions"
+  },
   "model": "google/gemma-4-E2B-it or ./local-model",
-  "validation_report": ".david/model_validation_report.json",
-  "model_attestation": ".david/model_attestation.json",
-  "model_backend": "torch",
+  "validation_report": ".david/model_validation/model_validation_report.json",
+  "model_attestation": ".david/model_validation/model_attestation.json",
+  "model_backend": "transformers",
   "model_device": "cuda",
-  "model_dtype": "bfloat16",
-  "model_max_new_tokens": 256,
+  "model_dtype": "auto",
+  "model_max_new_tokens": 160,
   "auto_jit_index": false
 }
 ```
@@ -63,10 +84,37 @@ environment variables override these values. Supported keys are:
 The normal local workflow is:
 
 ```bash
-david doctor --workspace . --model ./models/gemma --validation-report .david/model_validation_report.json
+david init . --model ./models/gemma --model-device cuda --model-dtype bfloat16
+david model onboard ./models/gemma --workspace .
+david model onboard ./models/gemma --workspace . --execute
+david doctor --workspace . --model ./models/gemma --validation-report .david/model_validation/model_validation_report.json
 david code .
 david verify --cmd "pytest tests/david"
 ```
+
+`david model onboard` is the guided scan/validate path. Without `--execute`, it
+only plans the scanner and validator report paths under
+`.david/model_validation/`. With `--execute`, it runs the standalone model
+config getter and validator, writes `model_config_report.json` and
+`model_validation_report.json`, and reports one of three statuses:
+
+- `accepted`: the validator allows auto-load for the selected adapter scope.
+- `needs_review`: fail closed; a manual attestation may permit standard decode
+  only after operator review.
+- `rejected`: fail closed; fix scanner/validator evidence and retry.
+
+The onboarding command does not create or accept manual attestations and does
+not enable KV/residual replay.
+
+`david doctor` is the startup-readiness surface. It remains filesystem and
+package oriented: it checks workspace/model paths, HF cache visibility,
+validation reports, manual attestations, optional packages, local torch CUDA,
+WSL Python packages, WSL model/cache paths, auto-validation availability, and
+tooling. The CUDA check reports whether torch sees CUDA, device count, selected
+device, device names, total/free VRAM, compute capability, float16/bfloat16
+support, and a rough weight-memory estimate from validation metadata when
+available. Low selected-device VRAM is marked for review; CPU-only torch is not
+treated as proof that a real Gemma boot will work.
 
 Inside `david code .`, the TUI exposes:
 
@@ -85,9 +133,10 @@ For a live Gemma run today, use an accepted validator report for auto-load, or
 a manual-reviewed `model_attestation.json` for standard decode only:
 
 ```bash
-david model scan ./models/gemma --output .david/model/model_config_report.json
-david model validate .david/model/model_config_report.json --model ./models/gemma --output .david/model_validation_report.json
-david code . --model ./models/gemma --model-backend torch --model-device cuda --model-dtype bfloat16
+david init . --model ./models/gemma --model-backend transformers --model-device cuda --model-dtype bfloat16
+david model onboard ./models/gemma --workspace . --execute
+david doctor --workspace . --model ./models/gemma --validation-report .david/model_validation/model_validation_report.json
+david code . --model ./models/gemma --validation-report .david/model_validation/model_validation_report.json --model-backend torch-runtime --model-device cuda --model-dtype bfloat16
 ```
 
 Manual attestations do not enable unsafe tensor capabilities. They are an
@@ -101,9 +150,12 @@ memory family.
 Wired today:
 
 - CLI/TUI entrypoint, workspace config defaults, `doctor`, `code`, `verify`,
-  and explicit `model scan` / `model validate`.
+  `init`, explicit `model scan` / `model validate`, and guided
+  `model onboard`.
 - Startup/model readiness gates, including the doctor command surface. WSL path
-  readiness is reported when the corresponding doctor probe is present.
+  readiness, WSL package/CUDA probes, torch CUDA device details, dtype support,
+  and rough VRAM feasibility are reported when the corresponding probe is
+  available.
 - Torch-runtime live local standard decode when validated assets or an accepted
   manual standard-decode attestation are supplied.
 - Direct verifier path, safe plain-write prompts, deterministic `/agent`
@@ -113,8 +165,10 @@ Wired today:
 Guarded or still TODO:
 
 - Production tensor KV/residual replay. Current product surfaces carry
-  compatibility metadata and fail-closed checks; they must not be described as
-  completed tensor replay.
+  compatibility metadata, residual-sidecar manifest refs, explicit replay-plan
+  status, and fail-closed checks. Runtime tensor replay is guarded and only
+  applied where a backend explicitly advertises the compatible consumer path;
+  it must not be described as generally complete.
 - Broad autonomous repo patching. David can perform a guarded read -> patch ->
   verify path and can route, propose, apply focused patches, and verify, but
   broad multi-step repo autonomy remains constrained.
@@ -270,12 +324,11 @@ Example artifact shape:
 
 - Run the real Gemma E2B local backend smoke on hardware with WSL
   `torch`/`transformers` or a Windows-visible local model plus CUDA.
-- Promote model scan/validate from explicit commands into an optional guided
-  onboarding flow.
 - Product-wire the full central router instead of the current mini-router.
 - Build real activation/residual/KV indexes, not just manifests.
-- Implement true adapter-safe KV/residual materialization using captured
-  sidecars, not only compatibility metadata.
+- Complete adapter-safe KV/residual materialization across product backends
+  using captured sidecars, not only compatibility metadata and guarded
+  single-backend replay paths.
 - Replace steering metadata with live model logit hooks.
 - Expand verification from structured metadata checks to semantic patch,
   full chain, temporal-occurrence, and behavioral memory correctness.
@@ -401,6 +454,8 @@ stop routing or trigger the JIT/re-entry path when explicitly allowed.
 
 ## Apollo Residual Sidecar
 
+There are two related but different sidecar surfaces today.
+
 The benchmark JIT indexer keeps the fast route pass intact and adds an Apollo
 sequential residual sidecar beside each case store. The fast route query path
 still uses:
@@ -426,12 +481,44 @@ for window_id in document_order:
     boundary = h[:, -1:, :]
 ```
 
-LoCo Phase 3 and SWE through the shared LoCo path now prefer a ready Apollo
-store for selected windows. They validate manifest readiness, source/injection
-layer identity, runtime layer compatibility, and selected window ids before
-materializing KV. If no compatible Apollo store is available, the existing
-Layer-13 recapture path remains the fallback unless strict Apollo mode is
-requested.
+LoCo Phase 3 and SWE through the shared LoCo path prefer a ready Apollo store
+for selected windows. They validate manifest readiness, source/injection layer
+identity, runtime layer compatibility, and selected window ids before using
+Apollo materialization. If no compatible Apollo store is available, the
+existing Layer-13 recapture path remains the fallback unless strict Apollo mode
+is requested.
+
+The product David materializer has a smaller residual/KV sidecar manifest
+contract for operator flows. It accepts refs of kind `boundary_residual`,
+`residual_stream`, and `kv_cache`, validates manifest-relative `.npy` refs,
+dtype, shape, tensor-size caps, model/tokenizer/revision/adapter scope,
+hidden size, layer ids, insertion family, and memory family. A route can then
+produce a replay plan such as `boundary_text`, `boundary_residual`,
+`residual_sidecar`, `kv_direct`, or `kv_sidecar`.
+
+Those plans are not a blanket claim that tensor replay happened. Materializer
+plans expose `replay_status`, `guarded`, `requires_runtime_replay`, and
+`tensor_replay_applied=false` until a compatible backend consumer accepts and
+applies the sidecar. Manual model attestations can allow standard decode only;
+they must not be used to attest `kv_replay`, `kv_direct`, `residual_replay`, or
+other tensor replay capabilities.
+
+For a safe tiny-workspace smoke, use a disposable directory and the offline or
+standard-decode path first:
+
+```bash
+mkdir /tmp/david-smoke
+cd /tmp/david-smoke
+david init . --model ./models/tiny --model-device cpu
+david model onboard ./models/tiny --workspace .
+david doctor --workspace . --model ./models/tiny
+david code . --once "/status"
+```
+
+Only add `--execute`, CUDA, `torch-runtime`, or residual/KV sidecar refs after
+the model path, validation report, and workspace layout are understood. This
+keeps smoke runs from accidentally indexing a large repo or implying that
+residual/KV replay is production-complete.
 
 ## Routing Capabilities
 
