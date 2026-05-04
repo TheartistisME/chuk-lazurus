@@ -52,6 +52,64 @@ def test_main_code_once_uses_workspace_and_prompt(monkeypatch, tmp_path, capsys)
     assert "answered: summarize this repo" in output
 
 
+def test_main_keeps_common_options_before_code_subcommand(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    report = tmp_path / "validation-report.json"
+
+    rc = cli.main(
+        [
+            "--model",
+            "root-model",
+            "--validation-report",
+            str(report),
+            "--once",
+            "/status",
+            "--no-color",
+            "code",
+            str(tmp_path),
+        ]
+    )
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.created_with.model_path == "root-model"
+    assert FakeRuntime.created_with.validation_report_path == str(report)
+    assert FakeRuntime.created_with.once == "/status"
+    assert FakeRuntime.created_with.color is False
+    assert "model validation: ready" in capsys.readouterr().out
+
+
+def test_main_keeps_common_options_after_workspace(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    report = tmp_path / "validation-report.json"
+
+    rc = cli.main(
+        [
+            "code",
+            str(tmp_path),
+            "--model",
+            "workspace-tail-model",
+            "--validation-report",
+            str(report),
+            "--once",
+            "/status",
+            "--timeout",
+            "9",
+            "--no-color",
+            "--auto-jit-index",
+        ]
+    )
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.created_with.model_path == "workspace-tail-model"
+    assert FakeRuntime.created_with.validation_report_path == str(report)
+    assert FakeRuntime.created_with.once == "/status"
+    assert FakeRuntime.created_with.command_timeout_seconds == 9
+    assert FakeRuntime.created_with.auto_jit_index is True
+    assert "index: ready" in capsys.readouterr().out
+
+
 def test_main_discovers_model_validation_report(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
     workspace = tmp_path / "workspace"

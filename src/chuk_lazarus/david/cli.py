@@ -150,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     code = subparsers.add_parser("code", help="Open David in a workspace")
     code.add_argument("workspace", nargs="?", default=".", help="Workspace path")
-    _add_common_options(code)
+    _add_common_options(code, suppress_defaults=True)
     doctor = subparsers.add_parser(
         "doctor",
         help="Inspect local model boot readiness without downloads or model load",
@@ -399,39 +399,44 @@ def _write_missing_validation_report_status(
     )
 
 
-def _add_common_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model", default=None, help="Path or HF id for the open model")
+def _add_common_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
+    absent_default: Any = argparse.SUPPRESS if suppress_defaults else None
+    absent_false: Any = argparse.SUPPRESS if suppress_defaults else False
+    parser.add_argument("--model", default=absent_default, help="Path or HF id for the open model")
     parser.add_argument(
         "--validation-report",
-        default=None,
+        default=absent_default,
         help="Path to a validator JSON report accepted by the harness boot gate",
     )
     parser.add_argument(
         "--allow-unvalidated",
         action="store_true",
+        default=absent_false,
         help="Open without a boot-safe validation report. Model decode remains disabled.",
     )
-    parser.add_argument("--no-color", action="store_true", help="Disable ANSI color")
-    parser.add_argument("--once", default=None, help="Run one prompt/command and exit")
+    parser.add_argument("--no-color", action="store_true", default=absent_false, help="Disable ANSI color")
+    parser.add_argument("--once", default=absent_default, help="Run one prompt/command and exit")
     parser.add_argument(
         "--verify-command",
-        default=None,
+        default=absent_default,
         help="Default command used by /verify",
     )
     parser.add_argument(
         "--timeout",
         type=int,
-        default=None,
+        default=absent_default,
         help="Local tool command timeout in seconds",
     )
     parser.add_argument(
         "--auto-jit-index",
         action="store_true",
+        default=absent_false,
         help="Build a workspace index at startup when one is required and missing",
     )
     parser.add_argument(
         "--auto-validate-model",
         action="store_true",
+        default=absent_false,
         help="Run David's standalone scanner and validator into workspace .david artifacts before boot",
     )
 
