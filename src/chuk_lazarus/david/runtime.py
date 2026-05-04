@@ -42,6 +42,7 @@ from .routing import CentralRouter, MethodDetector, RoutePacket
 from .source_index import SourceIndexManifest, load_source_index
 from .steering import DecoderSteeringPolicy, build_decoder_logits_processor
 from .tools import LocalTools
+from .torch_backend import TorchRuntimeModelBackend
 from .verifier import VerificationResult, Verifier
 
 try:
@@ -650,6 +651,17 @@ class DavidRuntime:
             return VindexArtifactBackend(self.config.model_path)
         can_auto_load = bool(getattr(self.harness_session, "can_auto_load", False))
         if self.config.model_path and can_auto_load and not self.boot_errors:
+            backend_selector = str(self.config.model_backend or "transformers").strip().lower()
+            if backend_selector in {"torch-runtime", "torch_runtime", "torch"}:
+                return TorchRuntimeModelBackend(
+                    self.config.model_path,
+                    local_files_only=True,
+                    device=self.config.model_device,
+                    torch_dtype=self.config.model_dtype,
+                )
+            if backend_selector not in {"transformers", "transformers-causal-lm", "hf"}:
+                self.boot_errors.append(f"unsupported model backend selector: {self.config.model_backend}")
+                return OfflineModelBackend(prefix="david")
             return TransformersCausalLMBackend(
                 self.config.model_path,
                 local_files_only=True,

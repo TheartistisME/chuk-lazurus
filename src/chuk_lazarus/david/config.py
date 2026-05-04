@@ -27,6 +27,13 @@ def _env_model_max_new_tokens() -> int:
     return max(1, parsed)
 
 
+def _env_model_backend() -> str:
+    value = os.environ.get("DAVID_MODEL_BACKEND")
+    if value is None or not value.strip():
+        return "transformers"
+    return value.strip().lower()
+
+
 @dataclass(frozen=True)
 class AdapterSessionMetadata:
     """Compatibility scope supplied by a validated model adapter/session."""
@@ -71,6 +78,7 @@ class DavidConfig:
     model_path: str | None = None
     validation_report_path: str | None = None
     require_validated_model: bool = True
+    model_backend: str = field(default_factory=_env_model_backend)
     model_device: str | None = field(default_factory=lambda: _env_optional_string("DAVID_MODEL_DEVICE"))
     model_dtype: str | None = field(default_factory=lambda: _env_optional_string("DAVID_MODEL_DTYPE") or "auto")
     model_max_new_tokens: int = field(default_factory=_env_model_max_new_tokens)
