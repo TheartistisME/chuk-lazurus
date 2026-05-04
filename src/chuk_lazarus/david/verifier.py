@@ -108,17 +108,32 @@ class Verifier:
     def _check_temporal_ordinal(evidence: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
         requested = metadata.get("requested_ordinal") or metadata.get("ordinal")
         ordinals = [item.get("ordinal") for item in evidence if item.get("ordinal") is not None]
+        occurrences = [
+            item.get(key)
+            for item in evidence
+            for key in ("occurrence", "occurrence_index", "occurrence_id")
+            if item.get(key) is not None
+        ]
         timestamps = [item.get("timestamp") for item in evidence if item.get("timestamp")]
         ids = [item.get("artifact_id") for item in evidence if item.get("artifact_id")]
-        ok = bool(evidence and ordinals and timestamps and ids)
+        occurrence_required = bool(
+            requested
+            or metadata.get("requires_occurrence_metadata")
+            or metadata.get("requested_occurrence")
+        )
+        has_occurrence = bool(ordinals or occurrences)
+        ok = bool(evidence and timestamps and ids and (has_occurrence or not occurrence_required))
         return {
             "ok": ok,
             "evidence_count": len(evidence),
             "requested_ordinal": requested,
             "has_ordinal": bool(ordinals),
+            "has_occurrence": has_occurrence,
             "has_timestamp": bool(timestamps),
             "has_artifact_id": bool(ids),
             "ordinals": ordinals,
+            "occurrences": occurrences,
+            "occurrence_required": occurrence_required,
         }
 
     @staticmethod
@@ -136,9 +151,11 @@ class Verifier:
             for item in evidence
             if item.get("depends_on") is not None or item.get("links_to") is not None or item.get("chain_id") is not None
         ]
+        provenance = [item for item in evidence if item.get("provenance") or item.get("source") or item.get("metadata")]
         missing = [hop for hop in expected if hop not in hop_values]
         complete = not missing if expected else len(evidence) >= 2 and bool(ordered)
-        ok = bool(evidence) and complete
+        multi_hop = len(evidence) >= 2 and len(ordered) >= 2
+        ok = bool(evidence) and complete and multi_hop and len(provenance) == len(evidence)
         return {
             "ok": ok,
             "evidence_count": len(evidence),
@@ -146,17 +163,22 @@ class Verifier:
             "missing_hops": missing,
             "ordered_hops": len(ordered),
             "linked_hops": len(linked),
+            "provenance_count": len(provenance),
+            "requires_multi_hop": True,
         }
 
     def _check_patch_targets(self, evidence: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
+        target_paths = self._patch_target_paths(evidence, metadata)
         paths = self._candidate_paths(evidence, metadata)
         unsafe = [path for path in paths if not self._is_safe_patch_path(path)]
         protected = [path for path in paths if classify_path(path).is_protected]
-        ok = bool(evidence and paths) and not unsafe and not protected
+        ok = bool(evidence and target_paths) and not unsafe and not protected
         return {
             "ok": ok,
             "evidence_count": len(evidence),
             "paths": paths,
+            "target_paths": target_paths,
+            "requires_selected_or_patch_target_evidence": True,
             "unsafe_paths": unsafe,
             "protected_paths": protected,
         }
@@ -185,6 +207,26 @@ class Verifier:
                 paths.append(str(value))
         product_route = metadata.get("product_route") or {}
         for value in product_route.get("selected_paths", []) or []:
+            paths.append(str(value))
+        return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _patch_target_paths(evidence: list[dict[str, Any]], metadata: dict[str, Any]) -> list[str]:
+        paths: list[str] = []
+        patch_kinds = {"patch_target", "edit_target", "selected_path", "repo_patch"}
+        for item in evidence:
+            kind = str(item.get("kind") or "")
+            is_patch_target = kind in patch_kinds or bool(item.get("patch_target"))
+            if not is_patch_target:
+                continue
+            for key in ("path", "file", "target_path"):
+                value = item.get(key)
+                if value:
+                    paths.append(str(value))
+        product_route = metadata.get("product_route") or {}
+        for value in product_route.get("selected_paths", []) or []:
+            paths.append(str(value))
+        for value in metadata.get("selected_paths", []) or []:
             paths.append(str(value))
         return list(dict.fromkeys(paths))
 
@@ -230,12 +272,21 @@ class Verifier:
             and adapter.get(key) != compatibility.get(key)
         }
         refused = bool(materialized.get("refused")) if isinstance(materialized, dict) else False
-        ok = not mismatches and not refused
+        evidence_chain = []
+        if isinstance(materialized, dict):
+            evidence_chain = materialized.get("evidence_chain") or materialized.get("route_evidence_chain") or []
+        if not evidence_chain:
+            evidence_chain = metadata.get("route_evidence_chain") or []
+        chain_required = bool(isinstance(materialized, dict) and not refused)
+        chain_ok = isinstance(evidence_chain, list) and (bool(evidence_chain) or not chain_required)
+        ok = not mismatches and not refused and chain_ok
         return {
             "ok": ok,
             "mismatches": mismatches,
             "materializer_refused": refused,
             "strategy": materialized.get("strategy") if isinstance(materialized, dict) else None,
+            "evidence_chain_count": len(evidence_chain) if isinstance(evidence_chain, list) else 0,
+            "evidence_chain_required": chain_required,
         }
 
     @staticmethod
@@ -247,12 +298,19 @@ class Verifier:
         required = ("artifact_id", "family", "kind", "text", "timestamp")
         missing = [key for key in required if not writeback.get(key)]
         family_ok = writeback.get("family") == expected_family
+        evidence_chain = metadata.get("route_evidence_chain") or writeback.get("route_evidence_chain") or []
+        if not evidence_chain and isinstance(writeback.get("metadata"), dict):
+            evidence_chain = writeback["metadata"].get("route_evidence_chain") or []
+        chain_required = capability in {"repo_patch", "source_dependency", "symbolic_multi_hop"}
+        chain_ok = isinstance(evidence_chain, list) and (bool(evidence_chain) or not chain_required)
         return {
-            "ok": not missing and family_ok,
+            "ok": not missing and family_ok and chain_ok,
             "missing": missing,
             "expected_family": expected_family,
             "actual_family": writeback.get("family"),
             "kind": writeback.get("kind"),
+            "evidence_chain_count": len(evidence_chain) if isinstance(evidence_chain, list) else 0,
+            "evidence_chain_required": chain_required,
         }
 
     @staticmethod

@@ -48,8 +48,8 @@ def test_symbolic_chain_reports_missing_expected_hops(tmp_path: Path) -> None:
     result = verifier.verify(
         capability="symbolic_multi_hop",
         evidence=[
-            {"artifact_id": "parse", "text": "parser calls lexer", "ordinal": 0},
-            {"artifact_id": "lexer", "text": "lexer reads tokens", "ordinal": 1},
+            {"artifact_id": "parse", "text": "parser calls lexer", "ordinal": 0, "provenance": "jsonl"},
+            {"artifact_id": "lexer", "text": "lexer reads tokens", "ordinal": 1, "provenance": "jsonl"},
         ],
         metadata={"expected_hops": ["parse", "lexer", "emit"]},
     )
@@ -64,15 +64,44 @@ def test_symbolic_chain_accepts_complete_ordered_hops(tmp_path: Path) -> None:
     result = verifier.verify(
         capability="symbolic_multi_hop",
         evidence=[
-            {"artifact_id": "parse", "text": "parser calls lexer", "ordinal": 0},
-            {"artifact_id": "lexer", "text": "lexer emits tokens", "ordinal": 1},
-            {"artifact_id": "emit", "text": "emitter formats output", "ordinal": 2},
+            {"artifact_id": "parse", "text": "parser calls lexer", "ordinal": 0, "provenance": "jsonl"},
+            {
+                "artifact_id": "lexer",
+                "text": "lexer emits tokens",
+                "ordinal": 1,
+                "depends_on": "parse",
+                "provenance": "jsonl",
+            },
+            {
+                "artifact_id": "emit",
+                "text": "emitter formats output",
+                "ordinal": 2,
+                "depends_on": "lexer",
+                "provenance": "jsonl",
+            },
         ],
         metadata={"expected_hops": ["parse", "lexer", "emit"]},
     )
 
     assert result.ok is True
     assert result.checks["symbolic_chain"]["ordered_hops"] == 3
+    assert result.checks["symbolic_chain"]["provenance_count"] == 3
+
+
+def test_symbolic_chain_rejects_single_or_unprovenanced_hop(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="symbolic_multi_hop",
+        evidence=[
+            {"artifact_id": "parse", "text": "parser calls lexer", "ordinal": 0, "provenance": "jsonl"},
+            {"artifact_id": "lexer", "text": "lexer emits tokens", "ordinal": 1},
+        ],
+    )
+
+    assert result.ok is False
+    assert result.checks["symbolic_chain"]["provenance_count"] == 1
+    assert result.checks["symbolic_chain"]["requires_multi_hop"] is True
 
 
 def test_repo_patch_verifies_safe_workspace_paths_and_writeback(tmp_path: Path) -> None:
@@ -96,13 +125,29 @@ def test_repo_patch_verifies_safe_workspace_paths_and_writeback(tmp_path: Path) 
                 "kind": "repo_patch",
                 "text": "verified patch route",
                 "timestamp": "2026-05-04T02:00:00+00:00",
-            }
+            },
+            "route_evidence_chain": [{"artifact_id": "workspace:src/chuk_lazarus/david/verifier.py"}],
         },
     )
 
     assert result.ok is True
     assert result.checks["patch_targets"]["unsafe_paths"] == []
+    assert result.checks["patch_targets"]["target_paths"] == ["src/chuk_lazarus/david/verifier.py"]
     assert result.checks["memory_writeback"]["expected_family"] == "task"
+
+
+def test_repo_patch_requires_selected_paths_or_patch_target_evidence(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="repo_patch",
+        evidence=[{"kind": "source", "path": "src/example.py", "text": "plain source evidence"}],
+    )
+
+    assert result.ok is False
+    assert result.checks["patch_targets"]["paths"] == ["src/example.py"]
+    assert result.checks["patch_targets"]["target_paths"] == []
+    assert result.checks["patch_targets"]["requires_selected_or_patch_target_evidence"] is True
 
 
 def test_repo_patch_rejects_escaping_absolute_and_protected_paths(tmp_path: Path) -> None:
@@ -148,11 +193,13 @@ def test_adapter_materialization_compatibility_metadata_is_checked_when_present(
                     "insertion_family": "kv_direct",
                 },
             },
+            "route_evidence_chain": [{"artifact_id": "source-1", "path": "src/example.py"}],
         },
     )
 
     assert result.ok is True
     assert result.checks["adapter_materialization_compatibility"]["strategy"] == "kv_direct"
+    assert result.checks["adapter_materialization_compatibility"]["evidence_chain_count"] == 1
 
 
 def test_adapter_materialization_mismatch_fails_with_details(tmp_path: Path) -> None:
@@ -171,6 +218,50 @@ def test_adapter_materialization_mismatch_fails_with_details(tmp_path: Path) -> 
     assert result.checks["adapter_materialization_compatibility"]["mismatches"] == {
         "model_id": {"adapter": "gemma-e2b", "materialized": "other-model"}
     }
+
+
+def test_materialization_acceptance_requires_evidence_chain_when_not_refused(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="source_dependency",
+        evidence=[{"path": "src/example.py", "text": "source evidence"}],
+        metadata={
+            "adapter": {"model_id": "gemma-e2b", "tokenizer_id": "gemma-tokenizer"},
+            "materialized": {
+                "strategy": "boundary_residual",
+                "refused": False,
+                "compatibility": {"model_id": "gemma-e2b", "tokenizer_id": "gemma-tokenizer"},
+            },
+        },
+    )
+
+    assert result.ok is False
+    check = result.checks["adapter_materialization_compatibility"]
+    assert check["evidence_chain_required"] is True
+    assert check["evidence_chain_count"] == 0
+
+
+def test_task_writeback_requires_route_evidence_chain(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="repo_patch",
+        evidence=[{"kind": "patch_target", "path": "src/example.py", "text": "target"}],
+        metadata={
+            "writeback": {
+                "artifact_id": "task-1",
+                "family": "task",
+                "kind": "repo_patch",
+                "text": "verified patch route",
+                "timestamp": "2026-05-04T02:00:00+00:00",
+            }
+        },
+    )
+
+    assert result.ok is False
+    assert result.checks["memory_writeback"]["evidence_chain_required"] is True
+    assert result.checks["memory_writeback"]["evidence_chain_count"] == 0
 
 
 def test_verifier_checks_decoder_product_route_and_backend_metadata(tmp_path: Path) -> None:
