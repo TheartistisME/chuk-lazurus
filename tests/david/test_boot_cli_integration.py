@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from chuk_lazarus.david import cli
@@ -135,7 +136,82 @@ def test_main_status_uses_real_runtime_with_validation_report(tmp_path, capsys):
     assert "workspace:" in output
 
 
-def _validation_report() -> dict[str, object]:
+def test_main_rejected_validation_report_fails_closed_before_tui(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "model"
+    workspace.mkdir()
+    model.mkdir()
+    report_path = tmp_path / "needs-review.json"
+    report_path.write_text(
+        json.dumps(_validation_report(status="needs_review", auto_load_allowed=False)),
+        encoding="utf-8",
+    )
+    command = f'"{sys.executable}" -c "print(\'should-not-run\')"'
+
+    rc = cli.main(
+        [
+            "code",
+            str(workspace),
+            "--model",
+            str(model),
+            "--validation-report",
+            str(report_path),
+            "--once",
+            f"/run {command}",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 2
+    output = capsys.readouterr().out
+    assert "David startup readiness" in output
+    assert "model validation: blocked:" in output
+    assert "validation report" in output
+    assert str(report_path) in output
+    assert "--allow-unvalidated" in output
+    assert "offline shell mode" in output
+    assert "David terminal agent" not in output
+    assert "should-not-run" not in output
+
+
+def test_main_allow_unvalidated_opens_offline_shell_with_rejected_report(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "model"
+    workspace.mkdir()
+    model.mkdir()
+    report_path = tmp_path / "needs-review.json"
+    report_path.write_text(
+        json.dumps(_validation_report(status="needs_review", auto_load_allowed=False)),
+        encoding="utf-8",
+    )
+
+    rc = cli.main(
+        [
+            "code",
+            str(workspace),
+            "--model",
+            str(model),
+            "--validation-report",
+            str(report_path),
+            "--allow-unvalidated",
+            "--once",
+            "/status",
+            "--no-color",
+        ]
+    )
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "David terminal agent" in output
+    assert "David startup readiness" in output
+    assert "backend: offline-deterministic: loaded" in output
+
+
+def _validation_report(
+    *,
+    status: str = "accepted",
+    auto_load_allowed: bool = True,
+) -> dict[str, object]:
     selected_config = {
         "adapter_config_id": "gemma-cli-layer-23",
         "route_layer": 11,
@@ -155,10 +231,10 @@ def _validation_report() -> dict[str, object]:
     return {
         "schema_name": "lazarus.model_config_validation_report",
         "schema_version": 1,
-        "validation_status": "accepted",
+        "validation_status": status,
         "confidence": "high",
         "validation_level": "behavioral",
-        "auto_load_allowed": True,
+        "auto_load_allowed": auto_load_allowed,
         "harness_load_policy": "auto",
         "selected_config": selected_config,
         "source_report_summary": {

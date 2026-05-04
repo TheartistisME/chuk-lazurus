@@ -226,6 +226,9 @@ def main(argv: list[str] | None = None) -> int:
     args.validation_report = str(discovery.path) if discovery.path is not None else args.validation_report
     config = _build_config(args, workspace_path)
     runtime = DavidRuntime.create(config)
+    if _startup_rejected_validated_model(args, runtime):
+        _write_rejected_validation_report_status(args, workspace_path, runtime)
+        return 2
     tui = DavidTui(runtime, color=config.color)
     return tui.run(once=config.once)
 
@@ -411,6 +414,50 @@ def _write_missing_validation_report_status(
                 "- checked validation report paths:",
                 checked,
                 "Use --validation-report <path>, --auto-validate-model, or --allow-unvalidated to open offline shell mode.",
+                "",
+            )
+        )
+    )
+
+
+def _startup_rejected_validated_model(args: argparse.Namespace, runtime: Any) -> bool:
+    return bool(
+        args.model
+        and not args.allow_unvalidated
+        and _runtime_boot_errors(runtime)
+    )
+
+
+def _runtime_boot_errors(runtime: Any) -> tuple[str, ...]:
+    errors = getattr(runtime, "boot_errors", ())
+    if errors is None:
+        return ()
+    if isinstance(errors, str):
+        return (errors,) if errors else ()
+    try:
+        return tuple(str(error) for error in errors if str(error))
+    except TypeError:
+        return (str(errors),) if str(errors) else ()
+
+
+def _write_rejected_validation_report_status(
+    args: argparse.Namespace,
+    workspace_path: Path,
+    runtime: Any,
+) -> None:
+    boot_errors = _runtime_boot_errors(runtime)
+    error_text = "; ".join(boot_errors) if boot_errors else "validation rejected by harness boot"
+    report = args.validation_report or "not supplied"
+    sys.stdout.write(
+        "\n".join(
+            (
+                "David startup readiness",
+                f"- model validation: blocked: {error_text}",
+                f"- model: {args.model}",
+                f"- validation report: {report}",
+                f"- workspace: {workspace_path.expanduser().resolve()}",
+                "Harness boot rejected this validation report, so David did not open the TUI or run any workspace command.",
+                "Use --allow-unvalidated to open offline shell mode with model decode disabled.",
                 "",
             )
         )
