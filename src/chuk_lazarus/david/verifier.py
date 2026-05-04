@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .patch_routing import classify_path
 from .tools import LocalTools
@@ -90,6 +91,14 @@ class Verifier:
         writeback = self._check_writeback_metadata(metadata, capability)
         if writeback is not None:
             checks["memory_writeback"] = writeback
+
+        sidecar_catalog = self._check_sidecar_catalog_metadata(metadata)
+        if sidecar_catalog is not None:
+            checks["sidecar_catalog_compatibility"] = sidecar_catalog
+
+        sidecar_replay = self._check_sidecar_replay_metadata(metadata)
+        if sidecar_replay is not None:
+            checks["sidecar_replay_evidence"] = sidecar_replay
 
         decoder_prior = self._check_decoder_prior_metadata(metadata, capability)
         if decoder_prior is not None:
@@ -277,15 +286,20 @@ class Verifier:
             evidence_chain = materialized.get("evidence_chain") or materialized.get("route_evidence_chain") or []
         if not evidence_chain:
             evidence_chain = metadata.get("route_evidence_chain") or []
+        plan_evidence_count = 0
+        if isinstance(materialized, dict) and isinstance(materialized.get("materialization_plan"), dict):
+            plan = materialized["materialization_plan"]
+            plan_evidence_count += len(plan.get("sidecars") or []) if isinstance(plan.get("sidecars"), list) else 0
+            plan_evidence_count += len(plan.get("replay_refs") or []) if isinstance(plan.get("replay_refs"), list) else 0
         chain_required = bool(isinstance(materialized, dict) and not refused)
-        chain_ok = isinstance(evidence_chain, list) and (bool(evidence_chain) or not chain_required)
+        chain_ok = isinstance(evidence_chain, list) and (bool(evidence_chain) or bool(plan_evidence_count) or not chain_required)
         ok = not mismatches and not refused and chain_ok
         return {
             "ok": ok,
             "mismatches": mismatches,
             "materializer_refused": refused,
             "strategy": materialized.get("strategy") if isinstance(materialized, dict) else None,
-            "evidence_chain_count": len(evidence_chain) if isinstance(evidence_chain, list) else 0,
+            "evidence_chain_count": (len(evidence_chain) if isinstance(evidence_chain, list) else 0) + plan_evidence_count,
             "evidence_chain_required": chain_required,
         }
 
@@ -298,19 +312,185 @@ class Verifier:
         required = ("artifact_id", "family", "kind", "text", "timestamp")
         missing = [key for key in required if not writeback.get(key)]
         family_ok = writeback.get("family") == expected_family
+        policy = _first_mapping(
+            metadata.get("write_back_policy"),
+            metadata.get("writeback_policy"),
+            _nested_mapping(writeback, "metadata", "write_back_policy"),
+            _nested_mapping(writeback, "metadata", "writeback_policy"),
+        )
+        policy_check = _check_writeback_policy(policy, expected_family)
+        lifecycle_check = _check_user_lifecycle(writeback, expected_family)
         evidence_chain = metadata.get("route_evidence_chain") or writeback.get("route_evidence_chain") or []
         if not evidence_chain and isinstance(writeback.get("metadata"), dict):
             evidence_chain = writeback["metadata"].get("route_evidence_chain") or []
         chain_required = capability in {"repo_patch", "source_dependency", "symbolic_multi_hop"}
         chain_ok = isinstance(evidence_chain, list) and (bool(evidence_chain) or not chain_required)
         return {
-            "ok": not missing and family_ok and chain_ok,
+            "ok": (
+                not missing
+                and family_ok
+                and chain_ok
+                and policy_check["ok"]
+                and lifecycle_check["ok"]
+            ),
             "missing": missing,
             "expected_family": expected_family,
             "actual_family": writeback.get("family"),
             "kind": writeback.get("kind"),
+            "policy": policy_check,
+            "user_lifecycle": lifecycle_check,
             "evidence_chain_count": len(evidence_chain) if isinstance(evidence_chain, list) else 0,
             "evidence_chain_required": chain_required,
+        }
+
+    @staticmethod
+    def _check_sidecar_catalog_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
+        materialized = metadata.get("materialized") or metadata.get("materialization")
+        plan = materialized.get("materialization_plan") if isinstance(materialized, dict) else None
+        if not isinstance(plan, dict):
+            return None
+        sidecars = plan.get("sidecars") or []
+        catalog = _first_mapping(
+            metadata.get("sidecar_catalog"),
+            metadata.get("residual_sidecar_catalog"),
+            metadata.get("kv_sidecar_catalog"),
+            plan.get("sidecar_catalog"),
+            _nested_mapping(materialized, "compatibility", "sidecar_catalog") if isinstance(materialized, dict) else None,
+        )
+        if not sidecars and catalog is None:
+            return None
+        adapter = metadata.get("adapter") or metadata.get("adapter_scope") or plan.get("adapter_scope") or {}
+        route_memory_family = None
+        if isinstance(materialized, dict):
+            route_memory_family = plan.get("memory_family") or _nested_value(
+                materialized,
+                "compatibility",
+                "route_memory_family",
+            )
+        scope_keys = {
+            "model_id",
+            "tokenizer_id",
+            "model_revision",
+            "adapter_family",
+            "insertion_family",
+            "boundary_layer",
+            "kv_source_layer",
+            "kv_target_layer",
+            "hidden_size",
+        }
+        mismatches: list[dict[str, Any]] = []
+        ref_count = 0
+        artifact_ids: list[str] = []
+        for sidecar in sidecars if isinstance(sidecars, list) else []:
+            if not isinstance(sidecar, dict):
+                mismatches.append({"sidecar": sidecar, "reason": "sidecar entry is not an object"})
+                continue
+            artifact_id = str(sidecar.get("artifact_id") or "")
+            if artifact_id:
+                artifact_ids.append(artifact_id)
+            scope = sidecar.get("scope") if isinstance(sidecar.get("scope"), dict) else {}
+            refs = sidecar.get("refs") or []
+            if isinstance(refs, list):
+                ref_count += len(refs)
+            else:
+                mismatches.append({"artifact_id": artifact_id, "reason": "sidecar refs are not a list"})
+            for key in sorted(scope_keys):
+                adapter_value = adapter.get(key) if isinstance(adapter, dict) else None
+                sidecar_value = scope.get(key)
+                if adapter_value is not None and sidecar_value is not None and str(adapter_value) != str(sidecar_value):
+                    mismatches.append(
+                        {
+                            "artifact_id": artifact_id,
+                            "key": key,
+                            "adapter": adapter_value,
+                            "sidecar": sidecar_value,
+                        }
+                    )
+            sidecar_family = sidecar.get("memory_family") or scope.get("memory_family")
+            if (
+                route_memory_family is not None
+                and sidecar_family is not None
+                and str(sidecar_family) != str(route_memory_family)
+            ):
+                mismatches.append(
+                    {
+                        "artifact_id": artifact_id,
+                        "key": "memory_family",
+                        "route": route_memory_family,
+                        "sidecar": sidecar_family,
+                    }
+                )
+        catalog_count = None if catalog is None else catalog.get("sidecar_count") or catalog.get("count")
+        catalog_count_ok = True
+        if catalog_count is not None:
+            catalog_count_ok = int(catalog_count) == len(sidecars) if isinstance(catalog_count, int) else False
+        return {
+            "ok": not mismatches and catalog_count_ok and (bool(sidecars) or catalog is not None),
+            "sidecar_count": len(sidecars) if isinstance(sidecars, list) else 0,
+            "catalog_count": catalog_count,
+            "catalog_count_ok": catalog_count_ok,
+            "sidecar_artifact_ids": artifact_ids,
+            "replay_ref_count": ref_count,
+            "mismatches": mismatches,
+            "has_catalog": catalog is not None,
+        }
+
+    @staticmethod
+    def _check_sidecar_replay_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
+        materialized = metadata.get("materialized") or metadata.get("materialization")
+        if not isinstance(materialized, dict):
+            return None
+        plan = materialized.get("materialization_plan")
+        if not isinstance(plan, dict):
+            return None
+        replay = materialized.get("materialization_replay")
+        if not isinstance(replay, dict):
+            backend = metadata.get("backend")
+            backend_metadata = backend.get("metadata") if isinstance(backend, dict) else None
+            replay = backend_metadata.get("materialization_replay") if isinstance(backend_metadata, dict) else None
+        requested_strategy = str(plan.get("requested_strategy") or plan.get("strategy") or "")
+        replay_family = None
+        if isinstance(replay, dict):
+            replay_family = replay.get("replay_family") or _nested_value(replay, "state", "family")
+        sidecar_strategy = requested_strategy in {"kv_sidecar", "residual_sidecar"} or replay_family in {
+            "kv_sidecar",
+            "residual_sidecar",
+        }
+        if not sidecar_strategy:
+            return None
+
+        route_chain = metadata.get("route_evidence_chain") or materialized.get("route_evidence_chain") or []
+        replay_refs = plan.get("replay_refs") if isinstance(plan.get("replay_refs"), list) else []
+        sidecars = plan.get("sidecars") if isinstance(plan.get("sidecars"), list) else []
+        evidence_chain_count = (
+            (len(route_chain) if isinstance(route_chain, list) else 0)
+            + len(replay_refs)
+            + len(sidecars)
+        )
+        refused = bool(materialized.get("refused") or plan.get("refused") or (replay or {}).get("refused"))
+        applied = bool((replay or {}).get("applied") or (replay or {}).get("tensor_replay_applied"))
+        refusal_reasons = []
+        if isinstance(replay, dict):
+            refusal_reasons.extend(str(item) for item in replay.get("refusal_reasons") or [])
+            refusal_reasons.extend(str(item) for item in replay.get("guard_reasons") or [])
+        if plan.get("reason") and plan.get("reason") != "ok":
+            refusal_reasons.append(str(plan.get("reason")))
+        if materialized.get("reason") and materialized.get("reason") != "ok":
+            refusal_reasons.append(str(materialized.get("reason")))
+        reason_ok = applied or not refused or bool(refusal_reasons)
+        ok = evidence_chain_count > 0 and reason_ok and bool(replay_refs or sidecars)
+        return {
+            "ok": ok,
+            "strategy": plan.get("strategy"),
+            "requested_strategy": requested_strategy,
+            "replay_family": replay_family,
+            "applied": applied,
+            "refused": refused,
+            "evidence_chain_count": evidence_chain_count,
+            "route_evidence_chain_count": len(route_chain) if isinstance(route_chain, list) else 0,
+            "sidecar_count": len(sidecars),
+            "replay_ref_count": len(replay_refs),
+            "refusal_reason_count": len(refusal_reasons),
         }
 
     @staticmethod
@@ -426,3 +606,117 @@ class Verifier:
         if failed:
             return "failed checks: " + ", ".join(failed)
         return success
+
+
+def _first_mapping(*values: Any) -> dict[str, Any] | None:
+    for value in values:
+        if isinstance(value, Mapping):
+            return dict(value)
+    return None
+
+
+def _nested_value(value: Any, *keys: str) -> Any:
+    current = value
+    for key in keys:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _nested_mapping(value: Any, *keys: str) -> dict[str, Any] | None:
+    nested = _nested_value(value, *keys)
+    return dict(nested) if isinstance(nested, Mapping) else None
+
+
+def _check_writeback_policy(policy: dict[str, Any] | None, expected_family: str) -> dict[str, Any]:
+    if policy is None:
+        return {"ok": True, "present": False, "targets": [], "family": None}
+    targets = _string_list(policy.get("targets") or policy.get("target") or policy.get("stores"))
+    family = policy.get("family") or policy.get("memory_family")
+    expected_targets = {
+        expected_family,
+        f"{expected_family}_memory",
+        f"{expected_family}_memory_artifact",
+    }
+    if expected_family == "user":
+        expected_targets.update({"chat_user_memory", "user_continuity_memory", "person_in_time_memory"})
+    else:
+        expected_targets.update({"task_memory", "code_task_memory", "workspace_codebase_memory"})
+    target_ok = not targets or any(target in expected_targets for target in targets)
+    family_ok = family in {None, "", expected_family}
+    return {
+        "ok": target_ok and family_ok,
+        "present": True,
+        "targets": targets,
+        "expected_targets": sorted(expected_targets),
+        "target_ok": target_ok,
+        "family": family,
+        "family_ok": family_ok,
+    }
+
+
+def _check_user_lifecycle(writeback: dict[str, Any], expected_family: str) -> dict[str, Any]:
+    if expected_family != "user":
+        return {"ok": True, "applicable": False}
+    artifact_id = str(writeback.get("artifact_id") or "")
+    metadata = writeback.get("metadata") if isinstance(writeback.get("metadata"), dict) else {}
+    expires_at = writeback.get("expires_at") or metadata.get("expires_at") or metadata.get("expiry")
+    supersedes = _string_list(writeback.get("supersedes") or metadata.get("supersedes"))
+    superseded_by = _string_list(writeback.get("superseded_by") or metadata.get("superseded_by"))
+    supersession_status = writeback.get("supersession_status") or metadata.get("supersession_status")
+    timestamp = writeback.get("timestamp")
+
+    expiry_ok = True
+    expiry_reason = None
+    if expires_at:
+        expiry_time = _parse_iso_datetime(str(expires_at))
+        timestamp_time = _parse_iso_datetime(str(timestamp)) if timestamp else None
+        if expiry_time is None:
+            expiry_ok = False
+            expiry_reason = "expires_at is not a valid ISO timestamp"
+        elif timestamp_time is not None and expiry_time <= timestamp_time:
+            expiry_ok = False
+            expiry_reason = "expires_at is not after writeback timestamp"
+
+    supersedes_ok = artifact_id not in supersedes
+    superseded_by_ok = artifact_id not in superseded_by
+    status_ok = supersession_status in {
+        None,
+        "",
+        "active",
+        "current",
+        "stale",
+        "superseded",
+        "superseding",
+    }
+    return {
+        "ok": expiry_ok and supersedes_ok and superseded_by_ok and status_ok,
+        "applicable": True,
+        "expires_at": expires_at,
+        "expiry_ok": expiry_ok,
+        "expiry_reason": expiry_reason,
+        "supersedes": supersedes,
+        "superseded_by": superseded_by,
+        "supersedes_ok": supersedes_ok,
+        "superseded_by_ok": superseded_by_ok,
+        "supersession_status": supersession_status,
+        "supersession_status_ok": status_ok,
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if item is not None and str(item)]
+    return [str(value)]
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None

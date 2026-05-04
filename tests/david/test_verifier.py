@@ -264,6 +264,251 @@ def test_task_writeback_requires_route_evidence_chain(tmp_path: Path) -> None:
     assert result.checks["memory_writeback"]["evidence_chain_count"] == 0
 
 
+def test_writeback_policy_and_user_lifecycle_metadata_are_verified_when_present(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="temporal_recall",
+        evidence=[
+            {
+                "artifact_id": "user-source-1",
+                "timestamp": "2026-05-04T01:00:00+00:00",
+                "ordinal": 0,
+                "text": "user preference",
+            }
+        ],
+        metadata={
+            "write_back_policy": {"family": "user", "targets": ["chat_user_memory"]},
+            "writeback": {
+                "artifact_id": "user-memory-1",
+                "family": "user",
+                "kind": "temporal_recall",
+                "text": "verified user memory",
+                "timestamp": "2026-05-04T02:00:00+00:00",
+                "metadata": {
+                    "expires_at": "2026-06-04T02:00:00+00:00",
+                    "supersedes": ["user-memory-0"],
+                    "supersession_status": "active",
+                },
+            },
+        },
+    )
+
+    assert result.ok is True
+    assert result.checks["memory_writeback"]["policy"]["target_ok"] is True
+    assert result.checks["memory_writeback"]["user_lifecycle"]["expiry_ok"] is True
+    assert result.checks["memory_writeback"]["user_lifecycle"]["supersedes"] == ["user-memory-0"]
+
+
+def test_writeback_policy_and_user_lifecycle_mismatch_fail_with_details(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="temporal_recall",
+        evidence=[
+            {
+                "artifact_id": "user-source-1",
+                "timestamp": "2026-05-04T01:00:00+00:00",
+                "ordinal": 0,
+                "text": "user preference",
+            }
+        ],
+        metadata={
+            "write_back_policy": {"family": "task", "targets": ["code_task_memory"]},
+            "writeback": {
+                "artifact_id": "user-memory-1",
+                "family": "user",
+                "kind": "temporal_recall",
+                "text": "verified user memory",
+                "timestamp": "2026-05-04T02:00:00+00:00",
+                "metadata": {
+                    "expires_at": "2026-05-04T01:59:00+00:00",
+                    "supersedes": ["user-memory-1"],
+                    "supersession_status": "unknown",
+                },
+            },
+        },
+    )
+
+    assert result.ok is False
+    assert result.checks["memory_writeback"]["policy"]["family_ok"] is False
+    lifecycle = result.checks["memory_writeback"]["user_lifecycle"]
+    assert lifecycle["expiry_ok"] is False
+    assert lifecycle["supersedes_ok"] is False
+    assert lifecycle["supersession_status_ok"] is False
+
+
+def test_sidecar_catalog_compatibility_metadata_is_verified_when_present(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="source_dependency",
+        evidence=[{"path": "src/example.py", "symbol": "boot", "text": "def boot(): ..."}],
+        metadata={
+            "adapter": {
+                "model_id": "model-a",
+                "tokenizer_id": "tokenizer-a",
+                "model_revision": "rev-a",
+                "adapter_family": "family-a",
+                "insertion_family": "kv_direct",
+                "kv_target_layer": 7,
+            },
+            "materialized": {
+                "strategy": "kv_sidecar",
+                "refused": False,
+                "compatibility": {"model_id": "model-a", "tokenizer_id": "tokenizer-a"},
+                "materialization_plan": {
+                    "strategy": "kv_sidecar",
+                    "requested_strategy": "kv_sidecar",
+                    "memory_family": "task",
+                    "adapter_scope": {"model_id": "model-a", "tokenizer_id": "tokenizer-a"},
+                    "sidecars": [
+                        {
+                            "artifact_id": "kv-window-1",
+                            "memory_family": "task",
+                            "scope": {
+                                "model_id": "model-a",
+                                "tokenizer_id": "tokenizer-a",
+                                "model_revision": "rev-a",
+                                "adapter_family": "family-a",
+                                "insertion_family": "kv_direct",
+                                "kv_target_layer": 7,
+                            },
+                            "refs": [{"kind": "kv_cache", "layer": 7}],
+                        }
+                    ],
+                    "replay_refs": [{"artifact_id": "kv-window-1", "kind": "kv_cache"}],
+                },
+            },
+            "sidecar_catalog": {"sidecar_count": 1},
+        },
+    )
+
+    assert result.ok is True
+    assert result.checks["sidecar_catalog_compatibility"]["sidecar_artifact_ids"] == ["kv-window-1"]
+    assert result.checks["sidecar_catalog_compatibility"]["replay_ref_count"] == 1
+
+
+def test_sidecar_catalog_mismatch_fails_with_scope_details(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="source_dependency",
+        evidence=[{"path": "src/example.py", "text": "source evidence"}],
+        metadata={
+            "adapter": {"model_id": "model-a", "tokenizer_id": "tokenizer-a", "kv_target_layer": 7},
+            "materialized": {
+                "strategy": "kv_sidecar",
+                "refused": False,
+                "compatibility": {"model_id": "model-a", "tokenizer_id": "tokenizer-a"},
+                "materialization_plan": {
+                    "strategy": "kv_sidecar",
+                    "requested_strategy": "kv_sidecar",
+                    "memory_family": "task",
+                    "sidecars": [
+                        {
+                            "artifact_id": "kv-window-1",
+                            "memory_family": "user",
+                            "scope": {
+                                "model_id": "other-model",
+                                "tokenizer_id": "tokenizer-a",
+                                "kv_target_layer": 9,
+                            },
+                            "refs": [{"kind": "kv_cache", "layer": 9}],
+                        }
+                    ],
+                    "replay_refs": [{"artifact_id": "kv-window-1", "kind": "kv_cache"}],
+                },
+            },
+            "sidecar_catalog": {"sidecar_count": 2},
+        },
+    )
+
+    assert result.ok is False
+    check = result.checks["sidecar_catalog_compatibility"]
+    assert check["catalog_count_ok"] is False
+    assert {"artifact_id": "kv-window-1", "key": "model_id", "adapter": "model-a", "sidecar": "other-model"} in check[
+        "mismatches"
+    ]
+    assert {
+        "artifact_id": "kv-window-1",
+        "key": "memory_family",
+        "route": "task",
+        "sidecar": "user",
+    } in check["mismatches"]
+
+
+def test_residual_sidecar_replay_requires_sidecar_evidence_chain(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="source_dependency",
+        evidence=[{"path": "src/example.py", "text": "source evidence"}],
+        metadata={
+            "adapter": {"model_id": "model-a", "tokenizer_id": "tokenizer-a"},
+            "materialized": {
+                "strategy": "residual_sidecar",
+                "refused": False,
+                "compatibility": {"model_id": "model-a", "tokenizer_id": "tokenizer-a"},
+                "materialization_replay": {
+                    "replay_family": "residual_sidecar",
+                    "applied": True,
+                    "tensor_replay_applied": True,
+                    "refused": False,
+                },
+                "materialization_plan": {
+                    "strategy": "residual_sidecar",
+                    "requested_strategy": "residual_sidecar",
+                    "sidecars": [{"artifact_id": "residual-window-1", "refs": [{"kind": "residual_stream"}]}],
+                    "replay_refs": [{"artifact_id": "residual-window-1", "kind": "residual_stream"}],
+                },
+            },
+        },
+    )
+
+    assert result.ok is True
+    assert result.checks["sidecar_replay_evidence"]["applied"] is True
+    assert result.checks["sidecar_replay_evidence"]["evidence_chain_count"] == 2
+
+
+def test_residual_sidecar_refusal_requires_reason_and_chain(tmp_path: Path) -> None:
+    verifier = _verifier(tmp_path)
+
+    result = verifier.verify(
+        capability="source_dependency",
+        evidence=[{"path": "src/example.py", "text": "source evidence"}],
+        metadata={
+            "adapter": {"model_id": "model-a", "tokenizer_id": "tokenizer-a"},
+            "materialized": {
+                "strategy": "refuse",
+                "refused": True,
+                "reason": "runtime replay consumer required for residual_sidecar",
+                "compatibility": {"model_id": "model-a", "tokenizer_id": "tokenizer-a"},
+                "materialization_replay": {
+                    "replay_family": "residual_sidecar",
+                    "applied": False,
+                    "refused": True,
+                    "refusal_reasons": ["runtime replay consumer required for residual_sidecar"],
+                },
+                "materialization_plan": {
+                    "strategy": "refuse",
+                    "requested_strategy": "residual_sidecar",
+                    "refused": True,
+                    "reason": "runtime replay consumer required for residual_sidecar",
+                    "sidecars": [{"artifact_id": "residual-window-1", "refs": [{"kind": "residual_stream"}]}],
+                    "replay_refs": [{"artifact_id": "residual-window-1", "kind": "residual_stream"}],
+                },
+            },
+        },
+    )
+
+    assert result.ok is False
+    replay_check = result.checks["sidecar_replay_evidence"]
+    assert replay_check["refused"] is True
+    assert replay_check["refusal_reason_count"] >= 1
+    assert replay_check["evidence_chain_count"] == 2
+
+
 def test_verifier_checks_decoder_product_route_and_backend_metadata(tmp_path: Path) -> None:
     verifier = _verifier(tmp_path)
     evidence = [{"path": "src/example.py", "symbol": "boot", "text": "def boot(): ..."}]
