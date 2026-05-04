@@ -15,7 +15,9 @@ from .model_validation import (
     GET_MODEL_CONFIG_RELATIVE_PATH,
     VALIDATE_MODEL_CONFIG_RELATIVE_PATH,
     ValidationReportDiscovery,
+    ValidationReportSummary,
     discover_validation_report,
+    summarize_validation_report,
     workspace_auto_model_report_paths,
 )
 
@@ -37,6 +39,7 @@ class DavidDoctorReport:
     workspace_path: Path
     checks: tuple[DoctorCheck, ...]
     validation_discovery: ValidationReportDiscovery
+    validation_summary: ValidationReportSummary | None = None
 
     @property
     def ready(self) -> bool:
@@ -60,13 +63,16 @@ def run_doctor(
         workspace_path=workspace_root,
         validation_report=validation_report,
     )
+    validation_summary = (
+        summarize_validation_report(discovery.path) if discovery.path is not None else None
+    )
     checks = [
         _workspace_check(workspace_root),
         _model_location_check(model),
         _hf_snapshot_check(model),
         _wsl_hf_snapshot_check(model),
         _vindex_check(workspace_root, model),
-        _validation_report_check(discovery),
+        _validation_report_check(discovery, validation_summary),
         *_optional_package_checks(),
         _torch_cuda_check(),
         _wsl_python_packages_check(),
@@ -84,6 +90,7 @@ def run_doctor(
         workspace_path=workspace_root,
         checks=tuple(checks),
         validation_discovery=discovery,
+        validation_summary=validation_summary,
     )
 
 
@@ -97,6 +104,25 @@ def format_doctor_report(report: DavidDoctorReport) -> str:
     ]
     for check in report.checks:
         lines.append(f"- {check.name}: {check.status}: {check.detail}")
+    if report.validation_summary is not None:
+        summary = report.validation_summary
+        warnings = "; ".join(summary.warnings) if summary.warnings else "none"
+        reasons = (
+            "; ".join(summary.rejection_reasons) if summary.rejection_reasons else "none"
+        )
+        lines.append("- validation report summary:")
+        lines.append(f"  - validation_status: {summary.validation_status or 'unknown'}")
+        lines.append(f"  - confidence: {summary.confidence or 'unknown'}")
+        lines.append(f"  - auto_load_allowed: {summary.auto_load_allowed}")
+        lines.append(f"  - harness_load_policy: {summary.harness_load_policy or 'unknown'}")
+        lines.append(f"  - selected_config_layer_scope: {summary.layer_scope_text()}")
+        lines.append(
+            f"  - selected_adapter_config_id: "
+            f"{summary.selected_adapter_config_id or 'unknown'}"
+        )
+        lines.append(f"  - selected_insertion_family: {summary.selected_insertion_family or 'unknown'}")
+        lines.append(f"  - warnings: {warnings}")
+        lines.append(f"  - rejection_reasons: {reasons}")
     if report.validation_discovery.checked_paths:
         lines.append("- checked validation report paths:")
         lines.extend(f"  - {path}" for path in report.validation_discovery.checked_paths)
@@ -301,9 +327,25 @@ def _vindex_check(workspace_root: Path, model: str | None) -> DoctorCheck:
     return DoctorCheck(".vindex.ple artifact", "missing", "no model vector index artifact found nearby")
 
 
-def _validation_report_check(discovery: ValidationReportDiscovery) -> DoctorCheck:
+def _validation_report_check(
+    discovery: ValidationReportDiscovery,
+    summary: ValidationReportSummary | None,
+) -> DoctorCheck:
     if discovery.path is not None:
-        return DoctorCheck("validation report", "ready", str(discovery.path))
+        if summary is None:
+            return DoctorCheck("validation report", "ready", str(discovery.path))
+        if summary.can_auto_load:
+            return DoctorCheck(
+                "validation report",
+                "ready",
+                f"{discovery.path}; {summary.compact_detail()}",
+            )
+        status = "blocked" if summary.error or summary.rejection_reasons else "review"
+        return DoctorCheck(
+            "validation report",
+            status,
+            f"{discovery.path}; {summary.compact_detail()}",
+        )
     return DoctorCheck("validation report", "missing", "no boot-safe validation report discovered")
 
 

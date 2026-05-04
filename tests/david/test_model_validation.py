@@ -7,7 +7,7 @@ from pathlib import Path
 
 from chuk_lazarus.david import doctor
 from chuk_lazarus.david import model_validation
-from chuk_lazarus.david.model_validation import discover_validation_report
+from chuk_lazarus.david.model_validation import discover_validation_report, summarize_validation_report
 
 
 def test_discover_validation_report_prefers_model_validation_report(tmp_path):
@@ -224,6 +224,144 @@ def test_run_auto_model_validation_stops_when_scan_fails(monkeypatch, tmp_path):
 
     assert result.returncode == 9
     assert result.validation_result is None
+
+
+def test_summarize_validation_report_exposes_accepted_boot_fields(tmp_path):
+    report_path = tmp_path / "accepted-validation.json"
+    report_path.write_text(
+        json.dumps(_validation_report_payload()),
+        encoding="utf-8",
+    )
+
+    summary = summarize_validation_report(report_path)
+
+    assert summary.path == report_path
+    assert summary.readable is True
+    assert summary.can_auto_load is True
+    assert summary.validation_status == "accepted"
+    assert summary.confidence == "high"
+    assert summary.auto_load_allowed is True
+    assert summary.harness_load_policy == "allow_auto_load"
+    assert summary.selected_adapter_config_id == "gemma-e2b-l23"
+    assert summary.selected_insertion_family == "kv_direct"
+    assert summary.selected_config_layer_scope["route_layer"] == 11
+    assert summary.selected_config_layer_scope["kv_source_layer"] == 21
+    assert summary.selected_config_layer_scope["kv_target_layer"] == 23
+    assert summary.rejection_reasons == ()
+    assert summary.layer_scope_text() == (
+        "route_layer=11, boundary_layer=17, residual_capture_layer=17, "
+        "kv_source_layer=21, kv_target_layer=23, injection_layer=23"
+    )
+
+
+def test_summarize_validation_report_keeps_needs_review_fail_closed(tmp_path):
+    report_path = tmp_path / "needs-review-validation.json"
+    report = _validation_report_payload(
+        validation_status="needs_review",
+        confidence="low",
+        auto_load_allowed=False,
+        harness_load_policy="manual_or_validation_required",
+        warnings=["behavioral KV validation was required but did not pass"],
+    )
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    summary = summarize_validation_report(report_path)
+
+    assert summary.can_auto_load is False
+    assert summary.validation_status == "needs_review"
+    assert summary.confidence == "low"
+    assert summary.auto_load_allowed is False
+    assert summary.harness_load_policy == "manual_or_validation_required"
+    assert "behavioral KV validation was required but did not pass" in summary.warnings
+    assert "validation_status is 'needs_review', expected 'accepted'" in summary.rejection_reasons
+    assert "auto_load_allowed is false" in summary.rejection_reasons
+
+
+def test_doctor_surfaces_accepted_validation_report_summary(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "gemma"
+    workspace.mkdir()
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    (model / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (model / "model.safetensors").write_text("", encoding="utf-8")
+    report_path = model / "validation_report.json"
+    report_path.write_text(json.dumps(_validation_report_payload()), encoding="utf-8")
+
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "ready", "CUDA available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
+    )
+    _disable_wsl_probe_checks(monkeypatch)
+
+    report = doctor.run_doctor(model=str(model), workspace_path=workspace)
+    checks = {check.name: check for check in report.checks}
+    formatted = doctor.format_doctor_report(report)
+
+    assert checks["validation report"].status == "ready"
+    assert "validation_status=accepted" in checks["validation report"].detail
+    assert report.validation_summary is not None
+    assert report.validation_summary.can_auto_load is True
+    assert "- validation report summary:" in formatted
+    assert "  - validation_status: accepted" in formatted
+    assert "  - selected_config_layer_scope: route_layer=11" in formatted
+    assert "  - rejection_reasons: none" in formatted
+
+
+def test_doctor_blocks_needs_review_validation_report_with_reasons(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    model = tmp_path / "gemma"
+    workspace.mkdir()
+    model.mkdir()
+    report_path = tmp_path / "review-required.json"
+    report_path.write_text(
+        json.dumps(
+            _validation_report_payload(
+                validation_status="needs_review",
+                confidence="low",
+                auto_load_allowed=False,
+                harness_load_policy="manual_or_validation_required",
+                warnings=["validation score margin 0.020 is below threshold 0.100"],
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor, "_optional_package_checks", lambda: ())
+    monkeypatch.setattr(
+        doctor,
+        "_torch_cuda_check",
+        lambda: doctor.DoctorCheck("torch CUDA", "ready", "CUDA available"),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_wsl_tooling_check",
+        lambda: doctor.DoctorCheck("WSL/tooling", "ready", "available"),
+    )
+    _disable_wsl_probe_checks(monkeypatch)
+
+    report = doctor.run_doctor(
+        model=str(model),
+        workspace_path=workspace,
+        validation_report=str(report_path),
+    )
+    checks = {check.name: check for check in report.checks}
+    formatted = doctor.format_doctor_report(report)
+
+    assert checks["validation report"].status == "blocked"
+    assert "validation_status=needs_review" in checks["validation report"].detail
+    assert "auto_load_allowed=False" in checks["validation report"].detail
+    assert "validation_status is 'needs_review', expected 'accepted'" in formatted
+    assert "auto_load_allowed is false" in formatted
+    assert "validation score margin 0.020 is below threshold 0.100" in formatted
+    assert report.ready is False
 
 
 def test_run_model_scan_reports_missing_helper_without_subprocess(monkeypatch, tmp_path):
@@ -542,3 +680,43 @@ def _write_vindex_artifact(parent: Path) -> Path:
     )
     (artifact / "attn_weights.bin").write_bytes(b"weights")
     return artifact
+
+
+def _validation_report_payload(
+    *,
+    validation_status: str = "accepted",
+    confidence: str = "high",
+    auto_load_allowed: bool = True,
+    harness_load_policy: str = "allow_auto_load",
+    warnings: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_name": "lazarus.model_config_validation_report",
+        "schema_version": 1,
+        "validation_status": validation_status,
+        "confidence": confidence,
+        "validation_level": "topology_projection_behavior",
+        "auto_load_allowed": auto_load_allowed,
+        "harness_load_policy": harness_load_policy,
+        "selected_config": {
+            "adapter_config_id": "gemma-e2b-l23",
+            "route_layer": 11,
+            "route_query_head": 3,
+            "route_dimension": 2048,
+            "boundary_layer": 17,
+            "residual_capture_layer": 17,
+            "kv_source_layer": 21,
+            "kv_target_layer": 23,
+            "injection_layer": 23,
+            "projection_producer_layer": 21,
+            "behavior_cache_layer": 21,
+            "insertion_family": "kv_direct",
+            "kv_layout": "bshd",
+            "candidate_role": "behavioral",
+        },
+        "warnings": warnings or [],
+        "report_integrity": {"status": "ok", "warnings": []},
+        "topology_gate": {"status": "ok", "warnings": []},
+        "projection_gate": {"status": "ok", "warnings": []},
+        "behavior_gate": {"status": "ok", "warnings": []},
+    }
