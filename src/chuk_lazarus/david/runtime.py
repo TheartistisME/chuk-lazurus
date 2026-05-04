@@ -118,6 +118,70 @@ def _render_evidence_context(evidence: Sequence[dict[str, Any]]) -> tuple[str, i
     return "\n\n".join(blocks), included
 
 
+def _unprotected_route_evidence(evidence: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for item in evidence:
+        path = item.get("path") or item.get("artifact_id") or ""
+        if path and is_protected_path(str(path).removeprefix("workspace:")):
+            continue
+        filtered.append(dict(item))
+    return filtered
+
+
+def _bounded_selected_tests(*sources: Sequence[Any], limit: int = 4) -> list[str]:
+    tests: list[str] = []
+    seen: set[str] = set()
+    for source in sources:
+        for item in source:
+            if isinstance(item, dict):
+                raw_values = item.get("selected_tests") or ()
+                if isinstance(raw_values, str):
+                    raw_values = (raw_values,)
+            else:
+                raw_values = (item,)
+            for raw in raw_values:
+                path = str(raw or "").replace("\\", "/").strip()
+                while path.startswith("./"):
+                    path = path[2:]
+                if not path or path in seen or is_protected_path(path):
+                    continue
+                tests.append(path)
+                seen.add(path)
+                if len(tests) >= limit:
+                    return tests
+    return tests
+
+
+def _bounded_selected_paths(evidence: Sequence[dict[str, Any]], limit: int = 8) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for item in evidence:
+        path = str(item.get("path") or "").strip()
+        if not path or path in seen or is_protected_path(path):
+            continue
+        paths.append(path)
+        seen.add(path)
+        if len(paths) >= limit:
+            return paths
+    return paths
+
+
+def _render_patch_action_guidance(method: str, selected_tests: Sequence[str], patch_context_count: int) -> str:
+    if method not in {"repo_patch", "source_dependency"}:
+        return ""
+    lines = [
+        "Patch action context:",
+        "- For repo/source tasks, use the patch action when available; otherwise use read/write actions with minimal patch-compatible edits.",
+        "- Read target files before editing, keep edits scoped to routed workspace paths, and never touch protected proof-rig benchmark paths.",
+    ]
+    if selected_tests:
+        lines.append(f"- Selected test hints: {', '.join(selected_tests[:4])}.")
+    else:
+        lines.append("- Selected test hints: none routed; choose the narrowest relevant verification command.")
+    lines.append(f"- Patch context entries available: {patch_context_count}.")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class RuntimeResult:
     prompt: str
@@ -541,6 +605,9 @@ class DavidRuntime:
 
         def next_action(state: AgentLoopState) -> ActionPayload:
             model_prompt = render_model_action_prompt(state)
+            patch_guidance = action_context.get("patch_guidance") or ""
+            if patch_guidance:
+                model_prompt = f"{model_prompt}\n{patch_guidance}"
             if action_context["included"]:
                 model_prompt = (
                     f"{model_prompt}\n"
@@ -586,6 +653,9 @@ class DavidRuntime:
             "evidence_count_available": 0,
             "evidence_count_included": 0,
             "selected_paths": [],
+            "selected_tests": [],
+            "patch_context_count": 0,
+            "product_route_available": False,
             "omitted": False,
             "omitted_reason": None,
             "truncated": False,
@@ -598,16 +668,36 @@ class DavidRuntime:
         metadata["workspace_file_count"] = len(workspace_files)
         evidence = self._recall(method, objective, workspace_files=workspace_files)
         metadata["evidence_count_available"] = len(evidence)
-        metadata["selected_paths"] = [
-            str(item.get("path"))
-            for item in evidence
-            if item.get("path") and not is_protected_path(str(item.get("path")))
-        ][:8]
-        raw_context, evidence_included = _render_evidence_context(evidence[:8])
+        product_route: ProductRoutePacket | None = None
+        try:
+            product_route = self.product_router.route(
+                objective,
+                session_id=self.config.session_id,
+                evidence=evidence,
+                files=workspace_files or None,
+                method=method,
+                max_tokens=self.config.max_route_tokens,
+            )
+        except Exception:
+            product_route = None
+        route_evidence = product_route.evidence if product_route is not None else evidence
+        safe_evidence = _unprotected_route_evidence(route_evidence)
+        selected_tests = _bounded_selected_tests(
+            product_route.selected_tests if product_route is not None else (),
+            safe_evidence,
+        )
+        patch_context_count = len(safe_evidence[:8])
+        metadata["evidence_count_available"] = len(route_evidence)
+        metadata["selected_paths"] = _bounded_selected_paths(safe_evidence)
+        metadata["selected_tests"] = selected_tests
+        metadata["patch_context_count"] = patch_context_count
+        metadata["product_route_available"] = product_route is not None
+        patch_guidance = _render_patch_action_guidance(method, selected_tests, patch_context_count)
+        raw_context, evidence_included = _render_evidence_context(safe_evidence[:8])
         metadata["evidence_count_included"] = evidence_included
         if not raw_context:
             metadata.update({"omitted": True, "omitted_reason": "no_context_available"})
-            return {"included": False, "text": "", "metadata": metadata}
+            return {"included": False, "text": "", "metadata": metadata, "patch_guidance": patch_guidance}
 
         text, truncated = _truncate_generation_context(raw_context, budget)
         metadata.update(
@@ -617,7 +707,7 @@ class DavidRuntime:
                 "truncated": truncated,
             }
         )
-        return {"included": True, "text": text, "metadata": metadata}
+        return {"included": True, "text": text, "metadata": metadata, "patch_guidance": patch_guidance}
 
     def _recall(
         self,
