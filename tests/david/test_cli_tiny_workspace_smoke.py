@@ -110,6 +110,62 @@ def test_index_jit_indexes_only_the_tiny_workspace(tmp_path: Path, capsys) -> No
     assert all(path.resolve().is_relative_to(workspace.resolve()) for path in index_dir.rglob("*"))
 
 
+def test_direct_index_status_reports_without_opening_tui_or_building(tmp_path: Path, capsys) -> None:
+    workspace = _tiny_workspace(tmp_path)
+    _assert_not_project_root(workspace)
+
+    rc = david_main(["index", str(workspace), "--status", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "index:" in output
+    assert "source index:" in output
+    assert "David terminal agent" not in output
+    assert not (workspace / ".david" / "indexes").exists()
+
+
+def test_direct_index_build_indexes_only_the_tiny_workspace(tmp_path: Path, capsys) -> None:
+    workspace = _tiny_workspace(tmp_path)
+    _assert_not_project_root(workspace)
+
+    rc = david_main(["index", str(workspace), "--build", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    index_dir = workspace / ".david" / "indexes"
+    assert "index: ready" in output
+    assert "source index:" in output
+    assert index_dir.exists()
+    assert all(path.resolve().is_relative_to(workspace.resolve()) for path in index_dir.rglob("*"))
+
+
+def test_direct_memory_reports_separate_user_and_task_paths(tmp_path: Path, capsys) -> None:
+    workspace = _tiny_workspace(tmp_path)
+    _assert_not_project_root(workspace)
+
+    rc = david_main(["memory", str(workspace), "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "memory:" in output
+    assert "user artifact:" in output
+    assert "task artifact:" in output
+    assert "source index:" not in output
+
+
+def test_direct_resume_reports_missing_snapshot_without_tui(tmp_path: Path, capsys) -> None:
+    workspace = _tiny_workspace(tmp_path)
+    _assert_not_project_root(workspace)
+
+    rc = david_main(["resume", str(workspace), "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "David resume" in output
+    assert "no saved session" in output
+    assert "David terminal agent" not in output
+
+
 def test_verify_command_runs_once_without_tui(tmp_path: Path, capsys) -> None:
     workspace = _tiny_workspace(tmp_path)
     _assert_not_project_root(workspace)

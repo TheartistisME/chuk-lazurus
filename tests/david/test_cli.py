@@ -31,6 +31,7 @@ def clear_operator_env(monkeypatch):
 class FakeRuntime:
     created_with: cli.DavidConfig | None = None
     verified_command: str | None = None
+    index_action: str | None = None
 
     def __init__(self, config: cli.DavidConfig) -> None:
         self.config = config
@@ -57,6 +58,21 @@ class FakeRuntime:
         if command is not None:
             return f"$ {command}\nrc=0\nverified"
         return "David verification fallback: ok"
+
+    def index_status(self) -> str:
+        type(self).index_action = "status"
+        return "index: ready at fake-manifest"
+
+    def build_index(self) -> str:
+        type(self).index_action = "build"
+        return "index: built fake workspace"
+
+    def refresh_index(self) -> str:
+        type(self).index_action = "refresh"
+        return "index: refreshed fake workspace"
+
+    def memory_status(self) -> str:
+        return "memory:\n- user artifact: fake-user.jsonl\n- task artifact: fake-task.jsonl"
 
 
 def test_main_code_once_uses_workspace_and_prompt(monkeypatch, tmp_path, capsys):
@@ -608,6 +624,22 @@ def test_parser_adds_verify_subcommand():
     assert args.no_color is True
 
 
+def test_parser_adds_index_memory_resume_subcommands():
+    parser = cli.build_parser()
+
+    index_args = parser.parse_args(["index", ".", "--build", "--allow-unvalidated", "--no-color"])
+    memory_args = parser.parse_args(["memory", ".", "--allow-unvalidated"])
+    resume_args = parser.parse_args(["resume", ".", "--allow-unvalidated"])
+
+    assert index_args.command == "index"
+    assert index_args.workspace == "."
+    assert index_args.build is True
+    assert memory_args.command == "memory"
+    assert memory_args.workspace == "."
+    assert resume_args.command == "resume"
+    assert resume_args.workspace == "."
+
+
 def test_verify_command_prints_output_and_returns_command_rc(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
     FakeRuntime.created_with = None
@@ -648,6 +680,71 @@ def test_verify_patch_runs_builtin_verifier_without_tui(monkeypatch, tmp_path, c
     assert FakeRuntime.created_with is not None
     assert FakeRuntime.verified_command is None
     assert "David verification fallback: ok" in capsys.readouterr().out
+
+
+def test_index_status_command_calls_runtime_without_tui(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    FakeRuntime.index_action = None
+
+    rc = cli.main(["index", str(tmp_path), "--status", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.index_action == "status"
+    assert "index: ready at fake-manifest" in capsys.readouterr().out
+
+
+def test_index_build_command_calls_runtime_build_without_tui(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    FakeRuntime.index_action = None
+
+    rc = cli.main(["index", str(tmp_path), "--build", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.index_action == "build"
+    assert "index: built fake workspace" in capsys.readouterr().out
+
+
+def test_index_refresh_command_calls_runtime_refresh_without_tui(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+    FakeRuntime.index_action = None
+
+    rc = cli.main(["index", str(tmp_path), "--refresh", "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    assert FakeRuntime.index_action == "refresh"
+    assert "index: refreshed fake workspace" in capsys.readouterr().out
+
+
+def test_memory_command_prints_user_and_task_artifacts(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+
+    rc = cli.main(["memory", str(tmp_path), "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    output = capsys.readouterr().out
+    assert "user artifact: fake-user.jsonl" in output
+    assert "task artifact: fake-task.jsonl" in output
+
+
+def test_resume_command_prints_no_saved_session_without_tui(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "DavidRuntime", FakeRuntime)
+    FakeRuntime.created_with = None
+
+    rc = cli.main(["resume", str(tmp_path), "--allow-unvalidated", "--no-color"])
+
+    assert rc == 0
+    assert FakeRuntime.created_with is not None
+    output = capsys.readouterr().out
+    assert "David resume" in output
+    assert "no saved session" in output
 
 
 def test_parser_adds_explicit_model_scan_command():

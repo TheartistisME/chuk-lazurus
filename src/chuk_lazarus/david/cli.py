@@ -126,6 +126,15 @@ class _FallbackDavidRuntime:
     def index_status(self) -> str:
         return f"index: {self.readiness()['index']}"
 
+    def jit_index(self) -> str:
+        return self.index_status()
+
+    def build_index(self) -> str:
+        return self.jit_index()
+
+    def refresh_index(self) -> str:
+        return self.jit_index()
+
     def verify(self, command: str | None = None) -> str:
         command = command or self.config.verify_command
         if not command:
@@ -184,6 +193,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run David's built-in verification path when --cmd is not supplied",
     )
     _add_common_options(verify, suppress_defaults=True)
+    index = subparsers.add_parser(
+        "index",
+        help="Inspect or build David workspace indexes without opening the TUI",
+    )
+    index.add_argument("workspace", nargs="?", default=".", help="Workspace path")
+    index_action = index.add_mutually_exclusive_group()
+    index_action.add_argument("--status", action="store_true", help="Print index readiness")
+    index_action.add_argument("--build", action="store_true", help="Build the workspace index")
+    index_action.add_argument("--refresh", action="store_true", help="Refresh the workspace index")
+    _add_common_options(index, suppress_defaults=True)
+    memory = subparsers.add_parser(
+        "memory",
+        help="Print David user/task memory artifact status without opening the TUI",
+    )
+    memory.add_argument("workspace", nargs="?", default=".", help="Workspace path")
+    _add_common_options(memory, suppress_defaults=True)
+    resume = subparsers.add_parser(
+        "resume",
+        help="Print the saved David resume summary without opening the TUI",
+    )
+    resume.add_argument("workspace", nargs="?", default=".", help="Workspace path")
+    _add_common_options(resume, suppress_defaults=True)
     doctor = subparsers.add_parser(
         "doctor",
         help="Inspect local model boot readiness without downloads or model load",
@@ -236,7 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_model_command(args)
 
     workspace = getattr(args, "workspace", ".")
-    if getattr(args, "command", None) not in (None, "code", "verify"):
+    direct_commands = {"verify", "index", "memory", "resume"}
+    if getattr(args, "command", None) not in (None, "code", *direct_commands):
         parser.error(f"unknown command: {args.command}")
 
     workspace_path = Path(workspace)
@@ -269,6 +301,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if getattr(args, "command", None) == "verify":
         return _run_verify_command(args, runtime)
+    if getattr(args, "command", None) == "index":
+        return _run_index_command(args, runtime)
+    if getattr(args, "command", None) == "memory":
+        return _run_memory_command(runtime)
+    if getattr(args, "command", None) == "resume":
+        return _run_resume_command(args, runtime)
     tui = DavidTui(runtime, color=config.color)
     return tui.run(once=config.once)
 
@@ -326,6 +364,30 @@ def _run_verify_command(args: argparse.Namespace, runtime: Any) -> int:
     return 0
 
 
+def _run_index_command(args: argparse.Namespace, runtime: Any) -> int:
+    if getattr(args, "build", False):
+        text = _runtime_call(runtime, ("build_index", "jit_index", "refresh_index"))
+    elif getattr(args, "refresh", False):
+        text = _runtime_call(runtime, ("refresh_index", "jit_index", "build_index"))
+    else:
+        fallback = f"index: {_runtime_readiness_value(runtime, 'index')}"
+        text = _runtime_call(runtime, ("index_status",), fallback=fallback)
+    _write_command_text(text)
+    return 0
+
+
+def _run_memory_command(runtime: Any) -> int:
+    fallback = f"memory: {_runtime_readiness_value(runtime, 'memory')}"
+    _write_command_text(_runtime_call(runtime, ("memory_status",), fallback=fallback))
+    return 0
+
+
+def _run_resume_command(args: argparse.Namespace, runtime: Any) -> int:
+    text = DavidTui(runtime, color=not args.no_color).format_resume()
+    _write_command_text(text)
+    return 0
+
+
 def _run_builtin_verify(runtime: Any) -> str:
     run_once = getattr(runtime, "run_once", None)
     if callable(run_once):
@@ -335,6 +397,50 @@ def _run_builtin_verify(runtime: Any) -> str:
             return str(answer)
         return str(result)
     return runtime.verify(None)
+
+
+def _runtime_call(
+    runtime: Any,
+    names: tuple[str, ...],
+    *args: Any,
+    fallback: str | None = None,
+) -> str:
+    for name in names:
+        method = getattr(runtime, name, None)
+        if callable(method):
+            return _stringify_runtime_value(method(*args))
+    return fallback or "runtime hook unavailable"
+
+
+def _runtime_readiness_value(runtime: Any, key: str) -> str:
+    readiness = getattr(runtime, "readiness", None)
+    if callable(readiness):
+        value = readiness()
+        if isinstance(value, dict):
+            return str(value.get(key, "unknown"))
+    return "unknown"
+
+
+def _stringify_runtime_value(value: Any) -> str:
+    if value is None:
+        return ""
+    answer = getattr(value, "answer", None)
+    if answer is not None:
+        return str(answer)
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return str(to_dict())
+    to_json = getattr(value, "to_json", None)
+    if callable(to_json):
+        return str(to_json())
+    return str(value)
+
+
+def _write_command_text(text: str) -> None:
+    if text:
+        sys.stdout.write(text)
+        if not text.endswith("\n"):
+            sys.stdout.write("\n")
 
 
 def _returncode_from_verify_text(text: str) -> int:
