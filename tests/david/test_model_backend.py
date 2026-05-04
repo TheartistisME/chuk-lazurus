@@ -122,7 +122,8 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     )
 
     load_status = backend.load()
-    result = backend.generate("prompt", max_new_tokens=7, stop=["STOP"])
+    fake_processor = object()
+    result = backend.generate("prompt", max_new_tokens=7, stop=["STOP"], logits_processor=fake_processor)
 
     assert load_status.available is True
     assert load_status.loaded is True
@@ -137,6 +138,8 @@ def test_transformers_backend_loads_and_generates_with_fake_local_modules(monkey
     generate_call = next(call for call in calls if call[0] == "generate")
     assert generate_call[2]["max_new_tokens"] == 7
     assert generate_call[2]["input_ids"].moved_to == "cpu"
+    assert generate_call[2]["logits_processor"] == [fake_processor]
+    assert result.metadata["logits_processor_count"] == 1
 
 
 def test_transformers_backend_reports_local_asset_load_errors(monkeypatch) -> None:

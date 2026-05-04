@@ -39,6 +39,7 @@ class ModelBackend(Protocol):
         *,
         max_new_tokens: int = 128,
         stop: Sequence[str] | None = None,
+        logits_processor: Any | Sequence[Any] | None = None,
     ) -> ModelBackendResult:
         ...
 
@@ -65,7 +66,9 @@ class OfflineModelBackend:
         *,
         max_new_tokens: int = 128,
         stop: Sequence[str] | None = None,
+        logits_processor: Any | Sequence[Any] | None = None,
     ) -> ModelBackendResult:
+        del logits_processor
         words = prompt.split()
         clipped = " ".join(words[: max(0, max_new_tokens)])
         text = f"{self.prefix}: {clipped}".strip()
@@ -147,6 +150,7 @@ class TransformersCausalLMBackend:
         *,
         max_new_tokens: int = 128,
         stop: Sequence[str] | None = None,
+        logits_processor: Any | Sequence[Any] | None = None,
     ) -> ModelBackendResult:
         status = self.load()
         if not status.available or not status.loaded:
@@ -162,8 +166,12 @@ class TransformersCausalLMBackend:
             inputs = self._tokenizer(prompt, return_tensors="pt")
             if self.device:
                 inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            generation_kwargs: dict[str, Any] = {**inputs, "max_new_tokens": max_new_tokens}
+            processors = _normalize_logits_processors(logits_processor)
+            if processors:
+                generation_kwargs["logits_processor"] = processors
             with torch.no_grad():
-                output_ids = self._model.generate(**inputs, max_new_tokens=max_new_tokens)
+                output_ids = self._model.generate(**generation_kwargs)
             text = self._tokenizer.decode(output_ids[0], skip_special_tokens=True)
             return ModelBackendResult(
                 text=_apply_stop(text, stop),
@@ -171,6 +179,7 @@ class TransformersCausalLMBackend:
                 metadata={
                     **self._metadata(),
                     "max_new_tokens": max_new_tokens,
+                    "logits_processor_count": len(processors),
                     "stop_count": len(stop or ()),
                 },
             )
@@ -205,3 +214,13 @@ def _apply_stop(text: str, stop: Sequence[str] | None) -> str:
             if index >= 0:
                 cut = min(cut, index)
     return text[:cut]
+
+
+def _normalize_logits_processors(logits_processor: Any | Sequence[Any] | None) -> list[Any]:
+    if logits_processor is None:
+        return []
+    if isinstance(logits_processor, list):
+        return logits_processor
+    if isinstance(logits_processor, tuple):
+        return list(logits_processor)
+    return [logits_processor]
